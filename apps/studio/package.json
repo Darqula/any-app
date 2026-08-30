@@ -1,0 +1,19 @@
+{
+  "name": "@any-app/studio",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "@any-app/protocol": "*",
+    "@any-app/store": "*",
+    "@any-app/generator": "*",
+    "express": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@any-app/tsconfig": "*"
+  }
+}

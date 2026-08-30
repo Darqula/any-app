@@ -1,0 +1,32 @@
+import { SKELETON_CSS, SWAP_RUNTIME, renderSkeletons } from "@any-app/protocol";
+import type { AppPlan } from "@any-app/protocol";
+
+function escapeHtml(value: string): string {
+  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+/**
+ * Everything up to and including the shell script. Sent as one write, so the browser gets
+ * a complete, painted layout in a single flush.
+ *
+ * The 1KB padding from Phase 1 is no longer needed — this block is comfortably past the
+ * browser's initial buffer on its own — but the doctype must still come first.
+ */
+export function renderShellHead(plan: AppPlan): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${escapeHtml(plan.title)}</title>
+<style>${SKELETON_CSS}</style>
+<style>${plan.css}</style>
+<script>${SWAP_RUNTIME}</script>
+</head>
+<body>
+${renderSkeletons(plan.shell, plan.slots)}
+<script>${plan.script}</script>
+`;
+}
+
+export const SHELL_TAIL = `</body>\n</html>\n`;
