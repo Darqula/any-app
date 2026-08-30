@@ -1,0 +1,5 @@
+{
+  "extends": "@any-app/tsconfig/base.json",
+  "include": ["apps/*/src/**/*.ts", "packages/*/src/**/*.ts", "scripts/**/*.mjs"],
+  "exclude": ["node_modules"]
+}
