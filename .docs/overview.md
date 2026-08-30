@@ -50,3 +50,5 @@ generated apps, a visual/WYSIWYG editor, real-time multiplayer editing.
 
 - [`architecture.md`](./architecture.md) — system design and locked decisions
 - [`plan.md`](./plan.md) — phased build plan
+- [`tests-backend.md`](./tests-backend.md) — test cases for the servers and packages
+- [`tests-frontend.md`](./tests-frontend.md) — test cases for the studio UI and rendered apps

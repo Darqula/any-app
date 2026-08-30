@@ -13,6 +13,7 @@
 | 5 | Shell + slots document model | Enables progressive paint, parallel generation, and cheap targeted edits. |
 | 6 | Postgres + JSONB for generated-app data | Schemaless without operating a second database. |
 | 7 | htmx for the studio UI only | Good fit for our own shell; irrelevant to generated apps, which are not part of our DOM. |
+| 8 | Generated apps get a **per-app origin** before Phase 5 | The shared sandbox origin only protects the studio from generated apps, not generated apps from each other. See below. |
 
 ## The origin boundary
 
@@ -36,6 +37,35 @@ The sandbox's `/preview/:genId` route opens an internal HTTP call to the studio 
 the response straight through. Generation stays behind the trusted boundary; the sandbox is
 a dumb pipe plus a scoped data API. Retrofitting this split later is painful, because
 origins leak into saved app content — so it exists from day one.
+
+### Per-app isolation
+
+The origin split above protects the **studio** from generated apps. It does not, by
+itself, protect generated apps **from each other** — through Phase 1–4 they all share one
+sandbox origin (`apps.<domain>`, today `127.0.0.1:3001`). That is fine as long as two
+things hold: apps carry no persistent data, and the iframe sandbox never adds
+`allow-same-origin`.
+
+Both stop holding once **Phase 5** gives apps their own storage. If an app then needs
+`allow-same-origin` (for `localStorage`, IndexedDB, or a same-origin `fetch` to the data
+API), the sandbox attribute stops protecting anything and every app on that origin can
+read every other app's storage. `/preview/:id` opened directly in a tab — not inside an
+iframe at all — has no sandbox attribute either; harmless while the origin holds no data,
+not harmless once it does.
+
+**Decision:** before Phase 5 ships storage, generated apps move to a **per-app origin** —
+`<app-id>.apps.<domain>` — so isolation no longer depends on the sandbox attribute alone.
+Deciding this now costs a line here and keeping the app id in the URL **path** (as it
+already is) so it can move to the host part later without touching saved app content.
+Deferring the decision costs a migration of every saved app's data once Phase 5 is live.
+
+Two rules follow from it, both already true in practice and worth keeping true
+deliberately:
+
+- The Phase 5 data API scopes every request on the **per-app token**, never on the
+  `Origin` header — the origin is a browser-side isolation mechanism, not an
+  authorization boundary the server can trust.
+- `allow-same-origin` is not added to the preview iframe until per-app origins exist.
 
 ### Dependency rules
 
@@ -148,10 +178,17 @@ with a GIN index on `data`. Three rules:
 
 ## Model provider
 
-Start direct against the primary model. OpenRouter is worth keeping as a fallback and as the
-path for comparing models, but it adds a latency hop and its streaming behaviour varies by
-upstream provider, so it should not sit on the critical path once a primary is chosen. The
-provider client in `packages/generator` exists to keep that switch cheap.
+The generator talks to a generic OpenAI-compatible chat-completions endpoint —
+configured via `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `OPENAI_MODEL` — rather than a
+provider-specific SDK. This covers OpenAI itself, a gateway such as OpenRouter, or a
+self-hosted OpenAI-compatible server, all through the same client. A gateway adds a
+latency hop and its streaming behaviour varies by upstream provider, so it should not sit
+on the critical path once a primary endpoint is chosen; switching is a config change, not
+a code change. The client lives in `packages/generator`, the one file that constructs it.
+
+Not every OpenAI-compatible surface is identical — for example, OpenAI's own newer
+reasoning models require `max_completion_tokens` instead of `max_tokens` — so "compatible"
+means the common chat-completions shape, not universal parameter support.
 
 ## Open questions
 
