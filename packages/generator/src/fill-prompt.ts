@@ -15,15 +15,20 @@ Absolute rules:
 - Use realistic, specific placeholder content. Never lorem ipsum.
 - Emit every requested region, in order, even if one is nearly empty.`;
 
-export function fillUserPrompt(prompt: string, plan: AppPlan): string {
+/**
+ * The stable half of the fill prompt — everything that repeats across every call about one
+ * app and does not depend on the user's original ask. Belongs in `ProviderRequest.context`,
+ * not `user`, so a cache breakpoint (Anthropic) or a stable prefix (OpenAI-compatible) can
+ * actually land on it. This has no payoff yet — fill is one call per generation today — but
+ * Phase 4 sends exactly this to every parallel slot call, where an uncached version would
+ * multiply by the slot count.
+ */
+export function fillContext(plan: AppPlan): string {
   const slots = plan.slots
     .map((s) => `===SLOT ${s.id}=== (about ${s.height}px tall)\n${s.spec}`)
     .join("\n\n");
 
-  return `The app the user asked for:
-${prompt}
-
-The stylesheet you must write against:
+  return `The stylesheet you must write against:
 <style>
 ${plan.css}
 </style>
@@ -36,7 +41,14 @@ The shared script that has already run:
 ${plan.script}
 </script>
 
-Now write these regions, in this order:
+The regions to write, in this order:
 
 ${slots}`;
+}
+
+export function fillUserPrompt(prompt: string): string {
+  return `The app the user asked for:
+${prompt}
+
+Write each region listed above, in order, per the rules above.`;
 }

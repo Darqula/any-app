@@ -1,5 +1,6 @@
 import type { AppPlan } from "@any-app/protocol";
-import { getClient, getPlannerModel, isReasoningModel, logUsage } from "./client";
+import { resolve } from "./resolve";
+import type { ProviderCredential } from "./providers/types";
 
 export type EditTarget = { kind: "css" } | { kind: "slot"; id: string };
 
@@ -26,30 +27,29 @@ When a request could be either, prefer "css" — the stylesheet controls every v
 export async function routeEdit(
   instruction: string,
   plan: AppPlan,
+  credential: ProviderCredential | null,
   signal?: AbortSignal,
 ): Promise<EditTarget> {
+  // `regions` is stable across every routed edit against this app in one session — this is
+  // exactly the repeated-prefix shape confirmed live during Phase 3.5 testing (two router
+  // calls, identical system+context, cache_read_input_tokens stayed 0 — because context
+  // wasn't wired up yet; see open-problems.md). Only `instruction` is genuinely volatile.
   const regions = plan.slots.map((s) => `slot ${s.id} — ${s.spec}`).join("\n");
+  const { provider, model, maxTokens } = resolve("router", credential);
 
-  const completion = await getClient().chat.completions.create(
-    {
-      model: getPlannerModel(),
-      // A reasoning model burns part of this on hidden reasoning before writing its
-      // one-line answer — the same failure mode documented for the planner and fill calls
-      // (see client.ts's isReasoningModel and .docs/open-problems.md). The classification
-      // task here is much smaller than planning a whole app, so this is a smaller budget
-      // than the planner's, not zero extra room.
-      max_tokens: isReasoningModel() ? 4000 : 20,
-      messages: [
-        { role: "system", content: ROUTER_PROMPT },
-        { role: "user", content: `Regions:\n${regions}\n\nRequest: ${instruction}` },
-      ],
-    },
-    { signal },
-  );
+  const raw = (
+    await provider.completeText(model, {
+      system: ROUTER_PROMPT,
+      context: `Regions:\n${regions}`,
+      user: `Request: ${instruction}`,
+      maxTokens,
+      signal,
+      label: "router",
+    })
+  )
+    .trim()
+    .toLowerCase();
 
-  logUsage("router", completion.usage);
-
-  const raw = (completion.choices[0]?.message?.content ?? "").trim().toLowerCase();
   if (raw === "css") return { kind: "css" };
 
   const match = /^slot\s+([a-z][a-z0-9-]{0,30})$/.exec(raw);

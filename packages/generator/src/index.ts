@@ -1,12 +1,5 @@
 export { streamApp, RefusalError } from "./generate";
-export {
-  getClient,
-  getModel,
-  getPlannerModel,
-  isAbortError,
-  isReasoningModel,
-  logUsage,
-} from "./client";
+export { isAbortError } from "./client";
 export { planApp, PlanError } from "./planner";
 export { streamFill } from "./fill";
 export { createSlotStream } from "./slot-stream";
@@ -15,3 +8,9 @@ export { parseSections } from "./section-parser";
 export { routeEdit, RoutingError } from "./edit-router";
 export type { EditTarget } from "./edit-router";
 export { regenerateSlot, regenerateCss } from "./edit";
+export { roleConfig } from "./roles";
+export type { Role, RoleConfig } from "./roles";
+export { resolve, build, NoCredentialError } from "./resolve";
+export type { Resolved } from "./resolve";
+export type { ProviderId, ProviderCredential, Provider } from "./providers/types";
+export { scrub, safeMessage } from "./scrub";

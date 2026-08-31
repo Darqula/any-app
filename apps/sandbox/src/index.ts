@@ -10,6 +10,11 @@ const app = express();
 const port = Number(process.env.SANDBOX_PORT ?? 3001);
 const studioUrl = process.env.STUDIO_INTERNAL_URL ?? "http://localhost:3000";
 const internalSecret = process.env.INTERNAL_SECRET ?? "";
+// A plain numeric timeout, not a provider credential — reading it here does not violate
+// the sandbox's "no generator dependency, no credential" rule. Bounds a genuine runaway
+// generation; studio's own heartbeat (internal.ts) is what stops undici's ~300s
+// inactivity timeout from firing during a merely slow one.
+const previewTimeoutMs = Number(process.env.PREVIEW_TIMEOUT_MS ?? 900_000);
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "sandbox" });
@@ -23,7 +28,10 @@ app.get("/preview/:id", async (req, res) => {
 
   const upstream = await fetch(
     `${studioUrl}/internal/generations/${encodeURIComponent(req.params.id)}/stream`,
-    { headers: { [INTERNAL_SECRET_HEADER]: internalSecret }, signal: ac.signal },
+    {
+      headers: { [INTERNAL_SECRET_HEADER]: internalSecret },
+      signal: AbortSignal.any([ac.signal, AbortSignal.timeout(previewTimeoutMs)]),
+    },
   );
 
   if (!upstream.ok || !upstream.body) {

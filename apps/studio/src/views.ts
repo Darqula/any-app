@@ -1,4 +1,6 @@
 import type { Generation } from "@any-app/store";
+import type { CredentialHint } from "@any-app/store";
+import type { Role, ProviderId } from "@any-app/generator";
 
 function escapeHtml(value: string): string {
   return value
@@ -80,6 +82,137 @@ export function editProblem(message: string): string {
   return `<p class="edit-problem">${escapeHtml(message)}</p>`;
 }
 
+/** One row per saved credential — provider, a masked hint, and when it was last validated.
+ * The key itself never appears here; `listCredentialHints` never reads it back either. */
+export function credentialList(hints: CredentialHint[]): string {
+  if (hints.length === 0) {
+    return `<p class="empty">No credentials saved. The platform key from .env is used until you add one.</p>`;
+  }
+  return `<ul class="cred-list">${hints
+    .map(
+      (h) => `<li>
+        <code>${escapeHtml(h.provider)}</code>
+        <span>····${escapeHtml(h.hint)}</span>
+        <span class="cred-validated">${h.validatedAt ? `validated ${h.validatedAt.toISOString().slice(0, 10)}` : "not validated"}</span>
+        <button hx-delete="/settings/credentials/${escapeHtml(h.provider)}"
+                hx-target="closest li" hx-swap="outerHTML"
+                hx-confirm="Remove this credential?">Remove</button>
+      </li>`,
+    )
+    .join("")}</ul>`;
+}
+
+export function credentialForm(): string {
+  return `<form id="cred-form"
+    hx-post="/settings/credentials"
+    hx-target="#cred-result"
+    hx-swap="innerHTML"
+    hx-disabled-elt="find button, find input, find select">
+    <label>Provider
+      <select name="provider" required>
+        <option value="openai">OpenAI-compatible</option>
+        <option value="anthropic">Anthropic</option>
+      </select>
+    </label>
+    <label>API key <input name="apiKey" type="password" autocomplete="off" required></label>
+    <label>Base URL (optional) <input name="baseUrl" placeholder="leave blank for the provider's default"></label>
+    <label>Model to validate with <input name="model" placeholder="e.g. gpt-4o or claude-opus-5" required></label>
+    <button type="submit">Save</button>
+  </form>
+  <div id="cred-result"></div>`;
+}
+
+export function credentialSaved(provider: string): string {
+  return `<p class="edit-ok">Saved and validated ${escapeHtml(provider)}.</p>`;
+}
+
+const ROLE_LABELS: Record<Role, string> = {
+  planner: "Planner",
+  fill: "Fill",
+  edit: "Edit",
+  router: "Router",
+};
+
+/** Read-only view of the current per-role config — env-driven (LLM_*), not yet editable
+ * from this page. A per-role override UI needs its own storage beyond the credentials
+ * table this phase adds, so it is deliberately deferred rather than half-built. */
+export function roleConfigTable(
+  rows: { role: Role; provider: ProviderId; model: string; maxTokens: number }[],
+): string {
+  return `<table class="role-table">
+    <thead><tr><th>Role</th><th>Provider</th><th>Model</th><th>Max tokens</th></tr></thead>
+    <tbody>${rows
+      .map(
+        (r) => `<tr>
+          <td>${ROLE_LABELS[r.role]}</td>
+          <td>${escapeHtml(r.provider)}</td>
+          <td>${escapeHtml(r.model)}</td>
+          <td>${r.maxTokens}</td>
+        </tr>`,
+      )
+      .join("")}</tbody>
+  </table>
+  <p class="hint">Set via <code>LLM_MODEL</code> / <code>LLM_&lt;ROLE&gt;_MODEL</code> etc. in <code>.env</code>.</p>`;
+}
+
+export function settingsPage(hints: CredentialHint[], roleRows: { role: Role; provider: ProviderId; model: string; maxTokens: number }[]): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>any-app settings</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/htmx/2.0.4/htmx.min.js"></script>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 system-ui, sans-serif; padding: 24px; max-width: 640px; }
+  a { color: inherit; }
+  section { margin-bottom: 32px; }
+  h2 { font-size: 16px; }
+  form { display: grid; gap: 10px; max-width: 420px; }
+  label { display: grid; gap: 4px; font-size: 13px; opacity: .85; }
+  input, select, button { font: inherit; padding: 6px 8px; }
+  button { cursor: pointer; width: fit-content; }
+  .cred-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+  .cred-list li { display: flex; gap: 10px; align-items: center; }
+  .cred-validated { opacity: .6; font-size: 12px; }
+  .role-table { border-collapse: collapse; font-size: 13px; }
+  .role-table th, .role-table td { text-align: left; padding: 4px 12px 4px 0; }
+  .hint { font-size: 12px; opacity: .6; }
+  .edit-ok { color: #0a7d2c; }
+  .edit-problem { color: #b00020; }
+  .empty { opacity: .6; }
+</style>
+</head>
+<body>
+  <p><a href="/">&larr; back</a></p>
+  <h1>Settings</h1>
+
+  <section>
+    <h2>Provider credentials</h2>
+    <p class="hint">Session-scoped — cleared if you clear cookies. Used in preference to the
+      platform key in <code>.env</code> for whichever role is configured to use that provider.</p>
+    ${credentialList(hints)}
+    ${credentialForm()}
+  </section>
+
+  <section>
+    <h2>Per-role configuration</h2>
+    ${roleConfigTable(roleRows)}
+  </section>
+</body>
+</html>`;
+}
+
+/** Shown at the top of the home page when a generation would fail right now for lack of a
+ * credential, so the gap surfaces before someone spends a wait on a failed generation. */
+export function missingCredentialBanner(missing: { role: Role; provider: ProviderId }[]): string {
+  if (missing.length === 0) return "";
+  const parts = missing.map((m) => `${m.role} needs ${m.provider}`).join(", ");
+  return `<p class="cred-banner">No credential configured for: ${escapeHtml(parts)}. <a href="/settings">Add one</a> or set the matching key in <code>.env</code>.</p>`;
+}
+
 export function generationList(generations: Generation[]): string {
   if (generations.length === 0) {
     return `<p class="empty">No apps yet. Describe one above.</p>`;
@@ -96,7 +229,11 @@ export function generationList(generations: Generation[]): string {
     .join("");
 }
 
-export function homePage(generations: Generation[], sandboxUrl: string): string {
+export function homePage(
+  generations: Generation[],
+  sandboxUrl: string,
+  missing: { role: Role; provider: ProviderId }[] = [],
+): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -109,6 +246,8 @@ export function homePage(generations: Generation[], sandboxUrl: string): string 
   * { box-sizing: border-box; }
   body { margin: 0; font: 15px/1.5 system-ui, sans-serif; display: grid;
          grid-template-columns: 320px 1fr; height: 100vh; }
+  .cred-banner { grid-column: 1 / -1; margin: 0; padding: 8px 16px; background: #fff3cd;
+                 color: #664d03; font-size: 13px; }
   aside { border-right: 1px solid #8883; padding: 16px; overflow-y: auto; }
   main { display: flex; flex-direction: column; }
   form { display: flex; gap: 8px; padding: 16px; border-bottom: 1px solid #8883; }
@@ -132,8 +271,10 @@ export function homePage(generations: Generation[], sandboxUrl: string): string 
 </style>
 </head>
 <body>
+  ${missingCredentialBanner(missing)}
   <aside>
     <h1>any-app</h1>
+    <p><a href="/settings">Settings</a></p>
     <ul id="generation-list">${generationList(generations)}</ul>
   </aside>
   <main>

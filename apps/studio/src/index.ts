@@ -5,12 +5,19 @@ import {
   getGeneration,
   getFilledApp,
   listRecentGenerations,
+  assertCredentialKeyConfigured,
 } from "@any-app/store";
 import { internalRouter } from "./internal";
 import { editsRouter } from "./edits";
+import { settingsRouter } from "./settings";
 import { homePage, previewFrame, editForm } from "./views";
+import { sessionId } from "./session";
+import { missingCredentials } from "./credential-resolve";
 
 loadEnv();
+// A missing or malformed CREDENTIAL_KEY should fail the boot, not surface silently on the
+// first credential save (or worse, on the first read of one saved by an older key).
+assertCredentialKeyConfigured();
 
 const app = express();
 const port = Number(process.env.STUDIO_PORT ?? 3000);
@@ -28,9 +35,11 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "studio" });
 });
 
-app.get("/", async (_req, res) => {
+app.get("/", async (req, res) => {
   const generations = await listRecentGenerations();
-  res.type("html").send(homePage(generations, sandboxUrl));
+  const sid = sessionId(req, res);
+  const missing = await missingCredentials(sid);
+  res.type("html").send(homePage(generations, sandboxUrl, missing));
 });
 
 app.post("/generations", async (req, res) => {
@@ -58,6 +67,7 @@ app.get("/generations/:id/frame", async (req, res) => {
 
 app.use("/internal", internalRouter(studioOrigin));
 app.use(editsRouter(studioOrigin));
+app.use(settingsRouter());
 
 app.listen(port, "localhost", () => {
   console.log(`studio listening on http://localhost:${port}`);

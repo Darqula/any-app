@@ -1,5 +1,6 @@
 import type { AppPlan } from "@any-app/protocol";
-import { getClient, getModel, isReasoningModel, logUsage } from "./client";
+import { resolve } from "./resolve";
+import type { ProviderCredential } from "./providers/types";
 import { createFenceStripper, stripTrailingFence } from "./fence-stripper";
 
 const SLOT_EDIT_PROMPT = `You rewrite one region of an existing web app.
@@ -25,30 +26,14 @@ Absolute rules:
 async function complete(
   label: string,
   system: string,
+  context: string,
   user: string,
+  credential: ProviderCredential | null,
   signal: AbortSignal | undefined,
-  maxTokens: number,
 ): Promise<string> {
-  const completion = await getClient().chat.completions.create(
-    {
-      model: getModel(),
-      // See the matching comment in fill.ts and planner.ts: a reasoning model spends part
-      // of this on hidden reasoning before writing the edit itself. An edit is one slot or
-      // one stylesheet — smaller than a full fill pass — so this sits between the
-      // planner's and fill's budgets rather than matching either.
-      max_tokens: isReasoningModel() ? 48000 : maxTokens,
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: user },
-      ],
-    },
-    { signal },
-  );
+  const { provider, model, maxTokens } = resolve("edit", credential);
 
-  logUsage(label, completion.usage);
-
-  const raw = completion.choices[0]?.message?.content;
-  if (!raw) throw new Error("edit returned no content");
+  const raw = await provider.completeText(model, { system, context, user, maxTokens, signal, label });
 
   // The same fence handling as generation: models fence output despite being told not to.
   const strip = createFenceStripper();
@@ -82,10 +67,14 @@ export async function regenerateSlot(
   plan: AppPlan,
   slotId: string,
   currentContent: string,
+  credential: ProviderCredential | null,
   signal?: AbortSignal,
 ): Promise<string> {
   const spec = plan.slots.find((s) => s.id === slotId)?.spec ?? "";
 
+  // The stylesheet and this slot's spec are stable across repeated edits to the same slot
+  // in one session — that's the half worth a cache breakpoint. The current contents and
+  // the instruction change on every call, so they stay in `user`.
   const html = await complete(
     "edit-slot",
     SLOT_EDIT_PROMPT,
@@ -94,14 +83,13 @@ export async function regenerateSlot(
 ${plan.css}
 </style>
 
-What this region is for: ${spec}
-
-Its current contents:
+What this region is for: ${spec}`,
+    `Its current contents:
 ${currentContent}
 
 The change requested: ${instruction}`,
+    credential,
     signal,
-    8000,
   );
   return stripStyleTags(html, slotId);
 }
@@ -120,22 +108,25 @@ function unwrapStyleTag(css: string): string {
 export async function regenerateCss(
   instruction: string,
   plan: AppPlan,
+  credential: ProviderCredential | null,
   signal?: AbortSignal,
 ): Promise<string> {
+  // The shell and region list are stable across repeated CSS edits in one session; the
+  // stylesheet itself is what's being rewritten (and differs after every successful call),
+  // so it stays in `user` alongside the instruction rather than in the cached half.
   const css = await complete(
     "edit-css",
     CSS_EDIT_PROMPT,
     `The shell markup this stylesheet has to style:
 ${plan.shell}
 
-The regions inside it: ${plan.slots.map((s) => s.id).join(", ")}
-
-The current stylesheet:
+The regions inside it: ${plan.slots.map((s) => s.id).join(", ")}`,
+    `The current stylesheet:
 ${plan.css}
 
 The change requested: ${instruction}`,
+    credential,
     signal,
-    8000,
   );
   return unwrapStyleTag(css);
 }

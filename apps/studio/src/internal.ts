@@ -9,7 +9,11 @@ import {
   streamFill,
   createSlotStream,
   isAbortError,
+  resolve,
+  NoCredentialError,
+  safeMessage,
 } from "@any-app/generator";
+import type { ProviderCredential } from "@any-app/generator";
 import {
   getGeneration,
   claimForGeneration,
@@ -19,14 +23,9 @@ import {
   resetForRetry,
   requireEnv,
 } from "@any-app/store";
-import { renderShellHead, SHELL_TAIL } from "./shell";
-
-// Browsers buffer roughly the first kilobyte of an HTML response before they begin
-// parsing. Without this padding the page stays blank until enough content has arrived,
-// which looks exactly like broken streaming. The doctype goes first so the document
-// does not fall into quirks mode. Only the linear fallback path still needs this — the
-// planned shell below is comfortably past the buffer on its own.
-const DOCTYPE_AND_PADDING = `<!doctype html>\n<!--${" ".repeat(1024)}-->\n`;
+import { renderShellHead, renderFullHead, DOCTYPE_AND_PADDING, SHELL_TAIL } from "./shell";
+import { sessionId } from "./session";
+import { credentialForRole } from "./credential-resolve";
 
 export function internalRouter(studioOrigin: string): Router {
   const router = Router();
@@ -74,32 +73,65 @@ export function internalRouter(studioOrigin: string): Router {
     const ac = new AbortController();
     req.on("close", () => ac.abort());
 
+    // Session-scoped credentials, resolved once up front. `resolve()` throws before any
+    // HTTP call if a role's configured provider has no credential anywhere (session or
+    // platform) — catching that here, before a byte is written, is what "an unconfigured
+    // role fails before any HTTP call" (Phase 3.5 acceptance) actually means. It also
+    // gathers every secret that could appear in a later error, for the scrub in the catch
+    // block below — planner and fill can be different providers with different keys.
+    const sid = sessionId(req, res);
+    const plannerCred = await credentialForRole("planner", sid);
+    const fillCred = await credentialForRole("fill", sid);
+    let secrets: string[];
+    try {
+      secrets = [...resolve("planner", plannerCred).secrets, ...resolve("fill", fillCred).secrets];
+    } catch (error) {
+      if (error instanceof NoCredentialError) {
+        await resetForRetry(id);
+        res.send(DOCTYPE_AND_PADDING + errorBanner(error.message));
+        return;
+      }
+      throw error;
+    }
+
     try {
       // --- Plan -------------------------------------------------------------------
-      // Nothing is written to the response until this returns: the shell cannot be
-      // rendered from half a stylesheet, and a partial shell cannot be taken back.
+      // The doctype goes out immediately, before planning even starts — undici's ~300s
+      // inactivity timeout does not care that we have a good reason to be quiet, and a
+      // reasoning-heavy planner model can take that long. The heartbeat comment is
+      // live-only noise: it is never folded into `flat` below, because a replay of a
+      // *finished* generation has no planning wait to fill.
+      res.flushHeaders();
+      res.write(DOCTYPE_AND_PADDING);
+      const heartbeat = setInterval(() => res.write("<!-- planning -->\n"), 15_000);
+
       let plan;
       try {
-        plan = await planApp(generation.prompt, ac.signal);
+        plan = await planApp(generation.prompt, plannerCred, ac.signal);
       } catch (error) {
         if (isAbortError(error)) throw error;
-        console.warn(`generation ${id}: planning failed, falling back to linear`, error);
-        await runLinearFallback(id, generation.prompt, res, ac.signal);
+        // Scrubbed even though this is a console line, not a stored or rendered one — a
+        // raw provider error can quote a credential back (confirmed historically; see
+        // scrub.ts), and `secrets` is already in hand here regardless of which provider
+        // actually threw.
+        console.warn(`generation ${id}: planning failed, falling back to linear:`, safeMessage(error, secrets));
+        await runLinearFallback(id, generation.prompt, fillCred, res, ac.signal);
         return;
+      } finally {
+        clearInterval(heartbeat);
       }
 
       // --- Shell + Fill -------------------------------------------------------------
-      // `flat` accumulates exactly the bytes written to the response, in the order the
-      // browser actually saw them. It exists only to sanity-check against `renderDocument`
-      // below (Phase 3 fills slots sequentially in plan order, so the two must agree
-      // exactly) — the check, and `flat` itself, go away once Phase 4 makes fill parallel
-      // and "same bytes" becomes "same slots, any order".
-      res.flushHeaders();
-      let flat = renderShellHead(plan, studioOrigin);
-      res.write(flat);
+      // `flat` tracks the document as it will be persisted — the padding already written
+      // above, plus the doctype-less shell head, slots, and tail in the order the browser
+      // actually saw them. Saving *that* — rather than reconstructing an equivalent-looking
+      // document from the plan and the collected slot content — is what makes replay
+      // byte-identical to the live render.
+      let flat = DOCTYPE_AND_PADDING + renderShellHead(plan, studioOrigin);
+      res.write(renderShellHead(plan, studioOrigin));
 
       const slotStream = createSlotStream();
-      for await (const chunk of streamFill(generation.prompt, plan, ac.signal)) {
+      for await (const chunk of streamFill(generation.prompt, plan, fillCred, ac.signal)) {
         const out = slotStream.push(chunk);
         if (out) {
           flat += out;
@@ -120,10 +152,10 @@ export function internalRouter(studioOrigin: string): Router {
       // would be misread as the viewer having disconnected — discarding a generation that
       // actually succeeded instead of reporting the real error.
       //
-      // `renderDocument` is now the single producer of `generations.document` — the same
-      // function editing uses (edits.ts). `plan` carries the decomposed form both read.
+      // `renderFullHead` is the same function editing uses (edits.ts) — one producer of
+      // "the document" either way. `plan` carries the decomposed form both read.
       const filled: FilledApp = { ...plan, content: slotStream.content };
-      const document = renderDocument(filled, (p) => renderShellHead(p, studioOrigin), SHELL_TAIL);
+      const document = renderDocument(filled, (p) => renderFullHead(p, studioOrigin), SHELL_TAIL);
 
       if (document !== flat) {
         console.warn(`generation ${id}: streamed and rendered documents differ`);
@@ -139,8 +171,8 @@ export function internalRouter(studioOrigin: string): Router {
         await resetForRetry(id);
         return;
       }
-      const message = error instanceof Error ? error.message : "unknown error";
-      console.error(`generation ${id} failed:`, error);
+      const message = safeMessage(error, secrets);
+      console.error(`generation ${id} failed:`, message);
       await markFailed(id, message);
       res.write(errorBanner(message));
       res.end();
@@ -153,19 +185,20 @@ export function internalRouter(studioOrigin: string): Router {
 /**
  * Phase 1's single-call path, kept as the fallback for when planning fails or returns
  * something unparseable. A worse app beats a red banner.
+ *
+ * The doctype and `res.flushHeaders()` already happened in the caller (see the heartbeat
+ * comment above) — this continues the same response, it does not start a new one.
  */
 async function runLinearFallback(
   id: string,
   prompt: string,
+  credential: ProviderCredential | null,
   res: Response,
   signal: AbortSignal,
 ): Promise<void> {
-  res.flushHeaders();
-  res.write(DOCTYPE_AND_PADDING);
-
   const fenceGuard = createTrailingFenceGuard();
   let document = DOCTYPE_AND_PADDING;
-  for await (const chunk of streamApp(prompt, signal)) {
+  for await (const chunk of streamApp(prompt, credential, signal)) {
     const safe = fenceGuard.push(chunk);
     if (safe) {
       document += safe;

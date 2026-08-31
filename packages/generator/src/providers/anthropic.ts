@@ -1,0 +1,116 @@
+import Anthropic from "@anthropic-ai/sdk";
+import type { Provider, ProviderCredential, ProviderRequest } from "./types";
+import { RefusalError } from "./types";
+import { logUsage } from "./usage";
+import type { UsageInfo } from "./usage";
+
+/**
+ * The system prompt and the per-app context go in `system` as a single text block carrying
+ * a cache breakpoint; the volatile instruction goes in `messages`. That places the
+ * breakpoint exactly at the boundary between what repeats and what does not — which is the
+ * whole reason this adapter exists rather than routing through the OpenAI-compatible shim.
+ */
+function systemFor(req: ProviderRequest) {
+  const text = req.context ? `${req.system}\n\n${req.context}` : req.system;
+  return [{ type: "text" as const, text, cache_control: { type: "ephemeral" as const } }];
+}
+
+/** Loosely typed on purpose — the SDK's own usage shape is matched structurally here
+ * rather than importing its exact exported type name, since the fields read are the ones
+ * confirmed live against a real Messages-API response. */
+interface AnthropicUsageShape {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens?: number | null;
+  cache_creation_input_tokens?: number | null;
+}
+
+function usageFrom(usage: AnthropicUsageShape | undefined): UsageInfo | null {
+  if (!usage) return null;
+  return {
+    promptTokens: usage.input_tokens,
+    completionTokens: usage.output_tokens,
+    cacheReadTokens: usage.cache_read_input_tokens ?? undefined,
+    cacheWriteTokens: usage.cache_creation_input_tokens ?? undefined,
+  };
+}
+
+export function createAnthropicProvider(credential: ProviderCredential): Provider {
+  const client = new Anthropic({
+    apiKey: credential.apiKey,
+    // Undefined falls through to the SDK's own default (api.anthropic.com). Confirmed live
+    // this can also be pointed at a third-party gateway that speaks the real Anthropic
+    // Messages API wire format — see the doc comment on ProviderCredential.baseUrl.
+    baseURL: credential.baseUrl || undefined,
+  });
+
+  return {
+    id: "anthropic",
+
+    async *streamText(model, req) {
+      const stream = client.messages.stream(
+        {
+          model,
+          max_tokens: req.maxTokens,
+          system: systemFor(req),
+          messages: [{ role: "user", content: req.user }],
+        },
+        { signal: req.signal },
+      );
+
+      let sawContent = false;
+      for await (const event of stream) {
+        // Only text deltas. `thinking_delta` events also arrive on models with adaptive
+        // thinking, and emitting those into the document would write reasoning into the
+        // generated app.
+        if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+          sawContent = true;
+          yield event.delta.text;
+        }
+      }
+
+      // A refusal is HTTP 200 with `stop_reason: "refusal"` and no usable content, so it
+      // has to be checked rather than caught.
+      const final = await stream.finalMessage();
+      logUsage(req.label, "anthropic", usageFrom(final.usage));
+      if (final.stop_reason === "refusal") {
+        throw new RefusalError(final.stop_details?.category ?? "refusal");
+      }
+      if (!sawContent) throw new RefusalError("empty response");
+    },
+
+    async completeText(model, req) {
+      const message = await client.messages.create(
+        {
+          model,
+          max_tokens: req.maxTokens,
+          system: systemFor(req),
+          messages: [{ role: "user", content: req.user }],
+        },
+        { signal: req.signal },
+      );
+
+      logUsage(req.label, "anthropic", usageFrom(message.usage));
+      if (message.stop_reason === "refusal") {
+        throw new RefusalError(message.stop_details?.category ?? "refusal");
+      }
+      const text = message.content
+        .filter((block) => block.type === "text")
+        .map((block) => block.text)
+        .join("");
+      if (!text) throw new RefusalError("empty response");
+      return text;
+    },
+
+    async validate(model, signal) {
+      await client.messages.create(
+        { model, max_tokens: 1, messages: [{ role: "user", content: "hi" }] },
+        { signal },
+      );
+    },
+  };
+}
+
+export function isAnthropicAbort(error: unknown): boolean {
+  return error instanceof Anthropic.APIUserAbortError;
+}

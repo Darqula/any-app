@@ -6,19 +6,27 @@ function escapeHtml(value: string): string {
 }
 
 /**
- * Everything up to and including the shell script. Sent as one write, so the browser gets
- * a complete, painted layout in a single flush.
- *
- * The 1KB padding from Phase 1 is no longer needed — this block is comfortably past the
- * browser's initial buffer on its own — but the doctype must still come first.
+ * The doctype plus 1KB of padding, sent as the very first bytes of a generation response —
+ * before planning even starts (see internal.ts's heartbeat). Two jobs: puts the browser in
+ * standards mode immediately, and gets past the ~1KB a browser buffers before it starts
+ * parsing at all, so *something* is visibly happening from byte one. Kept separate from
+ * `renderShellHead` so the route can send it up front and keep the connection demonstrably
+ * alive (a periodic comment) while `planApp` is still running — a doctype arriving after
+ * five minutes of silence is a connection undici has probably already killed.
+ */
+export const DOCTYPE_AND_PADDING = `<!doctype html>\n<!--${" ".repeat(1024)}-->\n`;
+
+/**
+ * Everything from `<html>` up to and including the shell script. Deliberately does NOT
+ * include the doctype — see `DOCTYPE_AND_PADDING` — so a second, redundant doctype is never
+ * written after planning succeeds.
  *
  * `studioOrigin` is baked into the swap runtime so it can validate `postMessage` edits —
  * see `swapRuntime`'s doc comment. The stylesheet gets an id so an edit's `css` message can
  * find and replace it.
  */
 export function renderShellHead(plan: AppPlan, studioOrigin: string): string {
-  return `<!doctype html>
-<html lang="en">
+  return `<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -31,6 +39,16 @@ export function renderShellHead(plan: AppPlan, studioOrigin: string): string {
 ${renderSkeletons(plan.shell, plan.slots)}
 <script>${plan.script}</script>
 `;
+}
+
+/**
+ * `DOCTYPE_AND_PADDING` + `renderShellHead` — a complete, replayable document head. Used
+ * wherever a document is being *rendered as a finished whole* (persistence, edits) rather
+ * than *streamed live* (internal.ts writes the two pieces separately there, with the
+ * heartbeat in between).
+ */
+export function renderFullHead(plan: AppPlan, studioOrigin: string): string {
+  return DOCTYPE_AND_PADDING + renderShellHead(plan, studioOrigin);
 }
 
 export const SHELL_TAIL = `</body>\n</html>\n`;

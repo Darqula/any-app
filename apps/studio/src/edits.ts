@@ -7,10 +7,15 @@ import {
   regenerateSlot,
   regenerateCss,
   isAbortError,
+  resolve,
+  NoCredentialError,
+  safeMessage,
 } from "@any-app/generator";
 import { getFilledApp, saveEditedApp } from "@any-app/store";
-import { renderShellHead, SHELL_TAIL } from "./shell";
+import { renderFullHead, SHELL_TAIL } from "./shell";
 import { editApplied, editProblem } from "./views";
+import { sessionId } from "./session";
+import { credentialForRole } from "./credential-resolve";
 
 /**
  * Guards against a slot edit that came back as a diff-shaped fragment instead of the whole
@@ -49,6 +54,23 @@ export function editsRouter(studioOrigin: string): Router {
     const ac = new AbortController();
     req.on("close", () => ac.abort());
 
+    // Same reasoning as internal.ts: resolve every role this request might touch up front,
+    // both to fail fast on a missing credential and to have the secrets ready for scrubbing
+    // if a later provider error needs to be shown or stored.
+    const sid = sessionId(req, res);
+    const routerCred = await credentialForRole("router", sid);
+    const editCred = await credentialForRole("edit", sid);
+    let secrets: string[];
+    try {
+      secrets = [...resolve("router", routerCred).secrets, ...resolve("edit", editCred).secrets];
+    } catch (error) {
+      if (error instanceof NoCredentialError) {
+        res.status(503).type("html").send(editProblem(error.message));
+        return;
+      }
+      throw error;
+    }
+
     try {
       // An explicit dropdown choice skips the router call entirely.
       let target;
@@ -66,13 +88,13 @@ export function editsRouter(studioOrigin: string): Router {
         }
         target = { kind: "slot" as const, id: chosen };
       } else {
-        target = await routeEdit(instruction, filled, ac.signal);
+        target = await routeEdit(instruction, filled, routerCred, ac.signal);
       }
 
       const next: FilledApp = { ...filled, content: { ...filled.content } };
       if (target.kind === "css") {
         const before = filled.css;
-        const after = await regenerateCss(instruction, filled, ac.signal);
+        const after = await regenerateCss(instruction, filled, editCred, ac.signal);
         // A truncated CSS edit is the riskier half of this guard, not an afterthought: a
         // short stylesheet does not damage one region like a short slot does, it unstyles
         // the whole app — and it would be saved before anyone sees it.
@@ -89,7 +111,7 @@ export function editsRouter(studioOrigin: string): Router {
         next.css = after;
       } else {
         const before = filled.content[target.id] ?? "";
-        const after = await regenerateSlot(instruction, filled, target.id, before, ac.signal);
+        const after = await regenerateSlot(instruction, filled, target.id, before, editCred, ac.signal);
         if (looksTruncated(before, after)) {
           console.warn(
             `edit ${id}: slot "${target.id}" came back as ${after.length} chars against ${before.length} before — looks like a fragment, not a full region. Discarding.`,
@@ -103,7 +125,7 @@ export function editsRouter(studioOrigin: string): Router {
         next.content[target.id] = after;
       }
 
-      const document = renderDocument(next, (p) => renderShellHead(p, studioOrigin), SHELL_TAIL);
+      const document = renderDocument(next, (p) => renderFullHead(p, studioOrigin), SHELL_TAIL);
 
       if (!(await saveEditedApp(id, next, document, version))) {
         res
@@ -123,8 +145,8 @@ export function editsRouter(studioOrigin: string): Router {
           .send(editProblem("I could not tell which part to change — pick one below."));
         return;
       }
-      const message = error instanceof Error ? error.message : "unknown error";
-      console.error(`edit ${id} failed:`, error);
+      const message = safeMessage(error, secrets);
+      console.error(`edit ${id} failed:`, message);
       res.status(500).type("html").send(editProblem(message));
     }
   });
