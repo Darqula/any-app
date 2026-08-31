@@ -1,5 +1,6 @@
+import type OpenAI from "openai";
 import type { AppPlan } from "@any-app/protocol";
-import { getClient, getModel, isReasoningModel } from "./client";
+import { getClient, getModel, isReasoningModel, logUsage } from "./client";
 import { FILL_SYSTEM_PROMPT, fillUserPrompt } from "./fill-prompt";
 import { RefusalError } from "./generate";
 
@@ -13,13 +14,16 @@ export async function* streamFill(
     {
       model: getModel(),
       // See the matching comment in planner.ts: a reasoning model spends part of this
-      // budget on hidden reasoning before writing any slot content. 32000 was not enough
-      // for glm-5.3-flash on a multi-slot fill prompt — it burned the whole budget on
-      // reasoning and returned zero content. 96000 is untested headroom, not a measured
-      // minimum; if this is still not enough, the model likely cannot converge on this
-      // task shape at all rather than merely needing a bigger number.
+      // budget on hidden reasoning before writing any slot content. glm-5.3-flash never
+      // converged here at any budget up to this provider's 131072 max (see
+      // .docs/open-problems.md). longcat-2.0 converges comfortably — measured usage was
+      // ~8500 tokens total (84% of it reasoning) — so 96000 is generous headroom, not a
+      // tuned-to-the-limit value.
       max_tokens: isReasoningModel() ? 96000 : 16000,
       stream: true,
+      // Without this, a streaming response never reports usage at all — the final chunk
+      // (choices: [], usage: {...}) simply wouldn't be sent.
+      stream_options: { include_usage: true },
       messages: [
         { role: "system", content: FILL_SYSTEM_PROMPT },
         { role: "user", content: fillUserPrompt(prompt, plan) },
@@ -29,7 +33,12 @@ export async function* streamFill(
   );
 
   let sawContent = false;
+  let usage: OpenAI.CompletionUsage | null | undefined;
   for await (const event of stream) {
+    // The usage-bearing chunk has an empty `choices` array, so this has to be checked
+    // before the `if (!choice) continue` below skips past it entirely.
+    if (event.usage) usage = event.usage;
+
     const choice = event.choices?.[0];
     if (!choice) continue;
     if (choice.finish_reason === "content_filter") {
@@ -42,5 +51,6 @@ export async function* streamFill(
     }
   }
 
+  logUsage("fill", usage);
   if (!sawContent) throw new RefusalError("empty response");
 }

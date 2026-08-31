@@ -1,6 +1,6 @@
 import { SLOT_ID_PATTERN, slotIdsInShell } from "@any-app/protocol";
 import type { AppPlan, SlotSpec } from "@any-app/protocol";
-import { getClient, getPlannerModel, isReasoningModel } from "./client";
+import { getClient, getPlannerModel, isReasoningModel, logUsage } from "./client";
 import { PLANNER_PROMPT } from "./planner-prompt";
 import { parseSections } from "./section-parser";
 import { stripTrailingFence } from "./fence-stripper";
@@ -69,8 +69,10 @@ export async function planApp(prompt: string, signal?: AbortSignal): Promise<App
       model: getPlannerModel(),
       // A reasoning model spends part of this budget on hidden reasoning before it ever
       // writes the plan itself — see isReasoningModel(). 4000 was enough to get an empty
-      // response back from glm-5.3-flash on the real planner prompt; 12000 is a rough
-      // 3x headroom, not a measured minimum.
+      // response back from glm-5.3-flash on the real planner prompt, which never converged
+      // at any budget up to this provider's 131072 max (see .docs/open-problems.md).
+      // longcat-2.0 converges comfortably here — measured usage was ~2100 tokens total —
+      // so 12000 is generous headroom, not a tuned-to-the-limit value.
       max_tokens: isReasoningModel() ? 12000 : 4000,
       messages: [
         { role: "system", content: PLANNER_PROMPT },
@@ -79,6 +81,8 @@ export async function planApp(prompt: string, signal?: AbortSignal): Promise<App
     },
     { signal },
   );
+
+  logUsage("planner", completion.usage);
 
   const raw = completion.choices[0]?.message?.content;
   if (!raw) throw new PlanError("planner returned no content");

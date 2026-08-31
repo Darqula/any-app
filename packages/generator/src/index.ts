@@ -1,5 +1,12 @@
 export { streamApp, RefusalError } from "./generate";
-export { getClient, getModel, getPlannerModel, isAbortError, isReasoningModel } from "./client";
+export {
+  getClient,
+  getModel,
+  getPlannerModel,
+  isAbortError,
+  isReasoningModel,
+  logUsage,
+} from "./client";
 export { planApp, PlanError } from "./planner";
 export { streamFill } from "./fill";
 export { createSlotStream } from "./slot-stream";

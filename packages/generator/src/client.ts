@@ -57,3 +57,24 @@ export function getPlannerModel(): string {
 export function isReasoningModel(): boolean {
   return /^(1|true)$/i.test(process.env.OPENAI_REASONING_MODEL ?? "");
 }
+
+/**
+ * Logs token consumption for one call. The only way to know what a generation actually
+ * cost without cross-referencing the provider's own dashboard after the fact — worth
+ * having permanently, not just while chasing a specific model's behaviour.
+ *
+ * `usage` is `null`/`undefined` when a streaming call didn't request it (see
+ * `stream_options.include_usage` on the fill/linear calls) or when the provider doesn't
+ * report it on failure paths.
+ */
+export function logUsage(label: string, usage: OpenAI.CompletionUsage | null | undefined): void {
+  if (!usage) {
+    console.log(`[usage] ${label}: not reported`);
+    return;
+  }
+  const reasoning = usage.completion_tokens_details?.reasoning_tokens;
+  const reasoningPart = reasoning ? ` (${reasoning} reasoning)` : "";
+  console.log(
+    `[usage] ${label}: prompt=${usage.prompt_tokens} completion=${usage.completion_tokens}${reasoningPart} total=${usage.total_tokens}`,
+  );
+}
