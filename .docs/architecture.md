@@ -14,6 +14,7 @@
 | 6 | Postgres + JSONB for generated-app data | Schemaless without operating a second database. |
 | 7 | htmx for the studio UI only | Good fit for our own shell; irrelevant to generated apps, which are not part of our DOM. |
 | 8 | Generated apps get a **per-app origin** before Phase 5 | The shared sandbox origin only protects the studio from generated apps, not generated apps from each other. See below. |
+| 9 | **Native provider adapters**, not a lowest-common-denominator wire format | A compatibility shim hides exactly the provider-specific features worth having — `cache_control` breakpoints above all, which Phase 4's economics depend on. |
 
 ## The origin boundary
 
@@ -189,6 +190,47 @@ a code change. The client lives in `packages/generator`, the one file that const
 Not every OpenAI-compatible surface is identical — for example, OpenAI's own newer
 reasoning models require `max_completion_tokens` instead of `max_tokens` — so "compatible"
 means the common chat-completions shape, not universal parameter support.
+
+### Two adapters, one interface (Phase 3.5)
+
+From Phase 3.5 the generator talks to an adapter rather than to a client directly. Two
+implementations: **OpenAI-compatible**, which is the client described above, and
+**Anthropic native**.
+
+Anthropic publishes an OpenAI-compatible endpoint, and it is deliberately not used. The shim
+does not carry `cache_control` breakpoints, adaptive thinking, or the `refusal` stop reason —
+and caching over a shared prefix is most of why that provider is worth having here, since
+Phase 4 sends the same shell and stylesheet as context to every parallel slot call. Routing
+around the shim to save one adapter would forfeit the reason for the adapter.
+
+The interface is narrow because the generator's needs are narrow: stream text, or complete
+text, given a system prompt, a user prompt, a token budget, and an abort signal. Everything
+provider-shaped stays behind it — message layout, delta event shapes, refusal signalling,
+reasoning-token budgets, and which SDK error class means "the caller aborted".
+
+**Per-role configuration.** Each call site — planner, fill, edit, router — resolves its own
+provider, model, and token budget. This generalises the existing `OPENAI_PLANNER_MODEL`
+escape hatch and answers the open question in `open-problems.md` about needing a separate
+fill model: the planner can run somewhere small and fast while fill runs somewhere capable,
+across different providers if that is what works.
+
+### User-supplied credentials
+
+Users may supply their own provider credentials. Four rules, all of which exist because a
+credential that belongs to someone else is a different kind of object from one in `.env`:
+
+- **Never persisted in plaintext.** Encrypted at rest with a server-side key.
+- **Never returned to the client after storage.** The UI gets a masked hint and a validity
+  timestamp, nothing more.
+- **Never sent to the sandbox.** Already true structurally — the sandbox has no dependency on
+  `packages/generator` — and this is one more reason it must stay that way.
+- **Never written into an error path.** Provider error text is currently persisted verbatim
+  into `generations.error`; a 401 during live testing wrote the configured credential into
+  the database. Provider errors must be normalised to a code plus scrubbed text before they
+  are stored or logged. This is a prerequisite for user keys, not a follow-up.
+
+Credentials are session-scoped in Phase 3.5 and move onto accounts in Phase 6. That is a
+change of storage key, not of design.
 
 ## Open questions
 

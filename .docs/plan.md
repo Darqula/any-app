@@ -50,6 +50,39 @@ This is the phase that makes iteration affordable, and iteration is the dominant
 **Exit:** "change the sidebar" rewrites one slot, at roughly slot cost rather than whole-app
 cost, without a full reload.
 
+## Phase 3.5 — Providers and BYOK
+
+Two adapters behind one interface — OpenAI-compatible, which is what exists today, and
+Anthropic native. Per-role model selection, so the planner, fill, edit, and router calls each
+resolve to their own provider and model. User-supplied credentials, so someone can point the
+studio at their own account.
+
+Inserted before Phase 4 rather than appended, for two reasons.
+[`open-problems.md`](./open-problems.md) is currently stuck on whether one specific model can
+do the fill task at all; being able to switch providers turns that from a blocker into a
+configuration question. And Phase 4's economics rest on prompt caching over a shared prefix,
+which is provider-specific — building fan-out against one hardcoded provider and retrofitting
+the abstraction afterwards is the more expensive order.
+
+Native adapters, not Anthropic's OpenAI-compatible endpoint. The compatibility shim does not
+expose `cache_control` breakpoints, and those are most of the reason to reach for that
+provider here.
+
+Two existing defects have to be fixed before user keys exist, because both become
+credential leaks the moment the credential belongs to someone else. Provider error text is
+persisted verbatim into `generations.error` — a 401 during live testing wrote the configured
+credential straight into the database. And the sandbox's proxy `fetch` has no explicit
+timeout, so it inherits undici's ~300s body timeout, capping how long any generation can run
+regardless of provider.
+
+Credentials are scoped to a browser session in this phase: encrypted at rest, never returned
+to the client after storage, never sent to the sandbox. Moving them onto accounts is a
+storage change in Phase 6, not a rewrite.
+
+**Exit:** the same prompt generates through an OpenAI-compatible endpoint, through Anthropic,
+and through a user-supplied key, with per-role model selection — and no credential appears in
+any log or database column.
+
 ## Phase 4 — Parallel fill
 
 Fan out the fill phase to one call per slot, landing them out of order as they complete.

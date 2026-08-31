@@ -29,6 +29,12 @@ That fixture is the single highest-value thing to build first. It must support:
 - **counting requests**, so "replay made no provider call" is assertable
 - recording whether a request was **aborted** by the client
 
+**From Phase 3.5 the fake must speak two wire formats**, not one — OpenAI chat-completions
+SSE and Anthropic Messages SSE. They differ in where the system prompt goes, in the shape of
+a delta event, and in how a refusal is signalled, and those differences are exactly what the
+adapters exist to hide. A fake that only speaks one format can only test one adapter, which
+defeats the point. Build it as one scripted core with two serialisers.
+
 Everything below assumes it exists. Use `node:test` (built into Node 22 — no dependency) and
 a scratch Postgres database per run.
 
@@ -197,6 +203,12 @@ The row can end up correct while the upstream request keeps running.
 | D5 | Studio is down | Sandbox responds without crashing the process |
 | D6 | Viewer disconnects | Upstream fetch is aborted (assert on the studio side) |
 | D7 | Viewer disconnects **before** upstream headers arrive | No unhandled rejection; nothing written to a dead socket |
+| D8 | A generation that runs longer than undici's ~300s default (P3.5) | Not killed by the default body timeout — the proxy `fetch` sets its own, deliberately chosen |
+
+D8 is the second constraint recorded in `open-problems.md`: the proxy `fetch` has no explicit
+timeout today, so it inherits undici's default and caps how long *any* generation can take
+regardless of provider. With BYOK that gets worse — a user pointing at a slow local model
+hits it routinely.
 
 D7 covers the one gap left after the F3 fix: `await fetch(..., { signal })` has no
 `try`/`catch`, so an abort at that moment rejects into Express's default error handler.
@@ -247,18 +259,77 @@ sequential fill call, parallel fan-out will be much worse.
 
 ---
 
-## G. Architecture guards
+## G. Provider adapters (P3.5)
+
+The adapters exist to make two different wire protocols indistinguishable to the generator.
+These cases run the *same* assertions against both, which is the only way to know that.
+
+| ID | Case | Passes when |
+|---|---|---|
+| G1 | OpenAI adapter, `streamText` | Yields exactly the `choices[0].delta.content` text, in order |
+| G2 | Anthropic adapter, `streamText` | Yields `text_delta` content only — `thinking` deltas are never emitted as app HTML |
+| G3 | Both adapters, `completeText` | Return the full text of a non-streamed response |
+| G4 | Both, abort mid-stream | `isAbortError` is true for **each SDK's own** abort error class |
+| G5 | OpenAI, `finish_reason: "content_filter"` | `RefusalError` |
+| G6 | Anthropic, `stop_reason: "refusal"` | `RefusalError` — the same class, so callers need no provider branch |
+| G7 | Anthropic refusal with and without `stop_details` | Category surfaced when present; null-safe when absent |
+| G8 | Both, empty response | `RefusalError("empty response")` |
+| G9 | System prompt placement | OpenAI: a `role: "system"` message. Anthropic: the top-level `system` field, never a message |
+| G10 | Anthropic, assistant prefill | Never attempted — it returns a 400 on current models |
+| G11 | Reasoning-model token budget | The raised budget applies only to the roles configured for it, not globally |
+| G12 | Per-role resolution | Planner, fill, edit, and router each resolve their own provider, model, and budget; an unset role falls back to the default |
+| G13 | A role pointed at a provider with no credential | Fails at resolution with a clear message, **before** any HTTP call |
+| G14 | The same plan prompt through both adapters | Both produce output `parsePlan` accepts — the adapter changes transport, not semantics |
+
+**G15 (real provider, nightly):** Anthropic, two identical calls carrying a `cache_control`
+breakpoint on the shared prefix → the second reports `usage.cache_read_input_tokens > 0`.
+This is the one that matters for Phase 4: if caching is not actually landing, parallel fan-out
+costs far more than the plan assumes, and nothing else in the suite would notice.
+
+G4 deserves care. Each SDK throws its own abort class, and neither sets `name` to
+`"AbortError"` — checking the name string looks reasonable and silently never matches. That
+mistake has already been made once on this project.
+
+---
+
+## H. Credentials and BYOK (P3.5)
+
+| ID | Case | Passes when |
+|---|---|---|
+| H1 | Store a credential | The database column does not contain the plaintext key as a substring |
+| H2 | Read it back for use | Decrypts to the original |
+| H3 | Any route that returns credential info | Returns a mask and a timestamp — never the key |
+| H4 | Provider 401 whose message echoes the key | The persisted `generations.error` contains no substring of the key |
+| H5 | The same failure | `console.error` output contains no substring of the key |
+| H6 | Saving an invalid key | Rejected at save time by a cheap validation call, not hours later mid-generation |
+| H7 | Fallback chain | User credential → platform credential → a clear error when neither exists |
+| H8 | Two sessions | Session A can neither read nor generate with session B's credential |
+| H9 | Deleting a credential | Subsequent generation falls back or fails cleanly; no stale decrypt |
+| H10 | Encryption key absent from the environment | The server refuses to start rather than storing plaintext |
+| H11 | A completed generation | Neither `document` nor `plan` contains any credential substring |
+
+H4 and H5 are not hypothetical. During live testing a 401 wrote
+`Incorrect API key provided: REPLACE_ME` into `generations.error` — the configured credential,
+verbatim, in a database column. That is survivable when the key is yours and is a placeholder;
+it is a breach when the key belongs to a user. Write these two before the BYOK storage layer,
+not after.
+
+---
+
+## I. Architecture guards
 
 Cheap static tests that enforce rules the review flagged as security bugs rather than style
 issues. `architecture.md` says npm's flat `node_modules` cannot enforce these, so CI must.
 
 | ID | Case | Passes when |
 |---|---|---|
-| G1 | `apps/sandbox/package.json` | Does not list `@any-app/generator` |
-| G2 | `apps/sandbox/src/**` | Contains no import of `@any-app/generator` |
-| G3 | `apps/sandbox/src/**` | Imports nothing from `@any-app/store` except `loadEnv` |
-| G4 | Repository-wide grep | No `compression` package anywhere |
-| G5 | `views.ts` | The preview iframe's `sandbox` attribute contains `allow-scripts` and **not** `allow-same-origin` (locked decision #8) |
+| I1 | `apps/sandbox/package.json` | Does not list `@any-app/generator` |
+| I2 | `apps/sandbox/src/**` | Contains no import of `@any-app/generator` |
+| I3 | `apps/sandbox/src/**` | Imports nothing from `@any-app/store` except `loadEnv` |
+| I4 | Repository-wide grep | No `compression` package anywhere |
+| I5 | `views.ts` | The preview iframe's `sandbox` attribute contains `allow-scripts` and **not** `allow-same-origin` (locked decision #8) |
+| I6 | `packages/generator/src/**` (P3.5) | No provider SDK is imported outside the adapter directory — the rest of the generator sees only the interface |
+| I7 | Repository-wide grep (P3.5) | No route or view interpolates a raw credential; error persistence always goes through the scrubber |
 
 ---
 
@@ -268,7 +339,11 @@ issues. `architecture.md` says npm's flat `node_modules` cannot enforce these, s
 2. **A6, A4, A1** — the streaming parsers, where the bugs actually are.
 3. **B4, C9, C10, C15** — the concurrency and abort regressions from the review; these
    protect fixes that were verified by hand once and are otherwise easy to regress.
-4. **E1–E5, G1–G5** — invariant guards. Slow to think of, seconds to write, and they fail
+4. **E1–E5, I1–I7** — invariant guards. Slow to think of, seconds to write, and they fail
    loudly on exactly the refactors that would otherwise ship silently broken.
 5. **A2, A3, A5, A7, B, C, D** — the remaining coverage.
-6. **F** — last, on a schedule, against a real provider.
+6. **F, G15** — on a schedule, against a real provider.
+
+For Phase 3.5, insert **H4 and H5 before the BYOK storage layer exists** — a credential leak
+is much cheaper to prevent than to discover — then **G1–G14** as the adapters are written,
+running each case against both wire formats.

@@ -181,6 +181,26 @@ horizontal overflow is both the most common way that fails and trivially detecta
 
 ---
 
+## G. Provider settings and BYOK (P3.5)
+
+| ID | Case | Passes when |
+|---|---|---|
+| G1 | Save a provider credential | Accepted, and the app can generate with it |
+| G2 | After saving | The field shows a mask only and never repopulates with the key — including after a reload |
+| G3 | Save an invalid key | Rejected immediately with a readable message, not a raw provider error dump |
+| G4 | Page source and DOM after saving | Contain no substring of the credential |
+| G5 | Per-role model selectors | Persist, and are reflected after a reload |
+| G6 | Generate with no credential configured | A clear prompt to add one — not a provider stack trace |
+| G7 | Generation fails with a provider 401 | The error banner shows scrubbed text with no credential substring |
+| G8 | Delete a credential | UI updates immediately; a later generation falls back or fails cleanly |
+| G9 | The same prompt through each configured provider | Both produce a rendering app — the provider choice is not visible in the result |
+
+G4 and G7 are the browser-side halves of backend cases H4/H5. A credential can leak into a
+page as easily as into a database column, and the error banner is the likeliest route —
+it renders provider text straight into the frame.
+
+---
+
 ## Suggested order
 
 1. **D1–D9.** No generation needed, fast, deterministic, and they cover the phase's
@@ -191,4 +211,7 @@ horizontal overflow is both the most common way that fails and trivially detecta
    visible while the response is still open.
 4. **A1–A9.** Ordinary UI coverage.
 5. **C2–C5, C7, C8, E1–E8.** Once Phase 2 has settled.
-6. **F.** Last, on a schedule, tracked as a rate.
+6. **G4, G7** with Phase 3.5, alongside their backend counterparts H4/H5 — leak checks are
+   worth having before the thing that can leak exists. The rest of **G** as the settings UI
+   is built.
+7. **F.** Last, on a schedule, tracked as a rate.
