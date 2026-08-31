@@ -1,13 +1,26 @@
 import express from "express";
-import { loadEnv, createGeneration, getGeneration, listRecentGenerations } from "@any-app/store";
+import {
+  loadEnv,
+  createGeneration,
+  getGeneration,
+  getFilledApp,
+  listRecentGenerations,
+} from "@any-app/store";
 import { internalRouter } from "./internal";
-import { homePage, previewFrame } from "./views";
+import { editsRouter } from "./edits";
+import { homePage, previewFrame, editForm } from "./views";
 
 loadEnv();
 
 const app = express();
 const port = Number(process.env.STUDIO_PORT ?? 3000);
 const sandboxUrl = process.env.SANDBOX_PUBLIC_URL ?? "http://127.0.0.1:3001";
+// Baked into every generated document's swap runtime, which checks it against
+// `event.origin` on every postMessage edit. Must match exactly — see shell.ts. `event.origin`
+// never carries a trailing slash, so a `STUDIO_PUBLIC_URL` with one (or any path/query) would
+// make the check fail forever with nothing logged on either side — normalising through `URL`
+// here means a misconfigured env var still resolves to a working origin.
+const studioOrigin = new URL(process.env.STUDIO_PUBLIC_URL ?? "http://localhost:3000").origin;
 
 app.use(express.urlencoded({ extended: false }));
 
@@ -36,10 +49,15 @@ app.get("/generations/:id/frame", async (req, res) => {
     res.status(404).type("html").send(`<p class="placeholder">Not found.</p>`);
     return;
   }
-  res.type("html").send(previewFrame(generation.id, sandboxUrl));
+  // Only a complete, decomposed app can be edited — getFilledApp returns null for anything
+  // still streaming, failed, or predating Phase 2's plan column.
+  const loaded = await getFilledApp(generation.id);
+  const form = loaded ? editForm(generation.id, loaded.filled.slots) : "";
+  res.type("html").send(previewFrame(generation.id, sandboxUrl) + form);
 });
 
-app.use("/internal", internalRouter);
+app.use("/internal", internalRouter(studioOrigin));
+app.use(editsRouter(studioOrigin));
 
 app.listen(port, "localhost", () => {
   console.log(`studio listening on http://localhost:${port}`);

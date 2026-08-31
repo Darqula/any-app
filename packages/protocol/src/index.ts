@@ -1,7 +1,7 @@
 export const INTERNAL_SECRET_HEADER = "x-internal-secret";
 
 export * from "./slots";
-export { SWAP_RUNTIME } from "./swap-runtime";
+export { swapRuntime } from "./swap-runtime";
 
 /** Written into the streamed document when generation fails partway through. */
 export function errorBanner(message: string): string {

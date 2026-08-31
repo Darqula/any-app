@@ -12,3 +12,6 @@ export { streamFill } from "./fill";
 export { createSlotStream } from "./slot-stream";
 export { stripTrailingFence, createTrailingFenceGuard } from "./fence-stripper";
 export { parseSections } from "./section-parser";
+export { routeEdit, RoutingError } from "./edit-router";
+export type { EditTarget } from "./edit-router";
+export { regenerateSlot, regenerateCss } from "./edit";

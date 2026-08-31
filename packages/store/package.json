@@ -10,6 +10,7 @@
     "migrate": "tsx src/migrate-cli.ts"
   },
   "dependencies": {
+    "@any-app/protocol": "*",
     "pg": "^8.13.0"
   },
   "devDependencies": {

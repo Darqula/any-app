@@ -7,11 +7,15 @@ Full product/architecture docs live in `.docs/` — **read `.docs/overview.md` f
 build plan; each phase's actual step-by-step spec is `.docs/impl-phase-N.md`, with review
 findings in `.docs/review-phase-N.md` once a phase lands.
 
-**Current status:** Phases 0–2 implemented (skeleton, linear generation, shell/slots) and
-verified end-to-end against a real provider (`longcat-2.0`). See `.docs/open-problems.md`
-for the provider/model investigation that got there — worth reading before changing
-`OPENAI_MODEL`, since one model on this same gateway (`glm-5.3-flash`) never converged on
-this task at any legal token budget.
+**Current status:** Phases 0–3 implemented (skeleton, linear generation, shell/slots,
+decomposed persistence + slot/CSS editing) and verified end-to-end against a real provider
+(`longcat-2.0`). See `.docs/open-problems.md` for the provider/model investigation that got
+there — worth reading before changing `OPENAI_MODEL`, since one model on this same gateway
+(`glm-5.3-flash`) never converged on this task at any legal token budget. See
+`.docs/impl-phase-3.md`'s "Found live, not in the original plan" section before touching the
+edit prompts (`edit.ts`, `edit-router.ts`) — the model does not reliably follow its own
+"never write `<style>`" or "edit, not rewrite" instructions, and both `edit.ts` and
+`edits.ts` carry defensive checks for that, confirmed to actually fire in testing.
 
 ## Repository layout
 

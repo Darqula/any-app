@@ -58,3 +58,48 @@ export function renderSkeletons(shell: string, slots: SlotSpec[]): string {
 export function slotIdsInShell(shell: string): string[] {
   return [...shell.matchAll(PLACEHOLDER)].map((m) => m[1]!);
 }
+
+/** Opening tag for a slot's content block. Shared with the streaming emitter. */
+export function slotOpen(id: string): string {
+  return `<template id="c-${id}">`;
+}
+
+/** Closing tag plus the swap call that moves the content into place. */
+export function slotClose(id: string): string {
+  return `</template><script>swap(${JSON.stringify(id)})</script>\n`;
+}
+
+/**
+ * The one and only definition of a generated app's document.
+ *
+ * The live generation stream is an *incremental emission of exactly this* — same shell,
+ * same templates, same swap calls, same ordering — which is what keeps a replayed app
+ * behaving identically to one being watched as it generates. Editing re-renders through
+ * here too, so an edited app is structurally the same kind of document as a fresh one.
+ */
+export function renderDocument(
+  filled: FilledApp,
+  renderHead: (plan: AppPlan) => string,
+  tail: string,
+): string {
+  let out = renderHead(filled);
+  for (const slot of filled.slots) {
+    out += slotOpen(slot.id) + (filled.content[slot.id] ?? "") + slotClose(slot.id);
+  }
+  return out + tail;
+}
+
+/** Runtime shape check for a `plan` column written by an older build. */
+export function isFilledApp(value: unknown): value is FilledApp {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.title === "string" &&
+    typeof v.css === "string" &&
+    typeof v.shell === "string" &&
+    typeof v.script === "string" &&
+    Array.isArray(v.slots) &&
+    typeof v.content === "object" &&
+    v.content !== null
+  );
+}

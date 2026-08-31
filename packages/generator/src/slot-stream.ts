@@ -9,6 +9,8 @@
  * Markers can be split across chunks, so text is held back to the last newline and only
  * complete lines are examined.
  */
+import { slotOpen, slotClose } from "@any-app/protocol";
+
 const MARKER = /^===SLOT ([a-z][a-z0-9-]{0,30})===[ \t]*$/;
 
 export interface SlotStream {
@@ -29,10 +31,10 @@ export function createSlotStream(): SlotStream {
     if (match) {
       const id = match[1]!;
       let out = "";
-      if (open) out += `</template><script>swap(${JSON.stringify(open)})</script>\n`;
+      if (open) out += slotClose(open);
       open = id;
       content[id] = "";
-      return out + `<template id="c-${id}">`;
+      return out + slotOpen(id);
     }
 
     // Text before the first marker is preamble the model was told not to write. Drop it.
@@ -64,7 +66,7 @@ export function createSlotStream(): SlotStream {
         pending = "";
       }
       if (open) {
-        out += `</template><script>swap(${JSON.stringify(open)})</script>\n`;
+        out += slotClose(open);
         open = null;
       }
       return out;
