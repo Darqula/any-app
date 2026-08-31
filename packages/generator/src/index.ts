@@ -14,3 +14,6 @@ export { resolve, build, NoCredentialError } from "./resolve";
 export type { Resolved } from "./resolve";
 export type { ProviderId, ProviderCredential, Provider } from "./providers/types";
 export { scrub, safeMessage } from "./scrub";
+export { fillAllSlots } from "./parallel-fill";
+export type { SlotResult } from "./parallel-fill";
+export { fillSlot } from "./fill-slot";

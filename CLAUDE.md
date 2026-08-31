@@ -7,9 +7,11 @@ Full product/architecture docs live in `.docs/` — **read `.docs/overview.md` f
 build plan; each phase's actual step-by-step spec is `.docs/impl-phase-N.md`, with review
 findings in `.docs/review-phase-N.md` once a phase lands.
 
-**Current status:** Phases 0–3.5 implemented (skeleton, linear generation, shell/slots,
-decomposed persistence + slot/CSS editing, multi-provider adapters + BYOK) and verified
-end-to-end against real providers. Default config is still `longcat-2.0` on the
+**Current status:** Phases 0–4 implemented (skeleton, linear generation, shell/slots,
+decomposed persistence + slot/CSS editing, multi-provider adapters + BYOK, parallel fill)
+and verified end-to-end against real providers. **Phase 4's parallel fill is implemented and
+correct but is currently a measured regression on this project's default model** — see below
+before enabling it. Default config is still `longcat-2.0` on the
 OpenAI-compatible path (`LLM_MODEL` in `.env`, not `OPENAI_MODEL` anymore — see below). See
 `.docs/open-problems.md` for the provider/model investigation history — worth reading before
 changing `LLM_MODEL`, since one model on this same gateway (`glm-5.3-flash`) never converged
@@ -29,9 +31,31 @@ interface (`packages/generator/src/providers/{openai,anthropic}.ts`): OpenAI-com
 via `/settings` (encrypted at rest, session-scoped — see `packages/store/src/credentials.ts`
 and `crypto.ts`). **No real Anthropic key has been tested against this project yet** — the
 adapter is implemented and typechecked, and was exercised live against a third-party
-gateway's Anthropic-*shaped* endpoint (not real Anthropic infrastructure, and confirmed not
-to actually cache) — see `.docs/open-problems.md`'s Phase 3.5 section before trusting the
-Anthropic path's caching economics for anything.
+gateway's Anthropic-*shaped* endpoint. That endpoint, and the OpenAI-compatible one, both
+genuinely cache at a large-enough prefix (~4.5k tokens) — an earlier note here claiming
+caching didn't work was a false negative from testing too small a prefix, corrected during
+Phase 4 — see `.docs/open-problems.md`.
+
+**Parallel fill (Phase 4, `packages/generator/src/{fan-out,fill-slot,parallel-fill}.ts`,
+toggled via `LLM_FILL_MODE`) currently defaults to `sequential`, not `parallel`, in both
+`.env` and `.env.example`.** A same-prompt comparison, run twice (the second time after
+The Phase 4 review split an overloaded budget variable that could have confounded the
+first run), found parallel slower (up to 6m3s vs sequential's 2m30s) *and* ~5.6-5.8x more
+completion tokens on `longcat-2.0` — this reasoning-heavy model reasons far more per
+isolated region than per whole document, and prompt caching (which does work — see above)
+only discounts input tokens, not that completion-token blowup. Not a code bug; a real
+property of this model, confirmed twice. See `.docs/open-problems.md`'s Phase 4 section
+before flipping `LLM_FILL_MODE` back to `parallel`. **Budget is two separate variables
+now**: `LLM_FILL_MAX_TOKENS` (sequential, whole-document) and `LLM_FILL_SLOT_MAX_TOKENS`
+(parallel, per-region) — they used to be one variable with mode-dependent meaning, which is
+exactly what made the first comparison hard to trust.
+
+**A slot regenerated through the edit box (`apps/studio/src/edits.ts`) checks for the error
+placeholder first** and calls `fillSlot` directly instead of `regenerateSlot` when it finds
+one — `regenerateSlot`'s prompt tells the model "this is an edit, not a rewrite," which
+would otherwise argue for preserving the apology paragraph it's supposed to be replacing.
+Found by the Phase 4 review, confirmed live (injected a placeholder, requested a fix,
+confirmed the log showed `fill:<slot>` not `edit-slot`, confirmed real content landed).
 
 ## Repository layout
 
@@ -40,8 +64,9 @@ apps/studio/    trusted origin (localhost:3000) — UI, API, generation orchestr
 apps/sandbox/   untrusted origin (127.0.0.1:3001) — serves generated apps, proxies the
                 preview stream, holds no provider credentials and no session
 packages/store/      Postgres pool, migrations, generations table access
-packages/generator/  planner/fill/edit/router calls, prompts, provider adapters (openai,
-                     anthropic) behind one interface, per-role config, error scrubbing
+packages/generator/  planner/fill/edit/router calls (sequential and parallel-fan-out fill),
+                     prompts, provider adapters (openai, anthropic) behind one interface,
+                     per-role config, error scrubbing
 packages/protocol/   shell/slot document model, swap() runtime (inlined into every
                      generated doc), shared constants
 packages/tsconfig/   shared tsconfig, extended by name (@any-app/tsconfig/base.json) —
@@ -103,10 +128,13 @@ an SDK-enforced ceiling on `max_tokens` that a heavily-reasoning model can hit).
 
 **No real Anthropic (`sk-ant-...`) key has been tested against this project.** The adapter
 is implemented, typechecked, and was exercised live against a third-party gateway's
-Anthropic-*shaped* endpoint — confirmed to accept real Messages-API requests, confirmed
-**not** to actually implement prompt caching (`cache_read_input_tokens` stayed 0 across
-repeat calls with an identical cacheable prefix). Don't assume decision #9's caching economics
-work until this is re-tested against real Anthropic infrastructure.
+Anthropic-*shaped* endpoint — confirmed to accept real Messages-API requests, and (once
+tested with a large-enough prefix — see `open-problems.md`) confirmed to genuinely cache:
+both this endpoint and the OpenAI-compatible one show clean cache hits (`cached_tokens`/
+`cache_read_input_tokens`) at ~4,500 shared tokens. An earlier note here claiming caching
+didn't work was a false negative from testing too small a prefix — corrected during Phase 4.
+Still worth re-testing against real `api.anthropic.com` when a genuine key exists, but
+decision #9's caching premise is no longer in doubt on the paths that could be tested.
 
 ## Don't
 

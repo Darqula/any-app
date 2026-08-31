@@ -16,18 +16,22 @@ Absolute rules:
 - Emit every requested region, in order, even if one is nearly empty.`;
 
 /**
- * The stable half of the fill prompt — everything that repeats across every call about one
- * app and does not depend on the user's original ask. Belongs in `ProviderRequest.context`,
- * not `user`, so a cache breakpoint (Anthropic) or a stable prefix (OpenAI-compatible) can
- * actually land on it. This has no payoff yet — fill is one call per generation today — but
- * Phase 4 sends exactly this to every parallel slot call, where an uncached version would
- * multiply by the slot count.
+ * The part of an app that never changes for the lifetime of that app: the stylesheet, the
+ * shell, and the shared script. Belongs in `ProviderRequest.context`, not `user`, so a cache
+ * breakpoint (Anthropic) or a stable prefix (OpenAI-compatible) can actually land on it.
+ *
+ * This is also what Phase 4's per-slot calls and cache pre-warm use directly (see
+ * `fill-slot.ts`) — it is deliberately the *narrowest* stable unit, with no per-call
+ * additions (like a slot list), so that the pre-warm and every parallel slot call share the
+ * exact same byte-identical prefix and therefore the exact same cache entry. That guarantee
+ * stops there, though: `regenerateSlot`/`regenerateCss` (edit.ts) build their own context
+ * strings and never call this function, so an edit is not part of that shared-prefix set —
+ * and `fillContext` below adds the slot list *after* this text, which only extends a shared
+ * OpenAI-compatible prefix; on the Anthropic path there is no cache breakpoint at this
+ * function's own boundary, so a sequential fill's single combined block does not read
+ * whatever a pre-warm alone wrote.
  */
-export function fillContext(plan: AppPlan): string {
-  const slots = plan.slots
-    .map((s) => `===SLOT ${s.id}=== (about ${s.height}px tall)\n${s.spec}`)
-    .join("\n\n");
-
+export function appContext(plan: AppPlan): string {
   return `The stylesheet you must write against:
 <style>
 ${plan.css}
@@ -39,7 +43,22 @@ ${plan.shell}
 The shared script that has already run:
 <script>
 ${plan.script}
-</script>
+</script>`;
+}
+
+/**
+ * The sequential (Phase 3.5) fill call's stable half: `appContext` plus the full slot list,
+ * since one call writes every region and needs to see all of them up front. Kept distinct
+ * from `appContext` itself — the parallel path's per-slot calls (Phase 4) share only the
+ * narrower `appContext`, since a slot list naming every region would differ in emphasis
+ * (whose region is "yours") across calls and break the shared prefix instead of protecting it.
+ */
+export function fillContext(plan: AppPlan): string {
+  const slots = plan.slots
+    .map((s) => `===SLOT ${s.id}=== (about ${s.height}px tall)\n${s.spec}`)
+    .join("\n\n");
+
+  return `${appContext(plan)}
 
 The regions to write, in this order:
 

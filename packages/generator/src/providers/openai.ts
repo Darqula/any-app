@@ -21,6 +21,17 @@ function usageFrom(usage: OpenAI.CompletionUsage | null | undefined): UsageInfo 
     promptTokens: usage.prompt_tokens,
     completionTokens: usage.completion_tokens,
     reasoningTokens: usage.completion_tokens_details?.reasoning_tokens,
+    // OpenAI's own automatic prompt-caching signal — no breakpoint to place, unlike
+    // Anthropic, but still worth surfacing: this is the only way to tell whether the
+    // "automatic on a long-enough shared prefix" caching mentioned above is actually
+    // happening on a given provider/gateway, rather than assuming it from the doc comment.
+    // `cache_write_tokens` is not in the SDK's own type (an extension this gateway adds on
+    // top of the standard `prompt_tokens_details` shape) — read structurally rather than
+    // widening the imported type for one field.
+    cacheReadTokens: usage.prompt_tokens_details?.cached_tokens,
+    cacheWriteTokens: (
+      usage.prompt_tokens_details as { cache_write_tokens?: number } | undefined
+    )?.cache_write_tokens,
   };
 }
 

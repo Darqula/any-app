@@ -1,17 +1,18 @@
 import { Router } from "express";
-import { renderDocument } from "@any-app/protocol";
+import { renderDocument, isSlotErrorPlaceholder } from "@any-app/protocol";
 import type { FilledApp } from "@any-app/protocol";
 import {
   routeEdit,
   RoutingError,
   regenerateSlot,
   regenerateCss,
+  fillSlot,
   isAbortError,
   resolve,
   NoCredentialError,
   safeMessage,
 } from "@any-app/generator";
-import { getFilledApp, saveEditedApp } from "@any-app/store";
+import { getFilledApp, saveEditedApp, getGeneration } from "@any-app/store";
 import { renderFullHead, SHELL_TAIL } from "./shell";
 import { editApplied, editProblem } from "./views";
 import { sessionId } from "./session";
@@ -60,6 +61,10 @@ export function editsRouter(studioOrigin: string): Router {
     const sid = sessionId(req, res);
     const routerCred = await credentialForRole("router", sid);
     const editCred = await credentialForRole("edit", sid);
+    // Deliberately NOT resolving "fill" here too, even though the placeholder-recovery
+    // branch below needs it: doing so eagerly would make every edit — including a plain CSS
+    // edit that never touches a placeholder — fail if the fill role alone is misconfigured.
+    // It's resolved (and its secrets folded in) only where it's actually used.
     let secrets: string[];
     try {
       secrets = [...resolve("router", routerCred).secrets, ...resolve("edit", editCred).secrets];
@@ -111,7 +116,22 @@ export function editsRouter(studioOrigin: string): Router {
         next.css = after;
       } else {
         const before = filled.content[target.id] ?? "";
-        const after = await regenerateSlot(instruction, filled, target.id, before, editCred, ac.signal);
+        // A placeholder is missing content, not content to edit — regenerateSlot would hand
+        // the model an apology paragraph and its own prompt's "this is an edit, not a
+        // rewrite" rule, which argues for keeping that paragraph intact. Fill it from
+        // scratch instead, the same way the original generation would have.
+        const slot = filled.slots.find((s) => s.id === target.id);
+        const after = isSlotErrorPlaceholder(before) && slot
+          ? await (async () => {
+              const [generation, fillCred] = await Promise.all([
+                getGeneration(id),
+                credentialForRole("fill", sid),
+              ]);
+              const { provider, model, maxTokens, secrets: fillSecrets } = resolve("fill", fillCred);
+              secrets = [...secrets, ...fillSecrets];
+              return fillSlot(provider, model, maxTokens, generation?.prompt ?? "", filled, slot, ac.signal);
+            })()
+          : await regenerateSlot(instruction, filled, target.id, before, editCred, ac.signal);
         if (looksTruncated(before, after)) {
           console.warn(
             `edit ${id}: slot "${target.id}" came back as ${after.length} chars against ${before.length} before — looks like a fragment, not a full region. Discarding.`,

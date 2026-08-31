@@ -38,7 +38,25 @@ export const SKELETON_CSS = `
 .anyapp-skeleton{position:relative;overflow:hidden;border-radius:8px;background:color-mix(in srgb,currentColor 8%,transparent)}
 .anyapp-skeleton::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,color-mix(in srgb,currentColor 10%,transparent),transparent);animation:anyapp-shimmer 1.2s infinite}
 @keyframes anyapp-shimmer{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
+.anyapp-slot-error{padding:16px;border:1px dashed color-mix(in srgb,currentColor 25%,transparent);border-radius:8px;opacity:.65;font:14px system-ui,sans-serif}
 `.trim();
+
+const SLOT_ERROR_MARKER = 'class="anyapp-slot-error"';
+
+/** Stored as a slot's content when generation fails, so the document stays complete. */
+export function slotErrorPlaceholder(id: string): string {
+  return `<p ${SLOT_ERROR_MARKER}>This section could not be generated. Ask for a change to "${id}" to try again.</p>`;
+}
+
+/**
+ * True when a slot's stored content is the placeholder above, not real content. An edit
+ * request against a placeholder is a fill, not an edit — there is nothing to preserve, and
+ * `SLOT_EDIT_PROMPT`'s "this is an edit, not a rewrite" rule would otherwise have the model
+ * dutifully keep the apology paragraph intact. See edits.ts.
+ */
+export function isSlotErrorPlaceholder(html: string): boolean {
+  return html.includes(SLOT_ERROR_MARKER);
+}
 
 /**
  * Replaces each `<div data-slot="x"></div>` with a sized skeleton the browser can paint

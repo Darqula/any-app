@@ -1,6 +1,6 @@
 import { Router } from "express";
 import type { Response } from "express";
-import { INTERNAL_SECRET_HEADER, errorBanner, renderDocument } from "@any-app/protocol";
+import { INTERNAL_SECRET_HEADER, errorBanner, renderDocument, slotOpen, slotClose } from "@any-app/protocol";
 import type { FilledApp } from "@any-app/protocol";
 import {
   streamApp,
@@ -8,6 +8,7 @@ import {
   planApp,
   streamFill,
   createSlotStream,
+  fillAllSlots,
   isAbortError,
   resolve,
   NoCredentialError,
@@ -121,29 +122,66 @@ export function internalRouter(studioOrigin: string): Router {
         clearInterval(heartbeat);
       }
 
-      // --- Shell + Fill -------------------------------------------------------------
-      // `flat` tracks the document as it will be persisted — the padding already written
-      // above, plus the doctype-less shell head, slots, and tail in the order the browser
-      // actually saw them. Saving *that* — rather than reconstructing an equivalent-looking
-      // document from the plan and the collected slot content — is what makes replay
-      // byte-identical to the live render.
-      let flat = DOCTYPE_AND_PADDING + renderShellHead(plan, studioOrigin);
+      // --- Shell ---------------------------------------------------------------------
       res.write(renderShellHead(plan, studioOrigin));
 
-      const slotStream = createSlotStream();
-      for await (const chunk of streamFill(generation.prompt, plan, fillCred, ac.signal)) {
-        const out = slotStream.push(chunk);
-        if (out) {
-          flat += out;
-          res.write(out);
+      // --- Fill ------------------------------------------------------------------
+      // Two modes, switchable via LLM_FILL_MODE without a code change, specifically so
+      // parallel fan-out output can be compared against Phase 3.5's single coherent call —
+      // one call can make every region agree by construction, N calls cannot.
+      // Defaults to sequential, not the plan's literal "parallel" default — Phase 4's own
+      // measurement found parallel slower and ~5.6x more completion tokens on this
+      // project's model (see .docs/open-problems.md). A fresh clone should not silently run
+      // the mode the phase concluded is currently a regression.
+      const fillMode = (process.env.LLM_FILL_MODE ?? "sequential").toLowerCase();
+      let filled: FilledApp;
+
+      if (fillMode === "sequential") {
+        // Unchanged from Phase 3.5: one call, slots land in plan order, any failure here
+        // fails the whole document (caught by the outer catch below, same as before).
+        const slotStream = createSlotStream();
+        for await (const chunk of streamFill(generation.prompt, plan, fillCred, ac.signal)) {
+          const out = slotStream.push(chunk);
+          if (out) res.write(out);
         }
+        const tail = slotStream.flush();
+        if (tail) res.write(tail);
+        filled = { ...plan, content: slotStream.content };
+      } else {
+        // Slots can all be in flight for a while with nothing written — same undici
+        // inactivity problem the planner heartbeat solves, same fix.
+        const concurrency = Number(process.env.LLM_FILL_CONCURRENCY ?? 4);
+        const content: Record<string, string> = {};
+        let succeeded = 0;
+        const fillHeartbeat = setInterval(() => res.write("<!-- filling -->\n"), 15_000);
+        try {
+          for await (const result of fillAllSlots(
+            generation.prompt,
+            plan,
+            fillCred,
+            concurrency,
+            ac.signal,
+          )) {
+            content[result.slot.id] = result.html;
+            if (!result.failed) succeeded++;
+            // One write, not `slotOpen` then `html` then `slotClose` separately — a
+            // <template> must be contiguous in the response.
+            res.write(slotOpen(result.slot.id) + result.html + slotClose(result.slot.id));
+          }
+        } finally {
+          clearInterval(fillHeartbeat);
+        }
+
+        if (succeeded === 0) {
+          // A shell full of apologies is not a generated app.
+          res.write(SHELL_TAIL);
+          await markFailed(id, "every region failed to generate");
+          res.end();
+          return;
+        }
+        filled = { ...plan, content };
       }
-      const tail = slotStream.flush();
-      if (tail) {
-        flat += tail;
-        res.write(tail);
-      }
-      flat += SHELL_TAIL;
+
       res.write(SHELL_TAIL);
 
       // --- Persist ----------------------------------------------------------------
@@ -154,13 +192,12 @@ export function internalRouter(studioOrigin: string): Router {
       //
       // `renderFullHead` is the same function editing uses (edits.ts) — one producer of
       // "the document" either way. `plan` carries the decomposed form both read.
-      const filled: FilledApp = { ...plan, content: slotStream.content };
+      //
+      // No streamed-vs-rendered consistency check here anymore (Phase 3's `flat`/
+      // `document !== flat`) — completion order means the parallel path's live bytes and
+      // `renderDocument`'s plan-ordered output are no longer expected to match, and that is
+      // correct: swap() has always been order-independent.
       const document = renderDocument(filled, (p) => renderFullHead(p, studioOrigin), SHELL_TAIL);
-
-      if (document !== flat) {
-        console.warn(`generation ${id}: streamed and rendered documents differ`);
-      }
-
       await markCompleteWithPlan(id, document, filled);
       res.end();
     } catch (error) {
