@@ -1,12 +1,26 @@
 import express from "express";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { loadEnv } from "@any-app/store";
+import { loadEnv } from "@any-app/records";
 import { INTERNAL_SECRET_HEADER } from "@any-app/protocol";
+import { dataRouter } from "./data";
 
+// Phase 5 review S1: this used to be `@any-app/store`'s loadEnv. Importing even one named
+// export off @any-app/store pulls in that package's whole module graph — including a
+// privileged Postgres pool built at module scope from DATABASE_URL, plus getCredential/
+// saveCredential. The sandbox must depend on nothing that can reach a table besides
+// `records`; @any-app/records carries its own loadEnv (packages/records/src/db.ts) for
+// exactly this reason, so the sandbox no longer needs @any-app/store at all.
 loadEnv();
 
 const app = express();
+// Express 5 defaults this to "simple" (Node's querystring), which has no bracket-notation
+// support — `where[finished]=true` would parse as a flat key literally named
+// "where[finished]", req.query.where would be undefined, and the data API's `where` filter
+// would silently match everything. "extended" (qs) is what data.ts's parseWhere assumes.
+// Confirmed live during Phase 5 verification: without this line, every list request that
+// filters on a field returns every row instead.
+app.set("query parser", "extended");
 const port = Number(process.env.SANDBOX_PORT ?? 3001);
 const studioUrl = process.env.STUDIO_INTERNAL_URL ?? "http://localhost:3000";
 const internalSecret = process.env.INTERNAL_SECRET ?? "";
@@ -16,9 +30,25 @@ const internalSecret = process.env.INTERNAL_SECRET ?? "";
 // inactivity timeout from firing during a merely slow one.
 const previewTimeoutMs = Number(process.env.PREVIEW_TIMEOUT_MS ?? 900_000);
 
+// Signs/verifies per-app data-API tokens (studio mints, sandbox verifies — same secret,
+// same .env). A missing value must fail the boot, not silently default to "", which would
+// make every app's token forgeable by anyone who reads this file. Plain env vars, not
+// provider credentials — reading them here does not violate the sandbox's "no generator
+// dependency, no credential" rule.
+const appTokenSecret = process.env.APP_TOKEN_SECRET;
+if (!appTokenSecret) {
+  throw new Error("Missing required environment variable: APP_TOKEN_SECRET");
+}
+const appOriginTemplate =
+  process.env.SANDBOX_APP_ORIGIN_TEMPLATE ?? "http://{id}.apps.localhost:3001";
+
 app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "sandbox" });
 });
+
+// Mounted before /preview/:id, on the app's own origin (Phase 5) rather than the shared
+// sandbox origin — same-origin by construction, so no CORS header is ever needed or added.
+app.use("/data", dataRouter(appTokenSecret, appOriginTemplate));
 
 app.get("/preview/:id", async (req, res) => {
   // Abort the upstream call the moment the viewer's connection closes, so a closed tab

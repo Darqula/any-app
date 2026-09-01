@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { renderDocument, isSlotErrorPlaceholder } from "@any-app/protocol";
+import { renderDocument, isSlotErrorPlaceholder, mintAppToken } from "@any-app/protocol";
 import type { FilledApp } from "@any-app/protocol";
 import {
   routeEdit,
@@ -12,7 +12,7 @@ import {
   NoCredentialError,
   safeMessage,
 } from "@any-app/generator";
-import { getFilledApp, saveEditedApp, getGeneration } from "@any-app/store";
+import { getFilledApp, saveEditedApp, getGeneration, requireEnv } from "@any-app/store";
 import { renderFullHead, SHELL_TAIL } from "./shell";
 import { editApplied, editProblem } from "./views";
 import { sessionId } from "./session";
@@ -32,7 +32,7 @@ function looksTruncated(before: string, after: string): boolean {
   return before.length > 200 && after.length < before.length * 0.3;
 }
 
-export function editsRouter(studioOrigin: string): Router {
+export function editsRouter(studioOrigin: string, appOrigin: (id: string) => string): Router {
   const router = Router();
 
   router.post("/generations/:id/edits", async (req, res) => {
@@ -145,7 +145,11 @@ export function editsRouter(studioOrigin: string): Router {
         next.content[target.id] = after;
       }
 
-      const document = renderDocument(next, (p) => renderFullHead(p, studioOrigin), SHELL_TAIL);
+      // Minted from the id, not read back off the old document — reproduces the exact same
+      // token an unedited app would carry (mintAppToken is a pure function of the id), so an
+      // app edited fifty times keeps working with its data intact.
+      const appToken = mintAppToken(id, requireEnv("APP_TOKEN_SECRET"));
+      const document = renderDocument(next, (p) => renderFullHead(p, studioOrigin, appToken), SHELL_TAIL);
 
       if (!(await saveEditedApp(id, next, document, version))) {
         res
@@ -155,7 +159,7 @@ export function editsRouter(studioOrigin: string): Router {
         return;
       }
 
-      res.type("html").send(editApplied(id, target, next));
+      res.type("html").send(editApplied(id, appOrigin(id), target, next));
     } catch (error) {
       if (isAbortError(error)) return;
       if (error instanceof RoutingError) {

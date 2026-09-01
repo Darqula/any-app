@@ -122,7 +122,13 @@ export async function getFilledApp(id: string): Promise<LoadedApp | null> {
   );
   const row = rows[0];
   if (!row || !isFilledApp(row.plan)) return null;
-  return { filled: row.plan, version: row.version };
+  // A row written before Phase 5 has no `collections` key at all — plan is JSONB and every
+  // app generated before this phase predates the field. Default it here so the first edit
+  // of a pre-Phase-5 app does not throw on `plan.collections.map`. Same class of bug as
+  // Phase 3's `document !== flat`: a field added to a persisted shape is a migration of
+  // *reads*, even when the column itself never changed.
+  const filled: FilledApp = { ...row.plan, collections: row.plan.collections ?? [] };
+  return { filled, version: row.version };
 }
 
 /**

@@ -10,14 +10,18 @@ function escapeHtml(value: string): string {
     .replaceAll('"', "&quot;");
 }
 
-export function previewFrame(id: string, sandboxUrl: string): string {
-  // allow-scripts WITHOUT allow-same-origin gives the frame an opaque origin, on top of
-  // the fact that it is already served from a different host. Do not add
-  // allow-same-origin — it would undo the sandbox attribute entirely.
+export function previewFrame(id: string, appOrigin: string): string {
+  // allow-same-origin is now correct, where before it was forbidden. `appOrigin` is this
+  // app's own subdomain (<app-id>.apps.localhost:3001, see index.ts's appOrigin()) — the
+  // frame becomes same-origin with itself, not with the studio (localhost:3000, still
+  // cross-origin) and not with any other generated app (a different subdomain, so still
+  // cross-origin to this one too). That per-app split is what makes allow-same-origin safe
+  // to add now (locked decision #8) — adding it on a shared origin would let every app read
+  // every other app's storage.
   return `<iframe
     class="preview"
-    src="${sandboxUrl}/preview/${escapeHtml(id)}"
-    sandbox="allow-scripts allow-forms allow-popups"
+    src="${escapeHtml(appOrigin)}/preview/${escapeHtml(id)}"
+    sandbox="allow-scripts allow-forms allow-popups allow-same-origin"
     title="Generated app preview"></iframe>`;
 }
 
@@ -54,21 +58,24 @@ function jsonBlock(value: unknown): string {
 
 export function editApplied(
   id: string,
+  appOrigin: string,
   target: { kind: "css" } | { kind: "slot"; id: string },
   next: { css: string; content: Record<string, string> },
 ): string {
   // `generationId` lets the bridge (anyappApplyEdit) refuse to post into whatever happens to
   // be in #stage when the response lands — see its own comment for why that can be a
-  // different app than the one the edit was submitted against.
+  // different app than the one the edit was submitted against. `appOrigin` is what lets that
+  // same bridge pin postMessage's targetOrigin instead of using "*" — see anyappApplyEdit.
   const payload =
     target.kind === "css"
-      ? { channel: "anyapp", type: "css", css: next.css, generationId: id }
+      ? { channel: "anyapp", type: "css", css: next.css, generationId: id, appOrigin }
       : {
           channel: "anyapp",
           type: "slot-content",
           id: target.id,
           html: next.content[target.id],
           generationId: id,
+          appOrigin,
         };
 
   const label = target.kind === "css" ? "styling" : target.id;
@@ -231,7 +238,6 @@ export function generationList(generations: Generation[]): string {
 
 export function homePage(
   generations: Generation[],
-  sandboxUrl: string,
   missing: { role: Role; provider: ProviderId }[] = [],
 ): string {
   return `<!doctype html>
@@ -300,16 +306,18 @@ export function homePage(
 
     // Pushes an applied edit into the live preview frame. The response fragment (see
     // editApplied) carries the payload as a JSON block and calls this after swapping it in.
-    // The frame runs on an opaque origin, so a specific targetOrigin is impossible here —
-    // the receiving side is what validates the sender, by checking event.origin against the
-    // studio origin baked into swapRuntime.
+    // Each generated app now has its own origin (locked decision #8), so the payload can
+    // name an exact targetOrigin instead of "*" — "*" would deliver the message no matter
+    // what document is in the frame, including one it navigated itself to. The receiving
+    // side still independently checks event.origin against the studio origin baked into
+    // swapRuntime; this is the sending side's half of the same discipline.
     function anyappApplyEdit() {
       var block = document.getElementById("edit-payload");
       if (!block) return;
       var payload = JSON.parse(block.textContent);
       var frame = anyappFrameFor(payload.generationId);
       if (!frame) return;
-      frame.contentWindow.postMessage(payload, "*");
+      frame.contentWindow.postMessage(payload, payload.appOrigin);
     }
 
     // Freezes the target region into a skeleton the instant an explicit slot edit is
@@ -323,9 +331,11 @@ export function homePage(
       var match = /\/generations\/([^/]+)\/edits/.exec(form.getAttribute("hx-post") || "");
       var frame = match && anyappFrameFor(match[1]);
       if (!frame) return;
+      // No JSON block to read appOrigin off of yet (the response hasn't come back) — the
+      // frame's own src carries the same origin, so read it back off that instead.
       frame.contentWindow.postMessage(
         { channel: "anyapp", type: "slot-pending", id: target },
-        "*",
+        new URL(frame.src).origin,
       );
     }
   </script>

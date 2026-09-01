@@ -7,9 +7,14 @@ Full product/architecture docs live in `.docs/` — **read `.docs/overview.md` f
 build plan; each phase's actual step-by-step spec is `.docs/impl-phase-N.md`, with review
 findings in `.docs/review-phase-N.md` once a phase lands.
 
-**Current status:** Phases 0–4 implemented (skeleton, linear generation, shell/slots,
-decomposed persistence + slot/CSS editing, multi-provider adapters + BYOK, parallel fill)
-and verified end-to-end against real providers. **Phase 4's parallel fill is implemented and
+**Current status:** Phases 0–5 implemented (skeleton, linear generation, shell/slots,
+decomposed persistence + slot/CSS editing, multi-provider adapters + BYOK, parallel fill,
+generated-app data API) and verified end-to-end against real providers. Phase 5 (per-app
+origins, the `records` table, the data API, and the inlined `anyapp.data` client) is
+implemented and verified live against a real generation — see `.docs/impl-phase-5.md`'s
+"Found live" section before touching `apps/sandbox/src/data.ts` or its query parsing:
+Express 5's default query-parser setting silently broke every `where[key]=value` filter
+until `app.set("query parser", "extended")` was added. **Phase 4's parallel fill is implemented and
 correct but is currently a measured regression on this project's default model** — see below
 before enabling it. Default config is still `longcat-2.0` on the
 OpenAI-compatible path (`LLM_MODEL` in `.env`, not `OPENAI_MODEL` anymore — see below). See
@@ -61,21 +66,34 @@ confirmed the log showed `fill:<slot>` not `edit-slot`, confirmed real content l
 
 ```
 apps/studio/    trusted origin (localhost:3000) — UI, API, generation orchestrator
-apps/sandbox/   untrusted origin (127.0.0.1:3001) — serves generated apps, proxies the
-                preview stream, holds no provider credentials and no session
+apps/sandbox/   untrusted origin (per-app: <id>.apps.localhost:3001, Phase 5) — serves
+                generated apps, proxies the preview stream, exposes the data API
+                (apps/sandbox/src/data.ts), holds no provider credentials and no session
 packages/store/      Postgres pool, migrations, generations table access
+packages/records/    the `records` table (Phase 5) — own Postgres pool, own env loading,
+                     deliberately NOT depending on @any-app/store; see below
 packages/generator/  planner/fill/edit/router calls (sequential and parallel-fan-out fill),
                      prompts, provider adapters (openai, anthropic) behind one interface,
                      per-role config, error scrubbing
-packages/protocol/   shell/slot document model, swap() runtime (inlined into every
-                     generated doc), shared constants
+packages/protocol/   shell/slot document model, swap() runtime + data-runtime + app-token
+                     (all inlined into or minted for every generated doc), shared constants
 packages/tsconfig/   shared tsconfig, extended by name (@any-app/tsconfig/base.json) —
                      not a relative path, so it resolves the same regardless of nesting
 ```
 
 **The origin split is load-bearing, not incidental.** `sandbox` must never depend on
-`@any-app/generator` (holds the provider key) and must never import anything from
-`@any-app/store` beyond `loadEnv`. See `.docs/architecture.md`'s "Dependency rules".
+`@any-app/generator` (holds the provider key) and must never depend on `@any-app/store` —
+not even for one export. `store/src/index.ts` re-exports a pool built at module scope under
+the privileged role, so importing anything from `store` evaluates that whole graph; a Phase
+5 review caught `apps/sandbox` doing exactly this for `loadEnv` alone (`review-phase-5.md`'s
+S1) — correct as an import specifier, wrong as a dependency. `sandbox` gets `loadEnv` from
+`@any-app/records` instead. See `.docs/architecture.md`'s "Dependency rules".
+`packages/records` exists as its own package, not inside `store`, for the same reason:
+`store`'s own `index.ts` re-exports `credentials.ts`, so putting records there would pull
+the credential-holding module graph into the sandbox through one import. `records/src/db.ts`
+duplicates ~15 lines of `.env`-loading logic instead of importing `store`'s — two pools
+against one database, authenticating as different roles, is the whole point (see
+`.docs/impl-phase-5.md` step 4).
 
 ## Commands
 
@@ -136,6 +154,32 @@ didn't work was a false negative from testing too small a prefix — corrected d
 Still worth re-testing against real `api.anthropic.com` when a genuine key exists, but
 decision #9's caching premise is no longer in doubt on the paths that could be tested.
 
+## Data API for generated apps (Phase 5)
+
+Generated apps are served from `<app-id>.apps.localhost:3001` — a real per-app origin
+(`SANDBOX_APP_ORIGIN_TEMPLATE` in `.env`), not the shared sandbox origin Phases 1–4 used.
+That's load-bearing, not tidiness: it's what makes `allow-same-origin` on the preview iframe
+safe to add (locked decision #8 in `architecture.md`), and `allow-same-origin` is what a
+same-origin `fetch("/data/...")` from inside the frame needs.
+
+Each app's data-API token (`packages/protocol/src/app-token.ts`) is **derived, not stored** —
+an HMAC of the app id under `APP_TOKEN_SECRET` (both servers require this at boot, the same
+way `CREDENTIAL_KEY` already works). Studio mints it fresh every time it renders a document
+(`internal.ts`, `edits.ts`); sandbox verifies it on every `/data/*` request
+(`apps/sandbox/src/data.ts`) and cross-checks the app id it decodes against the request's
+`Host` header. Records live in their own table (`records`, migration `005_records.sql`),
+reached only by a **restricted Postgres role** (`anyapp_sandbox`, created by hand per
+`.docs/impl-phase-5.md` step 3 — not in a migration, since it needs a password) that can
+touch `records` and nothing else; `SANDBOX_DATABASE_URL` in `.env` is that role's connection
+string, separate from `DATABASE_URL`.
+
+The API surface is deliberately narrow — equality-only `where[key]=value`, `limit`, an opaque
+`cursor`, nothing else — and generated apps are never supposed to call it directly: the model
+is instructed to use `window.anyapp.data.*` (`packages/protocol/src/data-runtime.ts`, inlined
+into the document only when `plan.collections.length > 0`), never its own `fetch()`. Quotas
+(1000 rows/app) and rate limits (60 writes/min, 300 reads/min, in-process only) ship in
+`packages/records/src/quota.ts`.
+
 ## Don't
 
 - Add `compression` middleware to either server — it buffers responses and breaks the
@@ -147,3 +191,12 @@ decision #9's caching premise is no longer in doubt on the paths that could be t
 - Import `openai` or `@anthropic-ai/sdk` anywhere outside
   `packages/generator/src/providers/` — enforced by convention today (checked via grep
   during Phase 3.5's verification), not yet by a lint rule.
+- Put the `records` store inside `packages/store` — that pulls the credential-holding module
+  graph into the sandbox through `store/src/index.ts`'s re-exports. It stays its own package.
+- Trust the `Origin` header, or `app_id` from a request body/query string/hostname, on any
+  `/data/*` route. `app_id` comes from `verifyAppToken` and nothing else — see
+  `.docs/architecture.md`'s data-API rules.
+- Assume Express's default query parser understands `where[key]=value` bracket notation —
+  Express 5 changed the default to one that doesn't. `apps/sandbox/src/index.ts` sets
+  `app.set("query parser", "extended")` explicitly; see `.docs/impl-phase-5.md`'s "Found
+  live" section before touching sandbox query parsing.

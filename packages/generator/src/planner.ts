@@ -1,5 +1,5 @@
-import { SLOT_ID_PATTERN, slotIdsInShell } from "@any-app/protocol";
-import type { AppPlan, SlotSpec } from "@any-app/protocol";
+import { SLOT_ID_PATTERN, slotIdsInShell, COLLECTION_PATTERN } from "@any-app/protocol";
+import type { AppPlan, SlotSpec, CollectionSpec } from "@any-app/protocol";
 import { resolve } from "./resolve";
 import type { ProviderCredential } from "./providers/types";
 import { PLANNER_PROMPT } from "./planner-prompt";
@@ -61,7 +61,17 @@ function parsePlan(raw: string): AppPlan {
     (id) => specById.get(id) ?? { id, height: 200, spec: "Content for this region." },
   );
 
-  return { title, css, shell, script, slots: ordered };
+  // Optional, unlike every other section — most apps are static, and this is the common,
+  // cheap case (see planner-prompt.ts's "if in doubt, leave it out"). A line that fails
+  // COLLECTION_PATTERN is dropped rather than rejecting the whole plan; the model getting
+  // one collection name wrong should not turn a good shell into a linear-fallback failure.
+  const collections: CollectionSpec[] = (sections.DATA ?? "")
+    .split("\n")
+    .map((line) => line.split("|"))
+    .filter(([name]) => COLLECTION_PATTERN.test((name ?? "").trim()))
+    .map(([name, ...rest]) => ({ name: name!.trim(), description: rest.join("|").trim() }));
+
+  return { title, css, shell, script, slots: ordered, collections };
 }
 
 export async function planApp(

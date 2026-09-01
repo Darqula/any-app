@@ -31,4 +31,13 @@ id | skeleton-height-in-px | one sentence describing what belongs in this slot
 
 The height is what the region will occupy once filled. Getting it close matters — it is the placeholder size, and a bad guess makes the layout jump when content arrives.
 
-Every id here must appear in SHELL, and every slot in SHELL must appear here.`;
+Every id here must appear in SHELL, and every slot in SHELL must appear here.
+
+===DATA===
+Optional. One line per collection the app needs to remember between visits, in this exact shape:
+
+name | one sentence describing what a row in this collection holds
+
+- Only write a DATA section if the app genuinely needs to remember things between visits. A calculator, a game, or a static page does not. If in doubt, leave it out.
+- Collection names are lowercase, may contain digits and underscores, and must start with a letter.
+- Omit this section entirely (not an empty one) when the app has no collections.`;

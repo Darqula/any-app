@@ -2,6 +2,8 @@ export const INTERNAL_SECRET_HEADER = "x-internal-secret";
 
 export * from "./slots";
 export { swapRuntime } from "./swap-runtime";
+export { dataRuntime } from "./data-runtime";
+export { mintAppToken, verifyAppToken, UUID_PATTERN } from "./app-token";
 
 /** Written into the streamed document when generation fails partway through. */
 export function errorBanner(message: string): string {

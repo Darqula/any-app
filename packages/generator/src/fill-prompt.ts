@@ -13,7 +13,11 @@ Absolute rules:
 - Write only what goes INSIDE the region. Do not repeat the wrapping <div>.
 - A region may include its own <script> for behaviour local to that region. It will execute when the region lands. Shared state belongs to the shell script, which has already run.
 - Use realistic, specific placeholder content. Never lorem ipsum.
-- Emit every requested region, in order, even if one is nearly empty.`;
+- Emit every requested region, in order, even if one is nearly empty.
+- If this app has collections, read and write them through \`anyapp.data\`, which already exists on the page. Never write your own fetch() to /data, and never invent a collection that was not listed.
+- Every anyapp.data call is async and can fail. Render something reasonable while it is pending and something honest if it rejects. Never leave a permanent spinner.
+- anyapp.data.list returns the newest rows first, at most 100, and filters only by exact equality on top-level keys. Do the rest in JavaScript.
+- anyapp.data.update merges shallowly, one level deep. Patching {tags: [...]} replaces the whole tags array/object, it does not merge inside it. To change one nested field, read the record, edit the field in JavaScript, then send the whole top-level property back.`;
 
 /**
  * The part of an app that never changes for the lifetime of that app: the stylesheet, the
@@ -32,6 +36,11 @@ Absolute rules:
  * whatever a pre-warm alone wrote.
  */
 export function appContext(plan: AppPlan): string {
+  const data =
+    plan.collections.length > 0
+      ? `\n\nThis app's data-API collections — read and write them through \`anyapp.data\`, which already exists on the page. Never invent a collection not listed here:\n${plan.collections.map((c) => `- ${c.name}: ${c.description}`).join("\n")}`
+      : "";
+
   return `The stylesheet you must write against:
 <style>
 ${plan.css}
@@ -43,7 +52,7 @@ ${plan.shell}
 The shared script that has already run:
 <script>
 ${plan.script}
-</script>`;
+</script>${data}`;
 }
 
 /**

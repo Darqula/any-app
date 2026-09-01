@@ -1,6 +1,7 @@
 import express from "express";
 import {
   loadEnv,
+  requireEnv,
   createGeneration,
   getGeneration,
   getFilledApp,
@@ -18,16 +19,27 @@ loadEnv();
 // A missing or malformed CREDENTIAL_KEY should fail the boot, not surface silently on the
 // first credential save (or worse, on the first read of one saved by an older key).
 assertCredentialKeyConfigured();
+// Same reasoning: a missing APP_TOKEN_SECRET must not silently default to "", which would
+// make every app's data-API token forgeable by anyone who reads this file. Both studio
+// (which mints, here) and sandbox (which verifies, apps/sandbox/src/index.ts) require it.
+requireEnv("APP_TOKEN_SECRET");
 
 const app = express();
 const port = Number(process.env.STUDIO_PORT ?? 3000);
-const sandboxUrl = process.env.SANDBOX_PUBLIC_URL ?? "http://127.0.0.1:3001";
 // Baked into every generated document's swap runtime, which checks it against
 // `event.origin` on every postMessage edit. Must match exactly — see shell.ts. `event.origin`
 // never carries a trailing slash, so a `STUDIO_PUBLIC_URL` with one (or any path/query) would
 // make the check fail forever with nothing logged on either side — normalising through `URL`
 // here means a misconfigured env var still resolves to a working origin.
 const studioOrigin = new URL(process.env.STUDIO_PUBLIC_URL ?? "http://localhost:3000").origin;
+
+const appOriginTemplate =
+  process.env.SANDBOX_APP_ORIGIN_TEMPLATE ?? "http://{id}.apps.localhost:3001";
+
+/** The origin one generated app is served from. Also the exact string `postMessage` pins. */
+function appOrigin(id: string): string {
+  return new URL(appOriginTemplate.replace("{id}", id)).origin;
+}
 
 app.use(express.urlencoded({ extended: false }));
 
@@ -39,7 +51,7 @@ app.get("/", async (req, res) => {
   const generations = await listRecentGenerations();
   const sid = sessionId(req, res);
   const missing = await missingCredentials(sid);
-  res.type("html").send(homePage(generations, sandboxUrl, missing));
+  res.type("html").send(homePage(generations, missing));
 });
 
 app.post("/generations", async (req, res) => {
@@ -49,7 +61,7 @@ app.post("/generations", async (req, res) => {
     return;
   }
   const generation = await createGeneration(prompt);
-  res.type("html").send(previewFrame(generation.id, sandboxUrl));
+  res.type("html").send(previewFrame(generation.id, appOrigin(generation.id)));
 });
 
 app.get("/generations/:id/frame", async (req, res) => {
@@ -62,11 +74,11 @@ app.get("/generations/:id/frame", async (req, res) => {
   // still streaming, failed, or predating Phase 2's plan column.
   const loaded = await getFilledApp(generation.id);
   const form = loaded ? editForm(generation.id, loaded.filled.slots) : "";
-  res.type("html").send(previewFrame(generation.id, sandboxUrl) + form);
+  res.type("html").send(previewFrame(generation.id, appOrigin(generation.id)) + form);
 });
 
 app.use("/internal", internalRouter(studioOrigin));
-app.use(editsRouter(studioOrigin));
+app.use(editsRouter(studioOrigin, appOrigin));
 app.use(settingsRouter());
 
 app.listen(port, "localhost", () => {

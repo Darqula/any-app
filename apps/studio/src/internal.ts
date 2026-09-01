@@ -1,6 +1,6 @@
 import { Router } from "express";
 import type { Response } from "express";
-import { INTERNAL_SECRET_HEADER, errorBanner, renderDocument, slotOpen, slotClose } from "@any-app/protocol";
+import { INTERNAL_SECRET_HEADER, errorBanner, renderDocument, slotOpen, slotClose, mintAppToken } from "@any-app/protocol";
 import type { FilledApp } from "@any-app/protocol";
 import {
   streamApp,
@@ -123,7 +123,11 @@ export function internalRouter(studioOrigin: string): Router {
       }
 
       // --- Shell ---------------------------------------------------------------------
-      res.write(renderShellHead(plan, studioOrigin));
+      // Derived, not looked up — see mintAppToken's doc comment. Minting it here and again
+      // in the persist step below (rather than caching it once) still reproduces the exact
+      // same string, because it is a pure function of `id`.
+      const appToken = mintAppToken(id, requireEnv("APP_TOKEN_SECRET"));
+      res.write(renderShellHead(plan, studioOrigin, appToken));
 
       // --- Fill ------------------------------------------------------------------
       // Two modes, switchable via LLM_FILL_MODE without a code change, specifically so
@@ -197,7 +201,7 @@ export function internalRouter(studioOrigin: string): Router {
       // `document !== flat`) — completion order means the parallel path's live bytes and
       // `renderDocument`'s plan-ordered output are no longer expected to match, and that is
       // correct: swap() has always been order-independent.
-      const document = renderDocument(filled, (p) => renderFullHead(p, studioOrigin), SHELL_TAIL);
+      const document = renderDocument(filled, (p) => renderFullHead(p, studioOrigin, appToken), SHELL_TAIL);
       await markCompleteWithPlan(id, document, filled);
       res.end();
     } catch (error) {

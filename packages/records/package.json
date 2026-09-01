@@ -1,18 +1,17 @@
 {
-  "name": "@any-app/sandbox",
+  "name": "@any-app/records",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "scripts": {
-    "dev": "tsx watch src/index.ts"
+  "exports": {
+    ".": "./src/index.ts"
   },
   "dependencies": {
     "@any-app/protocol": "*",
-    "@any-app/records": "*",
-    "express": "^5.0.0"
+    "pg": "^8.13.0"
   },
   "devDependencies": {
-    "@types/express": "^5.0.0",
+    "@types/pg": "^8.11.0",
     "@any-app/tsconfig": "*"
   }
 }

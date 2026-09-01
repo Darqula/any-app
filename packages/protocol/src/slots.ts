@@ -8,6 +8,12 @@ export interface SlotSpec {
   spec: string;
 }
 
+/** One collection the app's data API exposes, from the planner's optional DATA section. */
+export interface CollectionSpec {
+  name: string;
+  description: string;
+}
+
 /** Everything the planner call produces. */
 export interface AppPlan {
   title: string;
@@ -17,6 +23,14 @@ export interface AppPlan {
   /** Shared state and delegated listeners. Runs before any slot lands. */
   script: string;
   slots: SlotSpec[];
+  /**
+   * Collections this app's data API exposes. Empty for most apps — a static app should not
+   * carry a data-API token it never uses (see `dataRuntime`). A row written before Phase 5
+   * has no `collections` key at all; `getFilledApp` (store/generations.ts) defaults it to
+   * `[]` on read, the same way a field added to a persisted JSONB shape always needs a
+   * migration of *reads*, not just of writers.
+   */
+  collections: CollectionSpec[];
 }
 
 /** A plan plus the filled content of each slot, keyed by slot id. */
@@ -25,6 +39,14 @@ export interface FilledApp extends AppPlan {
 }
 
 export const SLOT_ID_PATTERN = /^[a-z][a-z0-9-]{0,30}$/;
+
+/**
+ * Shared by the planner (parsing the DATA section), `packages/records` (validating a
+ * collection name on every data-API request), and the fill prompts (naming collections in
+ * context). One definition so the three never drift apart — a name the planner accepts but
+ * the data API rejects would be a collection nothing can ever write to.
+ */
+export const COLLECTION_PATTERN = /^[a-z][a-z0-9_]{0,30}$/;
 
 /** Matches the placeholder the planner is required to write, exactly. */
 const PLACEHOLDER = /<div data-slot="([a-z][a-z0-9-]{0,30})"><\/div>/g;
