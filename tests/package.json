@@ -1,0 +1,25 @@
+{
+  "name": "@any-app/tests",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:backend": "node --import tsx --test \"backend/**/*.test.ts\"",
+    "test:frontend": "playwright test --config frontend/playwright.config.ts",
+    "test:quality": "node --import tsx quality/runner.ts"
+  },
+  "dependencies": {
+    "@any-app/generator": "*",
+    "@any-app/protocol": "*",
+    "@any-app/records": "*",
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "@any-app/tsconfig": "*",
+    "@playwright/test": "^1.48.0",
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.11.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

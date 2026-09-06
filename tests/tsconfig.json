@@ -1,0 +1,7 @@
+{
+  "extends": "@any-app/tsconfig/base.json",
+  // frontend is deliberately absent — it has its own tsconfig.json (DOM lib enabled, checked
+  // as a separate `tsc` invocation; see testing-review.md H2) which an editor resolves in
+  // preference to this one for any file under that directory anyway.
+  "include": ["harness/**/*.ts", "backend/**/*.ts"]
+}

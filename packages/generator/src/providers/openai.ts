@@ -78,6 +78,20 @@ export function createOpenAIProvider(credential: ProviderCredential): Provider {
           yield delta;
         }
       }
+      // An aborted signal ends this SDK's stream iterator as a silent, non-throwing
+      // `return` — unlike `completeText` below, whose non-streaming call really does throw
+      // `APIUserAbortError`. Left alone, the loop above just stops early and every caller
+      // reads a truncated response as a complete one: `internal.ts` persisted a half-written
+      // document as `complete` when a viewer closed the tab mid-fill (testing-review.md S8),
+      // and its `catch (isAbortError) -> resetForRetry` guard — written for exactly this
+      // case — could never fire, because nothing threw. Raising the SDK's own abort error
+      // here makes the streaming path match the non-streaming one, so `isAbortError`
+      // (client.ts) recognises it and every existing guard works as already documented.
+      //
+      // Must come BEFORE the `sawContent` check: an abort landing before the first delta
+      // would otherwise surface as `RefusalError("empty response")`, which the studio
+      // reports to the user as the model having declined the request.
+      if (req.signal?.aborted) throw new OpenAI.APIUserAbortError();
       logUsage(req.label, "openai", usageFrom(usage));
       if (!sawContent) throw new RefusalError("empty response");
     },

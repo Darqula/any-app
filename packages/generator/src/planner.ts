@@ -13,7 +13,7 @@ export class PlanError extends Error {
   }
 }
 
-function parsePlan(raw: string): AppPlan {
+export function parsePlan(raw: string): AppPlan {
   const sections = parseSections(stripTrailingFence(raw.replace(/^\s*```[a-z]*\n/, "")));
 
   const title = sections.TITLE?.trim();
@@ -22,6 +22,18 @@ function parsePlan(raw: string): AppPlan {
   const script = sections.SCRIPT ?? "";
   const slotLines = sections.SLOTS;
 
+  // Reverted (testing-review.md S5): an earlier version of this check read `slotLines ===
+  // undefined` instead of `!slotLines`, on the theory that a SHELL whose placeholders are
+  // all left to defaults is a valid plan with a legitimately-empty SLOTS body. Review caught
+  // two problems with that: the "natural" reading of A4.2's spec (mirroring A4.3 exactly) is
+  // one slot present and one omitted, not every slot omitted, and already passed under the
+  // original `!slotLines` with no source change — so the change was never required. Worse,
+  // a totally-empty SLOTS section is also exactly what a response truncated right after
+  // `===SLOTS===` looks like (see open-problems.md's known truncation failure mode), and the
+  // loosened check would have accepted that silently instead of raising `PlanError` and
+  // falling back to the linear path — trading a loud, recoverable failure for a quiet
+  // low-quality one, on this project's most fragile call. Kept strict; see A4.2's fixture
+  // for the case this is actually meant to cover.
   if (!title || !css || !shell || !slotLines) {
     throw new PlanError(
       `plan is missing sections (got: ${Object.keys(sections).join(", ") || "none"})`,

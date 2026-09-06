@@ -69,6 +69,13 @@ export function createAnthropicProvider(credential: ProviderCredential): Provide
         }
       }
 
+      // See the matching comment in providers/openai.ts (testing-review.md S8): an aborted
+      // signal ends this SDK's stream iterator as a silent, non-throwing `return`, so
+      // without this every caller would read a truncated response as a complete one and the
+      // `isAbortError` guards downstream could never fire. Raised before `finalMessage()`
+      // too — that would otherwise reject or report a partial message for an aborted stream.
+      if (req.signal?.aborted) throw new Anthropic.APIUserAbortError();
+
       // A refusal is HTTP 200 with `stop_reason: "refusal"` and no usable content, so it
       // has to be checked rather than caught.
       const final = await stream.finalMessage();

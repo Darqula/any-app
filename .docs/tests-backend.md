@@ -1,10 +1,27 @@
 # Test Cases — Backend
 
-**Status:** draft · 2026-08-30
+**Status:** resynced against the Phase 5 code · 2026-08-31
 **Scope:** `apps/studio`, `apps/sandbox`, and everything in `packages/`.
 Browser-side behaviour is in [`tests-frontend.md`](./tests-frontend.md).
 
-Cases marked **(P2)** depend on Phase 2 landing; the rest apply to the code as it stands.
+**Nothing here has been implemented yet.** Phases 0–5 shipped verified by hand. This document
+was written during Phase 2 and last updated at Phase 3.5, so this pass brings it back in line
+with the code as it actually stands: five assertions that would now fail on *correct* code
+have been corrected, three references to deleted functions repaired, and two new sections
+added for Phases 4 and 5.
+
+Phase markers (**P2**, **P4**, **P5**) now record *when a case became relevant*, not what is
+still pending — every phase they refer to has landed.
+
+> **The corrected assertions are the reason to resync before implementing, not after.** I5
+> here and B2/B5 in the frontend doc asserted the pre-Phase-5 origin posture: no
+> `allow-same-origin`, no working `localStorage`. Phase 5 deliberately inverted all three.
+> Implemented as written, they fail on correct code — and the cheapest way to make I5 green
+> is to delete `allow-same-origin`, which silently reverts locked decision #8.
+>
+> That they went stale is also the argument *for* them. Had they been running, Phase 5 could
+> not have changed the origin posture quietly; it would have had to turn a red test green on
+> purpose, which is exactly the conversation worth forcing.
 
 ---
 
@@ -15,10 +32,21 @@ chunks, markers split across chunk boundaries, aborts halfway through, malformed
 output. None of that is testable against a real provider: it is slow, costs money, and you
 cannot ask a real model to emit a marker split across two TCP packets.
 
-**Run the whole suite against a fake OpenAI-compatible server.** The current design already
-allows this with no mocking library and no code change: `getClient()` reads
-`OPENAI_BASE_URL`, so a test fixture starts a local HTTP server that speaks the
-chat-completions wire format and points the env var at it.
+**Run the whole suite against a fake OpenAI-compatible server.** This still needs no mocking
+library and no production code change, but the seam has moved since this was written.
+`getClient()` is gone — `client.ts` is now sixteen lines containing only `isAbortError`.
+Point the fixture in through any of three places, in increasing order of isolation:
+
+- `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` — the platform credentials read by
+  `resolve.ts`. Simplest, and the closest analogue of what this doc originally described.
+- `LLM_<ROLE>_PROVIDER` / `_MODEL` / `_MAX_TOKENS` — per-role, so one role can be pointed at
+  the fake while another is left unconfigured, which is what case G13 needs.
+- A stored session credential — the BYOK path, which is the only way to exercise section H
+  end to end.
+
+Having three seams rather than one is a Phase 3.5 dividend worth using: several cases below
+are about *resolution* (which provider a role picks, and what happens when it picks one with
+no credential), and those are only testable because the choice is configuration.
 
 That fixture is the single highest-value thing to build first. It must support:
 
@@ -37,6 +65,39 @@ defeats the point. Build it as one scripted core with two serialisers.
 
 Everything below assumes it exists. Use `node:test` (built into Node 22 — no dependency) and
 a scratch Postgres database per run.
+
+**Section K is the exception and can be written first.** The Phase 5 data API touches no
+model at all — it is HTTP plus Postgres — so it needs the scratch database but not the fake
+provider. If the fixture turns out to be a bigger job than expected, K is real coverage of
+the newest and most security-sensitive surface, available immediately.
+
+### Running this suite alongside the frontend one
+
+The two suites are largely independent and can be built in parallel. Three things have to be
+agreed up front rather than discovered:
+
+**1. This suite owns the fixture; the frontend suite consumes it.** Build it once, here, but
+design the interface for *both* callers on day one. The frontend needs something this list
+never asks for — explicit chunk-driving (`await fake.emit(chunk)`) so intermediate render
+states can be asserted without racing real timing. A fixture built only for the cases below
+gets rebuilt the first time a frontend test needs to hold a chunk open.
+
+**2. This suite must not bind the real ports.** Use ephemeral ports throughout. The frontend
+suite cannot: `swapRuntime` bakes `STUDIO_PUBLIC_URL` into every generated document and
+validates `event.origin` against it, and the data API derives its host check from
+`SANDBOX_APP_ORIGIN_TEMPLATE`, so those tests are origin-pinned by construction. If both
+suites want `localhost:3000` and `*.apps.localhost:3001`, they cannot run concurrently.
+
+**3. Someone has to script the `anyapp_sandbox` role, and it is currently on nobody's list.**
+Section K needs it, and `impl-phase-5.md` creates it by hand on purpose — it takes a password,
+so it is operator setup rather than a migration. A scratch database per run needs that
+bootstrap automated. It belongs with this suite, since K is what depends on it, but it is
+worth naming as its own task rather than assuming it falls out of `migrate()`.
+
+Cases duplicated across the two suites are deliberate, not redundant: I5 pairs with the
+frontend's B2, and H4/H5 with its G4/G7. Both halves should go red together. Do not
+"deduplicate" them — the point is that a server-side guarantee and its browser-visible
+consequence can drift apart.
 
 ---
 
@@ -94,20 +155,37 @@ case where `decided` flips one chunk too soon.
 | A4.7 | Shell with zero placeholders | `PlanError` |
 | A4.8 | Whole response wrapped in a code fence | Parsed anyway |
 | A4.9 | Spec text containing a `\|` | Preserved — the split rejoins the tail |
+| A4.10 | No `DATA` section at all (P5) | `collections` is `[]`, no throw — the common case, and it must stay the cheap one |
+| A4.11 | `DATA` with one valid line (P5) | One collection, name and description split on the first `\|` |
+| A4.12 | `DATA` with an invalid collection name (P5) | That line skipped, the rest kept — same tolerance as A4.4 |
 
-### A5 — `renderSkeletons` / `renderFilled` / `slotIdsInShell` (P2)
+A4.10 is load-bearing rather than trivial. `DATA` is optional precisely because most apps are
+static and this project's planner is the fragile call — a required sixth section would turn
+"this app has no backend" into a plan-parse failure and a linear fallback.
+
+### A5 — `renderSkeletons` / `renderDocument` / `slotIdsInShell` (P2)
 
 | ID | Case | Passes when |
 |---|---|---|
 | A5.1 | Exact placeholder | Replaced with `<div id="slot-x" class="anyapp-skeleton" style="min-height:Npx">` |
 | A5.2 | Placeholder with an extra attribute | **Not** replaced — locks in the deliberate strictness |
 | A5.3 | Placeholder for an id absent from the spec list | Rendered with height 0, no throw |
-| A5.4 | `renderFilled` with content missing for a slot | Empty div, no `undefined` in output |
+| A5.4 | `renderDocument` with content missing for a slot | Empty template, no `undefined` in output |
 | A5.5 | `slotIdsInShell` | Returns ids in document order |
-| A5.6 | **Duplicate slot id in shell** | Assert the chosen behaviour — two elements would share a DOM id and `swap()` would fill only the first. Decide whether `parsePlan` rejects it, then test that |
+| A5.6 | **Duplicate slot id in shell** | `parsePlan` throws `PlanError` naming the repeated id |
+| A5.7 | `renderDocument` emits slots in **plan** order (P4) | True even when `content` was populated in completion order — the live stream and the replay are no longer byte-identical, and that is correct |
 
-A5.6 is not a hypothetical; a planner listing the same region twice is a plausible failure,
-and nothing currently rejects it.
+> A5.4 and the section title previously named `renderFilled`, which no longer exists. Phase
+> 2's replay-divergence fix made the streamed bytes themselves the stored document and
+> deleted it; `renderDocument` is the single producer now.
+
+A5.6 was written as "decide whether `parsePlan` rejects it, then test that." It does now, and
+for the reason the case predicted: two elements sharing a DOM id leave the second a permanent
+skeleton, which surfaces as an inexplicable stuck loading state rather than as an error.
+
+A5.7 is the Phase 4 consequence worth pinning. The obvious assertion — that a replayed
+document is byte-identical to the streamed one — was true through Phase 3 and is deliberately
+false from Phase 4 onward. Asserting the old invariant would fail on correct code.
 
 ### A6 — `createSlotStream` (P2)
 
@@ -134,6 +212,31 @@ whole point.
 |---|---|---|
 | A7.1 | `errorBanner` with `<script>` in the message | Escaped, cannot break out of the `<pre>` |
 | A7.2 | `escapeHtml` in `views.ts` with a `"` | Escaped — it is used in an attribute context |
+
+### A8 — `mintAppToken` / `verifyAppToken` (P5)
+
+Pure functions, no I/O, and the whole of the data API's authorization. Cheapest high-value
+tests in the document.
+
+| ID | Case | Passes when |
+|---|---|---|
+| A8.1 | Round trip | `verifyAppToken(mintAppToken(id, s), s) === id` |
+| A8.2 | Different secret | `null` |
+| A8.3 | One character of the MAC changed | `null` |
+| A8.4 | App id swapped for another valid uuid, MAC left alone | `null` — the id is signed, not merely carried |
+| A8.5 | `""`, `"no-dot"`, `".mac"`, a token with no MAC | `null`, no throw |
+| A8.6 | `UUID_PATTERN` against `"a" × 36`, 36 hyphens, misplaced hyphens | All rejected — these passed the pre-review pattern and reach a `uuid` column |
+| A8.7 | `UUID_PATTERN` against `gen_random_uuid()` output, both cases | Accepted |
+| A8.8 | Determinism | Minting the same id twice yields the same string — this is what makes an edited app keep its data |
+
+A8.8 looks like a tautology and is the point of the whole design. A stored random token would
+be dropped by `renderDocument` on the first edit, silently disconnecting a working app from
+its own rows; deriving it makes that failure unrepresentable.
+
+A8.6 guards a deliberate strictness: the pattern is *narrower* than Postgres's own `uuid`
+parser, which also accepts the 32-hex-no-hyphen and brace-wrapped forms. That is not a bug to
+fix — ids only ever come from `gen_random_uuid()`, and admitting two spellings of one id buys
+nothing.
 
 ---
 
@@ -205,10 +308,13 @@ The row can end up correct while the upstream request keeps running.
 | D7 | Viewer disconnects **before** upstream headers arrive | No unhandled rejection; nothing written to a dead socket |
 | D8 | A generation that runs longer than undici's ~300s default (P3.5) | Not killed by the default body timeout — the proxy `fetch` sets its own, deliberately chosen |
 
-D8 is the second constraint recorded in `open-problems.md`: the proxy `fetch` has no explicit
-timeout today, so it inherits undici's default and caps how long *any* generation can take
-regardless of provider. With BYOK that gets worse — a user pointing at a slow local model
-hits it routinely.
+D8 was the second constraint recorded in `open-problems.md` and is **fixed** — Phase 3.5 gave
+the proxy `fetch` its own bound (`PREVIEW_TIMEOUT_MS` via `AbortSignal.any`) and the studio a
+15s heartbeat, so a slow generation is no longer killed by undici's ~300s *inactivity*
+default. The case stays because both halves are easy to lose: delete the heartbeat and a slow
+planner call starts failing again, with nothing in the logs pointing at the timeout. Assert
+both — a generation quiet for longer than 300s survives, and the response carries heartbeat
+comments while it is quiet.
 
 D7 covers the one gap left after the F3 fix: `await fetch(..., { signal })` has no
 `try`/`catch`, so an abort at that moment rejects into Express's default error handler.
@@ -253,9 +359,16 @@ or on-demand job, not in CI. Rendered-output checks live in the frontend doc.
 | F7 | Any generated document | External references only from `cdnjs.cloudflare.com` |
 | F8 | Class names used in slot content (P2) | Defined in the planner CSS — catches the "content appears unstyled" failure before a human sees it |
 
-Track these as a **pass rate across N runs**, not as a binary. F1 and F8 in particular are
-the early warning for the Phase 4 coherence problem; if they are already flaky with one
-sequential fill call, parallel fan-out will be much worse.
+Track these as a **pass rate across N runs**, not as a binary. F1 and F8 in particular are the
+early warning for the fan-out coherence problem: if they are already flaky with one sequential
+call, N isolated calls will be worse.
+
+Since Phase 4 landed, these have a second use — **run the set in both fill modes and compare
+the rates.** "Does per-slot generation produce worse apps than one coherent pass?" is the
+open question the `LLM_FILL_MODE` toggle was built to answer, and F1/F8 are the only
+automated way to answer it. `open-problems.md` currently records parallel fill as a
+*cost* regression on this project's model; whether it is also a *quality* regression has never
+been measured, and a pass-rate delta across these eight cases is the measurement.
 
 ---
 
@@ -281,10 +394,20 @@ These cases run the *same* assertions against both, which is the only way to kno
 | G13 | A role pointed at a provider with no credential | Fails at resolution with a clear message, **before** any HTTP call |
 | G14 | The same plan prompt through both adapters | Both produce output `parsePlan` accepts — the adapter changes transport, not semantics |
 
-**G15 (real provider, nightly):** Anthropic, two identical calls carrying a `cache_control`
-breakpoint on the shared prefix → the second reports `usage.cache_read_input_tokens > 0`.
-This is the one that matters for Phase 4: if caching is not actually landing, parallel fan-out
-costs far more than the plan assumes, and nothing else in the suite would notice.
+**G15 (real provider, nightly):** two identical calls carrying a large enough shared prefix →
+the second reports `cache_read_input_tokens > 0` (Anthropic) or `cached_tokens > 0`
+(OpenAI-compatible).
+
+Caching is now **confirmed working on both paths** — Phase 4's pre-flight measured clean hits
+at a ~4,500-token prefix, and corrected an earlier "this gateway doesn't cache" conclusion
+that turned out to be a false negative from testing a prefix too short to be cacheable at
+all. So G15 is a regression guard, not an open question, and it has a specific trap: **use a
+realistic prefix.** A minimal one silently reports zero, which looks identical to broken
+caching and cost this project an investigation once already.
+
+Note also what G15 does *not* tell you. Caching discounts repeated input; Phase 4's measured
+regression was in *completion* tokens, which caching cannot touch. A green G15 is compatible
+with parallel fill being a cost regression — see `open-problems.md`.
 
 G4 deserves care. Each SDK throws its own abort class, and neither sets `name` to
 `"AbortError"` — checking the name string looks reasonable and silently never matches. That
@@ -325,25 +448,166 @@ issues. `architecture.md` says npm's flat `node_modules` cannot enforce these, s
 |---|---|---|
 | I1 | `apps/sandbox/package.json` | Does not list `@any-app/generator` |
 | I2 | `apps/sandbox/src/**` | Contains no import of `@any-app/generator` |
-| I3 | `apps/sandbox/src/**` | Imports nothing from `@any-app/store` except `loadEnv` |
+| I3 | `apps/sandbox/package.json` (P5) | Does **not** list `@any-app/store` at all |
 | I4 | Repository-wide grep | No `compression` package anywhere |
-| I5 | `views.ts` | The preview iframe's `sandbox` attribute contains `allow-scripts` and **not** `allow-same-origin` (locked decision #8) |
+| I5 | `views.ts` (P5) | The preview iframe's `sandbox` attribute contains **both** `allow-scripts` and `allow-same-origin`, **and** its `src` host is derived per app — the two must move together |
 | I6 | `packages/generator/src/**` (P3.5) | No provider SDK is imported outside the adapter directory — the rest of the generator sees only the interface |
 | I7 | Repository-wide grep (P3.5) | No route or view interpolates a raw credential; error persistence always goes through the scrubber |
+| I8 | `apps/sandbox/src/**` (P5) | No `Access-Control-Allow-Origin` anywhere — the data API is same-origin by construction |
+| I9 | `apps/sandbox/src/data.ts` (P5) | `app_id` is only ever read from `res.locals`, never from `req.body`, `req.query`, `req.params`, or a header |
+| I10 | `apps/studio/src/views.ts` (P5) | No `postMessage(..., "*")` — every call pins a specific target origin |
+| I11 | `session.ts` (P5) | The session cookie is set with no `Domain` attribute |
+
+**I3 changed shape, and the new shape is the point.** It used to read "imports nothing from
+`@any-app/store` except `loadEnv`" — a statement about import specifiers, checkable only by
+grep and attention. The Phase 5 review found that importing even that one export evaluates
+`store/src/index.ts`, which builds a pool under the privileged role at module scope, so the
+sandbox process held a privileged pool it never used. Now the sandbox does not depend on the
+package at all, which is one line of `package.json` and the first of these rules that CI can
+enforce as cheaply as `architecture.md` has always claimed.
+
+**I5 is inverted from what this document said before**, and asserting the old version would
+fail on correct code. Phase 5 added `allow-same-origin` deliberately, because a same-origin
+`fetch("/data/...")` from inside the frame needs it — and it is only safe because apps moved
+to per-app origins at the same time. Test them together: an `allow-same-origin` frame on a
+*shared* origin is the failure locked decision #8 exists to prevent, and either half alone
+looks fine.
+
+**I11 is new, and it is subtler than it looks.** `CLAUDE.md` says never move the sandbox to
+`localhost` because it is a different cookie domain from the studio. Phase 5 moved generated
+apps to `<id>.apps.localhost` — a *subdomain* of the studio's own host. The session cookie is
+still not sent there, but no longer for the reason `session.ts`'s comment gives ("a different
+host"): it is because the cookie is host-only, having no `Domain` attribute. Adding
+`Domain=localhost` — a plausible-looking change if someone ever wants the session shared
+across subdomains — would hand every generated app the studio's session cookie. One
+assertion, and it is the only thing standing in front of that.
+
+---
+
+## J. Parallel fill (P4)
+
+Sections J and K are appended after I rather than inserted before it, so every existing case
+id in this document keeps its number — the same reason Phase 3.5 was numbered 3.5 instead of
+renumbering four phases.
+
+`LLM_FILL_MODE` currently defaults to `sequential`, so **none of this runs in the default
+configuration.** That is exactly why it needs tests: the parallel path is complete, correct,
+and one env var away, and it is now the code most likely to rot unnoticed.
+
+| ID | Case | Passes when |
+|---|---|---|
+| J1 | `asCompleted` with tasks resolving out of order | Yields in **completion** order, not input order |
+| J2 | `asCompleted`, every task resolving | All N yielded exactly once |
+| J3 | `asCompleted` where one task rejects | The generator throws, and **no `unhandledRejection` fires** for the others |
+| J4 | `limitConcurrency(2)` over 5 tasks | Never more than 2 running at once; all 5 complete |
+| J5 | `limitConcurrency` with a rejecting task | The semaphore is released — later tasks still run rather than deadlocking |
+| J6 | `fillSlotWithRetry`, first call fails, second succeeds | One retry, `failed: false` |
+| J7 | Same, both calls fail | `slotErrorPlaceholder` content, `failed: true`, **no throw** |
+| J8 | Same, first call returns empty string | Retried — an empty region is a failure, not content |
+| J9 | Same, abort mid-call | Throws rather than returning a placeholder; an abort is not a retryable failure |
+| J10 | Route, one slot of four fails | Row `complete`, three real regions and one placeholder |
+| J11 | Route, every slot fails | Row `failed` with "every region failed to generate" |
+| J12 | Pre-warm with fewer than 3 slots | Not called — no extra round trip on small apps |
+| J13 | Pre-warm that throws `RefusalError("empty response")` | Treated as success: logged at `log`, not `warn`, and the fan-out proceeds |
+| J14 | Whole parallel run | Exactly `slots.length + 1` provider calls (fan-out plus one pre-warm) |
+
+**J3 is the one to write first.** It is the only case here that was verified once, by a
+throwaway script, and never again. `asCompleted` deliberately breaks its own documented "tasks
+must never reject" contract for aborts, and the reason it is safe is subtle: `Promise.race`
+attaches a rejection handler to every pending task, so the ones still in flight when the
+generator throws do not become unhandled rejections later. Node 22 crashes the process on an
+unhandled rejection, so a refactor that loses that property turns a closed browser tab into a
+dead server — and nothing else in this suite would catch it.
+
+J13 encodes a genuinely counter-intuitive finding: on a reasoning model a `maxTokens: 1`
+pre-warm normally *fails*, because the budget is consumed before any visible text — and it
+still writes the cache. A test asserting the pre-warm "succeeds" would be asserting the wrong
+thing.
+
+---
+
+## K. Per-app tokens and the data API (P5)
+
+Needs Postgres and the `anyapp_sandbox` role, but **no model and no fake provider** — this is
+the one section writable before the fixture exists. It is also the newest and most
+security-sensitive surface in the project.
+
+Every case here that mentions two apps needs two real tokens minted from two different ids.
+
+| ID | Case | Passes when |
+|---|---|---|
+| K1 | Any `/data/*` request with no `Authorization` header | 401 |
+| K2 | Token signed with the wrong secret, or one MAC character changed | 401 |
+| K3 | App A's valid token presented on app B's host | 403 — the host cross-check |
+| K4 | App A's token, asking for a collection app B owns | Empty list, not an error — scope comes from the token, so B's rows are simply not in A's world |
+| K5 | Rows created by A | Never returned to B under any query |
+| K6 | `where[status]=open` (P5) | Filters. **Regression guard for the Express 5 query parser** — see below |
+| K7 | `where[done]=true` against a stored boolean | Matches — the string/boolean coercion |
+| K8 | `where[count]=3` against a stored number | Matches |
+| K9 | No `where` at all | Returns everything in the collection, newest first |
+| K10 | `limit` of `0`, `-1`, `1000`, `abc` | Clamped to 1–100, default 25, no throw |
+| K11 | Paging with `cursor` to the end | Every row seen exactly once; `nextCursor` null on the final page |
+| K12 | Short page (fewer rows than `limit`) | `nextCursor` is null, not a cursor onto an empty page |
+| K13 | Malformed cursor (`"x"`, base64 of `"garbage|nope"`) | 400, no 500, nothing reaches Postgres |
+| K14 | `:id` that is not a uuid | 404, no 500, no stack trace in the body |
+| K15 | Any unexpected DB error | `{"error":"internal error"}` — never Express's default stack trace |
+| K16 | Invalid collection name | 400 |
+| K17 | Create past `MAX_RECORDS_PER_APP` | 409 |
+| K18 | Request body over `MAX_RECORD_BYTES` | 413 |
+| K19 | Repeated distinct-key PATCHes, each under the cap | The one that would push the row over the cap gets **413**, not 404, and the row does not grow |
+| K20 | PATCH against a genuinely missing id | 404 — distinguished from K19 |
+| K21 | Write rate limit exceeded | 429, and reads still work — the buckets are per kind |
+| K22 | `anyapp_sandbox` role against `generations` / `provider_credentials` | `permission denied` |
+| K23 | Response body of any data route | Contains no `app_id` — it is scope, not payload |
+| K24 | Document rendered for a plan with no collections | Contains neither the data runtime nor a token |
+| K25 | Document rendered twice for one app (generate, then edit) | Same token both times |
+
+**K6 is the highest-value single case in this document.** Express 5 changed the default query
+parser to one with no bracket-notation support, so `where[status]=open` parses as a flat key
+literally named `"where[status]"`, `req.query.where` is `undefined`, and **every filter
+silently matches every row**. It was caught live during Phase 5 and fixed with one
+`app.set("query parser", "extended")` line. Nothing about the failure looks like a failure:
+requests succeed, JSON comes back, the data is real. Without a test, the next person to
+touch sandbox startup can delete that line and the suite will stay green.
+
+K3 and K4 are deliberately separate. K4 is the actual security property — scope derives from
+the token — and it would still hold if K3's host check were removed entirely, because the
+host check is defence in depth. Testing only K3 would let someone "simplify" the real
+guarantee away while the tests stayed green.
+
+K19 and K20 exist as a pair for the same reason. Both are zero-rows-back from one `UPDATE`;
+collapsing them into a single 404 is the obvious simplification, and it makes an over-size
+patch report "not found" for a record that plainly exists.
 
 ---
 
 ## Suggested order
 
-1. **The fake provider fixture.** Nothing else in C, D, E, or F is writable without it.
-2. **A6, A4, A1** — the streaming parsers, where the bugs actually are.
-3. **B4, C9, C10, C15** — the concurrency and abort regressions from the review; these
-   protect fixes that were verified by hand once and are otherwise easy to regress.
-4. **E1–E5, I1–I7** — invariant guards. Slow to think of, seconds to write, and they fail
-   loudly on exactly the refactors that would otherwise ship silently broken.
-5. **A2, A3, A5, A7, B, C, D** — the remaining coverage.
-6. **F, G15** — on a schedule, against a real provider.
+Revised for the code as it stands. The original order assumed the fixture had to come first;
+two groups no longer need it, and both cover code that shipped on a single hand-verification.
 
-For Phase 3.5, insert **H4 and H5 before the BYOK storage layer exists** — a credential leak
-is much cheaper to prevent than to discover — then **G1–G14** as the adapters are written,
-running each case against both wire formats.
+Steps 1–2 need no fixture, so this suite starts immediately, in parallel with the frontend
+one. The frontend's own first three steps need no fixture either — see its "Seeding instead
+of generating" — so the interface conversation in step 3 has room to happen while both are
+busy.
+
+1. **A8, J1–J5** — pure functions, no fixture, no database. The token pair is the whole of the
+   data API's authorization, and `asCompleted`/`limitConcurrency` are the only concurrency
+   primitives in the project. **J3 first**: it is the one property in this document currently
+   protected by a script that no longer exists.
+2. **K, plus I1–I11**, and the `anyapp_sandbox` bootstrap script K depends on. K needs
+   Postgres but no model; the guards need neither. Together they cover the newest surface and
+   the five invariants that have already gone stale once.
+3. **The fake provider fixture.** Everything below needs it, and so does the frontend suite
+   from its step 5 — settle the interface with both callers before building.
+4. **A6, A4, A1** — the streaming parsers, where the bugs actually are.
+5. **B4, C9, C10, C15** — the concurrency and abort regressions from earlier reviews; these
+   protect fixes verified by hand once and otherwise easy to regress.
+6. **E1–E7, J6–J14** — wire-format invariants and the fan-out's failure handling.
+7. **A2, A3, A5, A7, B, C, D, G1–G14, H** — the remaining coverage.
+8. **F, G15** — on a schedule, against a real provider.
+
+H4 and H5 were written to land before the BYOK storage layer existed. That ship has sailed —
+the layer shipped in Phase 3.5 — so they move into step 7 with the rest of H, but they keep
+their standing as the two cases worth writing first within it: a credential leak is much
+cheaper to prevent than to discover, and this project has already had one.

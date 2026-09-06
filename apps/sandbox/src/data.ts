@@ -230,6 +230,19 @@ export function dataRouter(secret: string, appOriginTemplate: string): Router {
       return;
     }
     console.error("data API error:", err);
+    // A 4xx is a statement about the *request* (e.g. express.json's own
+    // PayloadTooLargeError, .status === 413, when a body exceeds MAX_RECORD_BYTES) and is
+    // safe to pass through as-is; only 5xx needs to stay opaque so nothing internal (a
+    // stack trace, a driver error string) leaks into the response body. See
+    // testing-review.md S2 — this used to collapse every forwarded error to 500, including
+    // ones that already knew their own correct status.
+    const status = (err as { status?: unknown; statusCode?: unknown }).status ??
+      (err as { statusCode?: unknown }).statusCode;
+    if (typeof status === "number" && status >= 400 && status < 500) {
+      const message = err instanceof Error ? err.message : "bad request";
+      res.status(status).json({ error: message });
+      return;
+    }
     res.status(500).json({ error: "internal error" });
   });
 

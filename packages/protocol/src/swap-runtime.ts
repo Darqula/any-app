@@ -4,8 +4,17 @@
  *
  * Three jobs:
  *
- *  - A <script> moved out of a <template> by DOM insertion never executes. Slot content is
- *    allowed to carry its own script, so each one is re-created as a fresh element.
+ *  - A <script> parsed via the *fragment*-parsing algorithm (`element.innerHTML = ...`,
+ *    which the postMessage edit path below uses to turn `msg.html` into a template) has its
+ *    "already started" flag set at parse time and will never auto-execute once moved into
+ *    the document — that is standard HTML behaviour. (A <script> the *document* parser put
+ *    inside a <template> — the initial-fill path's `swap()` — does NOT have that flag set,
+ *    and would in fact run on its own the moment its content is moved into the live
+ *    document; testing-review.md's S6 has the measurements. `rerunScripts` below runs
+ *    unconditionally on both paths regardless, since re-creating an already-working script
+ *    element is harmless and keeping one path special-cased is not worth the risk.) Slot
+ *    content is allowed to carry its own script, so each one is re-created as a fresh
+ *    element, which resets that flag and lets it run.
  *  - Slot content lands long after the shell script ran, so the shell cannot bind to it
  *    directly. Every fill fires a `slot:ready` event the shell can listen for.
  *  - The generation response closes when generation ends, so later edits arrive by

@@ -1,11 +1,25 @@
 # Test Cases — Frontend
 
-**Status:** draft · 2026-08-30
+**Status:** resynced against the Phase 5 code · 2026-08-31
 **Scope:** the studio UI, the streamed preview document, the `swap()` runtime, and the
 rendered behaviour of generated apps. Server-side behaviour is in
 [`tests-backend.md`](./tests-backend.md).
 
-Cases marked **(P2)** depend on Phase 2 landing; the rest apply to the code as it stands.
+**Nothing here has been implemented yet.** This document was written during Phase 2 and last
+updated at Phase 3.5; this pass brings it back in line with the code.
+
+Phase markers (**P2**, **P4**, **P5**) record *when a case became relevant*, not what is still
+pending — every phase they refer to has landed.
+
+> **Section B carried three assertions that are now backwards**, plus a premise in the Harness
+> section below that the whole document rested on. All four described the pre-Phase-5 origin
+> posture: apps on one shared origin, an opaque frame, no working `localStorage`. Phase 5
+> inverted every one of them on purpose, under locked decision #8. Implemented as written,
+> they would fail on correct code — and the cheapest way to make B2 green is to delete
+> `allow-same-origin`, which quietly reverts the decision.
+>
+> They are corrected below, with the old assertion named in each case so nobody re-derives
+> the original and assumes it was lost in an edit.
 
 ---
 
@@ -15,21 +29,64 @@ Cases marked **(P2)** depend on Phase 2 landing; the rest apply to the code as i
 things worth testing are progressive HTML parsing, `<template>` semantics, script execution
 timing, and cross-origin isolation. None of them exist in jsdom.
 
-Run against the **same fake provider** the backend suite uses (see `tests-backend.md`).
-That is what makes timing and ordering assertions possible — a fake that emits slot two
-before slot one, or stalls for two seconds mid-document, is the only way to test the
-behaviours that matter. Both servers must be running on their real origins
-(`localhost:3000` and `127.0.0.1:3001`), because several cases assert on the boundary
-between them.
+Run against the **same fake provider** the backend suite uses (see `tests-backend.md`), which
+that suite owns and builds. It is what makes timing and ordering assertions possible — a fake
+that emits slot two before slot one, or stalls for two seconds mid-document, is the only way
+to test the behaviours that matter.
 
-Two Playwright specifics worth setting up once:
+**But most of this document does not need it.** See "Seeding instead of generating" below;
+the fixture is only genuinely required for the streaming cases. Say early what this suite
+needs from its interface — explicit `await fake.emit(chunk)` chunk-driving, which no backend
+case asks for — or it will be built without that and have to be reworked. Both servers must be running on their real origins, because several
+cases assert on the boundary between them — the studio on `localhost:3000`, and generated
+apps on **`<app-id>.apps.localhost:3001`** (Phase 5), not the shared `127.0.0.1:3001` this
+document originally assumed.
+
+Three Playwright specifics worth setting up once:
 
 - Assertions about *intermediate* states (skeletons visible, some slots landed) need the
   fake to hold a chunk open. Drive it explicitly — `await fake.emit(chunk)` — rather than
   racing against real timing.
-- The preview iframe is cross-origin and sandboxed without `allow-same-origin`, so
-  `frame.contentDocument` is null from the studio page. Use Playwright's `frameLocator` /
-  `page.frames()`, which work across origins.
+- **The preview iframe is still cross-origin from the studio page**, so
+  `frame.contentDocument` is null and `frameLocator` / `page.frames()` are still the way in.
+  The reason changed, though, and it matters for what you can assert: the frame is no longer
+  on an *opaque* origin. It has a real one — its own subdomain — so it now has working
+  storage, and `frame.evaluate` inside it sees a normal document rather than a
+  permission-denied shell.
+- Chromium resolves any `*.localhost` name to loopback with no hosts-file entry, so
+  per-app origins work out of the box. If a future CI image does not, point
+  `SANDBOX_APP_ORIGIN_TEMPLATE` at a wildcard resolver rather than collapsing apps back onto
+  one origin to make tests pass — that would disable the isolation section B exists to check.
+
+**This suite owns the real origins.** It cannot use ephemeral ports: `swapRuntime` bakes
+`STUDIO_PUBLIC_URL` into every generated document and checks `event.origin` against it on
+every `postMessage`, and the data API derives its host cross-check from
+`SANDBOX_APP_ORIGIN_TEMPLATE`. Randomising ports breaks B1, B3, B6–B10 and the whole edit
+channel. The backend suite runs on ephemeral ports so the two do not collide.
+
+### Seeding instead of generating
+
+**A completed app is just a database row** — `plan` JSONB plus `document`. `internal.ts`
+returns a complete row's stored document *before* it claims the row and before it resolves
+any credential, so a seeded `status=complete` row renders through the full stack with **no
+provider configured at all**.
+
+That removes the fake provider from most of this document. Working off canned rows:
+
+- **B1–B10** — every security invariant. These need an app whose script attempts an access
+  and writes the result somewhere observable; a `title` change is the simplest channel out of
+  a frame, and a hand-written document is a more reliable way to get one than asking a model.
+- **C1**, **E5**, **E7** — quirks mode, replay, unknown id.
+- **H1–H4** — the data runtime's presence, persistence across a reload, cross-app isolation.
+
+What genuinely needs the fixture is the *streaming* behaviour, which a stored document by
+definition cannot exercise: **C2–C8**, **E1–E4**, **E6**, **E8**, and **H5** (which needs a
+real edit round trip through the `edit` role).
+
+Seeding is also better testing where it applies. A canned document is deterministic, states
+its own preconditions, and cannot fail because a fake's script drifted — and for section B in
+particular, the app under test is adversarial by design, which is not something to leave to a
+generator.
 
 ---
 
@@ -62,20 +119,43 @@ depends on and that nothing else would notice breaking.
 
 | ID | Case | Passes when |
 |---|---|---|
-| B1 | Preview iframe `src` | Host is `127.0.0.1`, **not** `localhost` |
-| B2 | Preview iframe `sandbox` attribute | Contains `allow-scripts`; does **not** contain `allow-same-origin` |
-| B3 | Generated app reads `document.cookie` | Empty, even after a cookie is set on `localhost:3000` |
+| B1 | Preview iframe `src` (P5) | Host is `<app-id>.apps.localhost` — per app, and never the studio's own origin |
+| B2 | Preview iframe `sandbox` attribute (P5) | Contains `allow-scripts` **and** `allow-same-origin` |
+| B3 | Generated app reads `document.cookie` | Empty, even after a session cookie exists on `localhost:3000` |
 | B4 | Generated app touches `window.parent.document` | Throws a cross-origin `SecurityError` |
-| B5 | Generated app calls `localStorage` | Throws or is empty — opaque origin, no persistence |
+| B5 | Generated app writes `localStorage`, second app reads it (P5) | The write **succeeds and persists**; the second app sees nothing — per-app origins, not per-app nothing |
 | B6 | Generated app `fetch`es a studio endpoint | Blocked by CORS; response unreadable |
-| B7 | Preview URL opened **directly** in a tab | Renders, but assert it is on the sandbox origin only — documents the known Phase 5 exposure from locked decision #8 |
+| B7 | App A `fetch`es `<B-id>.apps.localhost/preview/<B-id>` (P5) | Blocked by CORS — A cannot read B's document, and therefore cannot read B's token out of it |
+| B8 | Preview URL opened **directly** in a tab (P5) | Renders on its own per-app origin; the same-origin read that B7 blocks is unavailable here too |
+| B9 | App A `fetch`es its own `/data/...` from inside the frame (P5) | Succeeds — same-origin, no CORS header involved |
+| B10 | Studio page `postMessage` to the frame (P5) | Sent with the app's exact origin as `targetOrigin`, never `"*"` |
 
-B3 through B6 need the fake provider to return an app whose script attempts the access and
+B3 through B7 need the fake provider to return an app whose script attempts the access and
 writes the result somewhere observable — a `title` change is the simplest channel out of a
-sandboxed frame.
+frame.
 
-B7 does not assert a fix. It pins the current state so that when per-app origins arrive
-before Phase 5, the test is updated deliberately rather than the exposure being forgotten.
+**B2 and B5 are inverted from what this document said before.** B2 asserted that
+`allow-same-origin` was *absent*; B5 asserted that `localStorage` *threw or was empty*. Both
+were correct through Phase 4 and are wrong now: Phase 5 added the attribute deliberately,
+because a same-origin `fetch("/data/...")` from inside the frame requires it, and it is only
+safe because apps moved to per-app origins in the same change.
+
+That pairing is the thing to test, not either half. `allow-same-origin` on a *shared* origin
+is precisely the failure locked decision #8 exists to prevent, and each half looks reasonable
+on its own — which is why B1 and B2 should fail as a unit if either regresses.
+
+B5's new form is the sharper test anyway. "Storage throws" only proved the frame was
+crippled; "A writes, A still sees it after a reload, B never sees it" proves the isolation
+actually holds while the feature works.
+
+**B7 replaces the old B7**, which pinned the shared-origin exposure so it would not be
+forgotten before Phase 5. It was not forgotten — the exposure is closed, and B7 now asserts
+the closure. The concrete attack it guards is the one that forced per-app origins:
+`fetch("/preview/<other-id>").then(r => r.text())`, same-origin on a shared host, hands over
+another app's data-API token straight out of its HTML.
+
+B9 is the positive case that keeps B6 and B7 honest. Three CORS assertions that all say
+"blocked" would also pass if `fetch` were broken entirely.
 
 ---
 
@@ -115,23 +195,42 @@ covers the fiddliest code in the phase.
 |---|---|---|
 | D1 | `swap("x")` with a matching template | Template content lands inside `#slot-x`; the template element is removed |
 | D2 | After swap | `anyapp-skeleton` class removed and inline `min-height` cleared |
-| D3 | Slot content containing `<script>` | **The script executes** |
-| D4 | Slot script with a `src` attribute | Attributes copied onto the re-created element; the external script loads |
+| D3 | Slot content containing `<script>`, both via initial `swap()` **and** a postMessage edit | **The script executes on both paths** |
+| D4 | Slot script with a `src` attribute, both via initial `swap()` **and** a postMessage edit | Attributes copied onto the re-created element; the external script loads on both paths |
 | D5 | `slot:ready` event | Fires once per swap with the correct `detail.id` |
 | D6 | Two slots swapped in **reverse** document order | Both land in the right place |
 | D7 | `swap("nope")` — no such template or slot | No-op, no exception |
 | D8 | `swap("x")` called twice | Second call is a no-op; content is not duplicated |
 | D9 | Shell script vs. slot script ordering | The shell script has already run when a slot script executes |
 
-D3 is the single most important case in this document. A `<script>` moved out of a
-`<template>` by DOM insertion **never executes** — that is standard HTML behaviour, and the
-re-creation loop in `SWAP_RUNTIME` exists solely to defeat it. If that loop is ever
-"simplified", every interactive generated app becomes dead markup, and it looks exactly like
-a model-quality problem rather than a bug.
+D3 is the single most important case in this document — but only its postMessage sub-case
+actually pins the reason the re-creation loop (`rerunScripts` in `SWAP_RUNTIME`) exists.
+Measured directly (testing-review.md's S6): a `<script>` the *document* parser placed inside
+a `<template>` — the shape `swap()` consumes on initial fill — has no "already started" flag
+set, and executes on its own the moment its content is moved into the live document, loop or
+not. It is specifically a `<script>` parsed via the *fragment*-parsing algorithm —
+`element.innerHTML = ...`, which is how the postMessage edit path turns `msg.html` into a
+template before handing it to the same `fill()` — that gets its "already started" flag set
+at parse time and would never auto-execute without the loop. So `swap()` alone (D3's first
+sub-case) would still pass with the loop deleted; only the postMessage sub-case is a real
+regression guard. If the loop is ever "simplified" on the strength of the initial-fill case
+alone, every *edited* interactive region goes dead, and it looks exactly like a
+model-quality problem rather than a bug. D4 has the identical shape (an external `src`
+script also loads without the loop via `swap()` alone) and needs the same two-sub-case
+treatment to actually guard anything; it uses it now for that reason.
 
-D6 is forward-compatibility for Phase 4. Slots arrive in completion order once fill fans
-out, and the format is supposed to already support that. Locking it in now means Phase 4 is
-an orchestration change, as planned, rather than a format change.
+D6 was written as forward-compatibility for Phase 4, and the bet paid off — Phase 4 was an
+orchestration change with no format move, exactly as planned. It stays as a regression guard,
+and it is now the *only* browser-side coverage of out-of-order landing, because
+`LLM_FILL_MODE` defaults to `sequential`: an end-to-end generation no longer exercises it.
+Drive `swap()` directly rather than through a generation.
+
+**D10 (P5) — the data runtime.** Serve a page containing `dataRuntime(token)` and assert
+`window.anyapp.data` exposes `create`/`list`/`get`/`update`/`remove`, that each sends
+`Authorization: Bearer <token>`, and that a non-2xx response rejects with the server's `error`
+string rather than resolving. The runtime is inlined into every data-backed app and is the
+only HTTP code the model is allowed to rely on; a silent failure in it looks exactly like a
+model-quality problem.
 
 ---
 
@@ -149,8 +248,14 @@ an orchestration change, as planned, rather than a format change.
 | E8 | Viewer closes the tab mid-generation | No browser console errors; the studio stays responsive |
 
 E6 catches a real class of bug: the streamed path and the assembled-document path build the
-same page by different code paths (`renderSkeletons` + swaps vs. `renderFilled`). They can
+same page by different code paths (`renderSkeletons` + swaps vs. `renderDocument`). They can
 drift without either one looking broken on its own.
+
+**Assert equivalence, not byte-identity.** Through Phase 3 the two were byte-identical and a
+backend check enforced it. Phase 4 deleted that check on purpose: slots stream in completion
+order and `renderDocument` emits them in plan order, so the documents differ and `swap()` has
+always been order-independent. A screenshot comparison after both settle is the right shape;
+comparing markup is not.
 
 ---
 
@@ -201,17 +306,55 @@ it renders provider text straight into the frame.
 
 ---
 
+## H. Generated-app data (P5)
+
+Appended after G so every existing case id keeps its number. These are the browser-side half
+of `tests-backend.md`'s section K — K proves the API enforces its rules, H proves a generated
+app can actually use it.
+
+| ID | Case | Passes when |
+|---|---|---|
+| H1 | App with a `DATA` section | Its document contains the data runtime and a token |
+| H2 | App with no `DATA` section | Contains neither — a static app carries no credential it never uses |
+| H3 | Create a record from inside the frame, then reload | The record is still there — the product claim of the whole phase |
+| H4 | Two apps, same collection name | Each sees only its own rows |
+| H5 | Data-backed app after a slot edit | Still reads its existing rows — the token survived re-rendering |
+| H6 | Data call while the API returns 429 | The app shows something honest; no permanent spinner, no unhandled rejection |
+| H7 | Console during a data-backed app's load | No errors |
+
+H5 is the one that would be missed. Every edit re-renders the document through
+`renderDocument`, so a token that was stored rather than derived would be silently dropped or
+regenerated, and the app would keep working right up until its first edit. `mintAppToken` is
+a pure function of the app id specifically to make that unrepresentable — H5 is what proves
+the property end to end, from the browser, where a user would actually notice.
+
+H6 exists because the failure mode is invisible server-side. The API correctly returns 429;
+whether the *app* handles it is a prompt-quality question, and both fill prompts now carry a
+rule about pending and failed states. This is where that rule is checked.
+
+---
+
 ## Suggested order
 
-1. **D1–D9.** No generation needed, fast, deterministic, and they cover the phase's
-   trickiest code. D3 first.
-2. **B1–B6.** Cheap, and they guard the architecture's central claim. B2 in particular is
-   one attribute away from silently disappearing.
-3. **C1, C6.** The two invariants that must never regress: not-quirks-mode, and content
-   visible while the response is still open.
-4. **A1–A9.** Ordinary UI coverage.
-5. **C2–C5, C7, C8, E1–E8.** Once Phase 2 has settled.
-6. **G4, G7** with Phase 3.5, alongside their backend counterparts H4/H5 — leak checks are
-   worth having before the thing that can leak exists. The rest of **G** as the settings UI
-   is built.
+Steps 1–4 need **no fake provider**, so this suite can start immediately and in parallel with
+the backend one — it does not wait on the fixture, and by the time step 5 arrives the fixture
+exists.
+
+1. **D1–D10.** No generation, no servers, no database — a static page and Playwright. Fast,
+   deterministic, and they cover the trickiest code in the project. **D3 first** — still the
+   single most important case here.
+2. **B1–B10**, on seeded rows. Cheap, and they guard the architecture's central claim. B1 and
+   B2 should be written as a pair that fails together: per-app origin and `allow-same-origin`
+   are only safe in combination, and either one alone looks perfectly reasonable.
+3. **H1–H4**, on seeded rows. The Phase 5 product claim, minus the edit round trip.
+4. **C1, E5, E7, A1–A9.** Ordinary UI coverage and the two seedable invariants.
+5. **C6** and the rest of **C**, then **E1–E4, E6, E8, H5** — the streaming and edit cases.
+   These are the ones that need the fixture. C6 is the invariant that must never regress:
+   content visible while the response is still open.
+6. **G.** G4 and G7 first within it, alongside backend H4/H5 — a credential can leak into a
+   page as easily as into a database column, and the error banner is the likeliest route.
 7. **F.** Last, on a schedule, tracked as a rate.
+
+Step 7 originally said "with Phase 3.5, before the thing that can leak exists." Phase 3.5 has
+shipped, so that timing is gone — but G4 and G7 keep their priority within G for the same
+reason it was given.

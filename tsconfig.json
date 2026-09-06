@@ -1,5 +1,10 @@
 {
   "extends": "@any-app/tsconfig/base.json",
-  "include": ["apps/*/src/**/*.ts", "packages/*/src/**/*.ts", "scripts/**/*.mjs"],
-  "exclude": ["node_modules"]
+  "include": ["apps/*/src/**/*.ts", "packages/*/src/**/*.ts", "scripts/**/*.mjs", "tests/**/*.ts"],
+  // tests/frontend is excluded and checked separately, via its own tsconfig.json with the DOM
+  // lib enabled (`npm run typecheck` runs both) — see testing-review.md H2. `tsc --build`
+  // shares one global scope across every included file, so a DOM reference anywhere in this
+  // program used to leak DOM's ambient globals (e.g. `ReadableStream`) into every other file,
+  // including apps/sandbox/src/index.ts's unrelated use of the Node global of the same name.
+  "exclude": ["node_modules", "tests/frontend"]
 }

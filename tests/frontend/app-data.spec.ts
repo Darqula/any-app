@@ -1,0 +1,244 @@
+/**
+ * H1-H7 — generated-app data. H1-H4 and H6-H7 run against seeded rows (no model); H5 needs
+ * one real edit round trip, the same session-credential-via-settings technique security.spec
+ * .ts's B10 uses (the edit route is session-aware; a fresh generation is not — see
+ * global-setup.ts's header comment and this task's report).
+ *
+ * H3/H4/H5/H6/H7 drive `window.anyapp.data` via `frame.evaluate()` rather than baking calls
+ * into the seeded document's own `<script>` — deliberately, for H3/H5 in particular: the
+ * document's own script re-runs on every fresh load (including the "reload" half of each of
+ * those cases), so a create baked into it would double-write on reload and invalidate the
+ * very persistence check being made. Evaluating from the test isolates "when this record was
+ * created" from "when this app was loaded".
+ *
+ * H6/H7 filter one specific, already-reported production error (see
+ * `isKnownStudioHomepageSyntaxBug` in doc-builder.ts) out of what they assert on — it fires
+ * on every studio homepage load, unrelated to the data-backed app either case is actually
+ * about.
+ */
+import { readFile } from "node:fs/promises";
+import { test, expect } from "@playwright/test";
+import { mintAppToken } from "@any-app/protocol";
+import { startFakeProvider } from "../harness/fake-provider";
+import { HANDOFF_PATH } from "./global-setup";
+import {
+  seedFilledApp,
+  openSidebarApp,
+  waitForFrameBySrc,
+  STUDIO_ORIGIN,
+  isKnownStudioHomepageSyntaxBug,
+} from "./doc-builder";
+
+const { databaseUrl, appTokenSecret } = JSON.parse(await readFile(HANDOFF_PATH, "utf8")) as {
+  databaseUrl: string;
+  appTokenSecret: string;
+};
+
+test.describe("H — generated-app data", () => {
+  test("H1 — an app with a DATA section carries the data runtime and a token", async ({ page }) => {
+    const prompt = `H1-${Date.now()}`;
+    const { id, document } = await seedFilledApp(databaseUrl, appTokenSecret, STUDIO_ORIGIN, prompt, {
+      collections: [{ name: "todos", description: "things to do" }],
+    });
+    expect(document).toContain("window.anyapp");
+    expect(document).toContain(mintAppToken(id, appTokenSecret));
+
+    const { frame } = await openSidebarApp(page, prompt);
+    const hasData = await frame.evaluate(() => typeof (window as unknown as { anyapp?: { data?: { create?: unknown } } }).anyapp?.data?.create === "function");
+    expect(hasData).toBe(true);
+  });
+
+  test("H2 — a static app with no DATA section carries no data runtime and no token", async ({ page }) => {
+    const prompt = `H2-${Date.now()}`;
+    const { id, document } = await seedFilledApp(databaseUrl, appTokenSecret, STUDIO_ORIGIN, prompt, {});
+    expect(document).not.toContain("window.anyapp");
+    expect(document).not.toContain(mintAppToken(id, appTokenSecret));
+
+    const { frame } = await openSidebarApp(page, prompt);
+    const hasData = await frame.evaluate(
+      () => typeof (window as unknown as { anyapp?: { data?: unknown } }).anyapp?.data === "undefined",
+    );
+    expect(hasData).toBe(true);
+  });
+
+  test("H3 — a record created from inside the frame is still there after a reload", async ({ page }) => {
+    const prompt = `H3-${Date.now()}`;
+    await seedFilledApp(databaseUrl, appTokenSecret, STUDIO_ORIGIN, prompt, {
+      collections: [{ name: "notes", description: "notes" }],
+    });
+    const { frame, src } = await openSidebarApp(page, prompt);
+    const created = await frame.evaluate(async () => {
+      const anyapp = (window as unknown as { anyapp: { data: DataApiBrowser } }).anyapp;
+      return anyapp.data.create("notes", { text: "hello" });
+    });
+    expect(created.id).toBeTruthy();
+
+    // Reload the SAME app — a fresh iframe, a fresh load.
+    await page.locator("#generation-list li", { hasText: prompt }).locator("button").click();
+    const frame2 = await waitForFrameBySrc(page, src);
+    const list = await frame2.evaluate(async () => {
+      const anyapp = (window as unknown as { anyapp: { data: DataApiBrowser } }).anyapp;
+      return anyapp.data.list("notes");
+    });
+    expect(list.records).toHaveLength(1);
+    expect((list.records[0]!.data as { text: string }).text).toBe("hello");
+  });
+
+  test("H4 — two apps with the same collection name each see only their own rows", async ({ page }) => {
+    const promptA = `H4-A-${Date.now()}`;
+    const promptB = `H4-B-${Date.now()}`;
+    await seedFilledApp(databaseUrl, appTokenSecret, STUDIO_ORIGIN, promptA, {
+      collections: [{ name: "shared", description: "x" }],
+    });
+    await seedFilledApp(databaseUrl, appTokenSecret, STUDIO_ORIGIN, promptB, {
+      collections: [{ name: "shared", description: "x" }],
+    });
+
+    const { frame: frameA } = await openSidebarApp(page, promptA);
+    await frameA.evaluate(async () => {
+      const anyapp = (window as unknown as { anyapp: { data: DataApiBrowser } }).anyapp;
+      await anyapp.data.create("shared", { owner: "A" });
+    });
+    const listA = await frameA.evaluate(async () => {
+      const anyapp = (window as unknown as { anyapp: { data: DataApiBrowser } }).anyapp;
+      return anyapp.data.list("shared");
+    });
+    expect(listA.records).toHaveLength(1);
+    expect((listA.records[0]!.data as { owner: string }).owner).toBe("A");
+
+    const { frame: frameB } = await openSidebarApp(page, promptB);
+    const listB = await frameB.evaluate(async () => {
+      const anyapp = (window as unknown as { anyapp: { data: DataApiBrowser } }).anyapp;
+      return anyapp.data.list("shared");
+    });
+    expect(listB.records).toHaveLength(0);
+  });
+
+  test("H5 — a data-backed app still reads its rows after a slot edit (the token survives re-rendering)", async ({ page }) => {
+    const fake = await startFakeProvider();
+    try {
+      const prompt = `H5-${Date.now()}`;
+      const slotId = "alpha";
+      await seedFilledApp(databaseUrl, appTokenSecret, STUDIO_ORIGIN, prompt, {
+        collections: [{ name: "notes", description: "x" }],
+        slots: [{ id: slotId, height: 100, spec: "x" }],
+        content: { [slotId]: "<p>original</p>" },
+      });
+
+      const { frame, src } = await openSidebarApp(page, prompt);
+      const seeded = await frame.evaluate(async () => {
+        const anyapp = (window as unknown as { anyapp: { data: DataApiBrowser } }).anyapp;
+        return anyapp.data.create("notes", { text: "seed" });
+      });
+      expect(seeded.id).toBeTruthy();
+
+      await page.goto("/settings");
+      await page.selectOption('#cred-form select[name="provider"]', "openai");
+      await page.fill('#cred-form input[name="apiKey"]', "test-key-h5");
+      await page.fill('#cred-form input[name="baseUrl"]', fake.baseUrl);
+      await page.fill('#cred-form input[name="model"]', "fake-model");
+      fake.queueComplete({ text: "ok" });
+      await page.click('#cred-form button[type="submit"]');
+      await expect(page.locator("#cred-result")).toContainText("Saved and validated");
+
+      fake.queueComplete({ text: "<p>edited region</p>" });
+      await page.goto("/");
+      await page.locator("#generation-list li", { hasText: prompt }).locator("button").click();
+      await page.fill('#edit-form input[name="instruction"]', "reword this");
+      await page.selectOption('#edit-form select[name="target"]', slotId);
+      await page.click('#edit-form button[type="submit"]');
+      await expect(page.locator("#edit-result")).toContainText("Updated");
+
+      // Reload the app fresh — every edit re-renders the whole document through
+      // renderDocument, reproducing mintAppToken(id, secret) rather than looking a token
+      // up. If it didn't, this list() call would 401 instead of just coming back empty.
+      await page.locator("#generation-list li", { hasText: prompt }).locator("button").click();
+      const frame2 = await waitForFrameBySrc(page, src);
+      const list = await frame2.evaluate(async () => {
+        const anyapp = (window as unknown as { anyapp: { data: DataApiBrowser } }).anyapp;
+        return anyapp.data.list("notes");
+      });
+      expect(list.records).toHaveLength(1);
+      expect((list.records[0]!.data as { text: string }).text).toBe("seed");
+      await expect(frame2.locator(`#slot-${slotId}`)).toContainText("edited region");
+    } finally {
+      await fake.close();
+    }
+  });
+
+  test("H6 — a 429 from the data API is handled honestly: something readable on screen, no unhandled rejection", async ({ page }) => {
+    const prompt = `H6-${Date.now()}`;
+    await seedFilledApp(databaseUrl, appTokenSecret, STUDIO_ORIGIN, prompt, {
+      collections: [{ name: "items", description: "x" }],
+    });
+    const pageErrors: string[] = [];
+    page.on("pageerror", (e) => pageErrors.push(String(e)));
+
+    const { frame } = await openSidebarApp(page, prompt);
+    const result = await frame.evaluate(async () => {
+      const anyapp = (window as unknown as { anyapp: { data: DataApiBrowser } }).anyapp;
+      const status = document.createElement("p");
+      status.id = "h6-status";
+      status.textContent = "loading…";
+      document.body.appendChild(status);
+
+      // The app's default write bucket starts full at 60 (packages/records/src/quota.ts) —
+      // 62 rapid creates guarantees at least one 429, with every call paired to its own
+      // resolve/reject handler so nothing here can produce an unhandled rejection.
+      const calls: Promise<{ ok: boolean; message?: string }>[] = [];
+      for (let i = 0; i < 62; i++) {
+        calls.push(
+          anyapp.data.create("items", { n: i }).then(
+            () => ({ ok: true }),
+            (e: Error) => ({ ok: false, message: e.message }),
+          ),
+        );
+      }
+      const results = await Promise.all(calls);
+      const failed = results.filter((r) => !r.ok);
+      status.textContent =
+        failed.length > 0 ? `done — ${failed.length} failed: ${failed[0]!.message}` : "done — all succeeded";
+      return { failedCount: failed.length, sampleError: failed[0]?.message ?? null };
+    });
+
+    expect(result.failedCount).toBeGreaterThan(0);
+    expect(result.sampleError).toMatch(/rate limit/i);
+    await expect(frame.locator("#h6-status")).not.toHaveText("loading…");
+    await expect(frame.locator("#h6-status")).toContainText("failed");
+    expect(pageErrors.filter((e) => !isKnownStudioHomepageSyntaxBug(e))).toEqual([]);
+  });
+
+  test("H7 — no console errors while a data-backed app loads", async ({ page }) => {
+    const prompt = `H7-${Date.now()}`;
+    await seedFilledApp(databaseUrl, appTokenSecret, STUDIO_ORIGIN, prompt, {
+      collections: [{ name: "things", description: "x" }],
+    });
+    const errors: string[] = [];
+    page.on("console", (msg) => {
+      if (msg.type() === "error") errors.push(msg.text());
+    });
+    page.on("pageerror", (e) => errors.push(String(e)));
+
+    const { frame } = await openSidebarApp(page, prompt);
+    const created = await frame.evaluate(async () => {
+      const anyapp = (window as unknown as { anyapp: { data: DataApiBrowser } }).anyapp;
+      return anyapp.data.create("things", { n: 1 });
+    });
+    expect(created.id).toBeTruthy();
+    expect(errors.filter((e) => !isKnownStudioHomepageSyntaxBug(e))).toEqual([]);
+  });
+});
+
+// Ambient type used only inside `frame.evaluate(...)` callbacks above, where the real
+// `window.anyapp.data` shape (packages/protocol/src/data-runtime.ts) is not statically
+// known to this file's own TypeScript program (it is defined and attached at runtime,
+// inside the frame, by an inlined script). Declared once, at module scope, exactly the way
+// data-runtime.spec.ts casts through `window as unknown as {...}` for the same reason.
+interface DataApiBrowser {
+  create(collection: string, data: unknown): Promise<{ id: string }>;
+  list(
+    collection: string,
+    where?: unknown,
+    limit?: number,
+  ): Promise<{ records: { id: string; data: unknown }[]; nextCursor: string | null }>;
+}

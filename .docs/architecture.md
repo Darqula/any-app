@@ -77,8 +77,8 @@ deliberately:
   whole module graph, so the sandbox process ends up holding a privileged pool anyway.
   `packages/store` and `packages/records` each duplicate the small `.env`-loading helper
   they need rather than share one, for exactly this reason. Caught live during Phase 5
-  review (`review-phase-5.md`'s S1) — `sandbox` had imported only `loadEnv` from `store`,
-  which was correct as an import specifier and wrong as a dependency.
+  review (doc since removed, all findings applied) — `sandbox` had imported only `loadEnv`
+  from `store`, which was correct as an import specifier and wrong as a dependency.
 - `sandbox` connects to Postgres under a **restricted role** that can reach the
   generated-app records table only — never users or billing.
 - npm workspaces hoist to a flat `node_modules`, so these rules are not enforced by module

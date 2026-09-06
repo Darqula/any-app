@@ -84,13 +84,20 @@ export function isSlotErrorPlaceholder(html: string): boolean {
  * Replaces each `<div data-slot="x"></div>` with a sized skeleton the browser can paint
  * immediately. Unknown slot ids are left as an empty div rather than throwing — a plan
  * with one stray placeholder should still render.
+ *
+ * Keeps `data-slot="x"` on the rendered element alongside `id="slot-x"` (S12): the planner
+ * prompt shows the model only the `data-slot` placeholder and never states the `id="slot-…"`
+ * mapping, so a model that reaches for its own region with `[data-slot="x"]` — exactly the
+ * identifier it was given — would otherwise always get `null`, since `swap()`/`fill()`
+ * (`swap-runtime.ts`) replace this element's *children*, never the element itself. Carrying
+ * the attribute through makes that selector work too, independent of prompt compliance.
  */
 export function renderSkeletons(shell: string, slots: SlotSpec[]): string {
   const byId = new Map(slots.map((s) => [s.id, s]));
   return shell.replace(PLACEHOLDER, (_match, id: string) => {
     const slot = byId.get(id);
     const height = slot ? slot.height : 0;
-    return `<div id="slot-${id}" class="anyapp-skeleton" style="min-height:${height}px"></div>`;
+    return `<div id="slot-${id}" data-slot="${id}" class="anyapp-skeleton" style="min-height:${height}px"></div>`;
   });
 }
 

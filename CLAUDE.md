@@ -85,7 +85,7 @@ packages/tsconfig/   shared tsconfig, extended by name (@any-app/tsconfig/base.j
 `@any-app/generator` (holds the provider key) and must never depend on `@any-app/store` —
 not even for one export. `store/src/index.ts` re-exports a pool built at module scope under
 the privileged role, so importing anything from `store` evaluates that whole graph; a Phase
-5 review caught `apps/sandbox` doing exactly this for `loadEnv` alone (`review-phase-5.md`'s
+5 review caught `apps/sandbox` doing exactly this for `loadEnv` alone (that review's
 S1) — correct as an import specifier, wrong as a dependency. `sandbox` gets `loadEnv` from
 `@any-app/records` instead. See `.docs/architecture.md`'s "Dependency rules".
 `packages/records` exists as its own package, not inside `store`, for the same reason:

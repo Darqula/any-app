@@ -2,3 +2,6 @@ node_modules/
 .env
 *.tsbuildinfo
 dist/
+tests/test-results/
+tests/playwright-report/
+tests/quality/artifacts/

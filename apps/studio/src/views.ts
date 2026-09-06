@@ -1,6 +1,31 @@
 import type { Generation } from "@any-app/store";
 import type { CredentialHint } from "@any-app/store";
 import type { Role, ProviderId } from "@any-app/generator";
+import type { RoleProblem } from "./credential-resolve";
+
+/**
+ * htmx 2.0.4's shipped default `responseHandling` is
+ * `[{code:"204",swap:false},{code:"[23]..",swap:true},{code:"[45]..",swap:false,error:true}]`
+ * — read straight out of the served `htmx.min.js`. That `swap:false` on `[45]..` means a
+ * 4xx/5xx body is **never** swapped into its target, and this app returns its user-facing
+ * error HTML exactly that way throughout: settings.ts's invalid-key path (400) and edits.ts's
+ * failure paths (400/404/409/500/502/503) all render `editProblem()` with an error status.
+ * Every one of them was silently discarded — `#cred-result`/`#edit-result` simply stayed as
+ * they were, so a failed edit or a rejected credential looked like nothing had happened at
+ * all (testing-review.md S11). The scrubbing worked and then the scrubbed message was thrown
+ * away.
+ *
+ * Fixed here rather than by returning these problems with a 200: the status codes are real
+ * contracts, asserted directly by the backend suite, and "200 OK" for a rejected credential
+ * would be a worse API to make a UI bug go away. `error:true` is kept so htmx still fires its
+ * own error events and console logging; only `swap` changes.
+ *
+ * A `<meta>` rather than an inline script on purpose — htmx reads this at load time, so there
+ * is no ordering dependency on a separate script block, and S10 is a fresh reminder that an
+ * inline block in a template literal is the more fragile of the two.
+ */
+const HTMX_CONFIG_META =
+  `<meta name="htmx-config" content='{"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"[45]..","swap":true,"error":true}]}'>`;
 
 function escapeHtml(value: string): string {
   return value
@@ -169,6 +194,7 @@ export function settingsPage(hints: CredentialHint[], roleRows: { role: Role; pr
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>any-app settings</title>
+${HTMX_CONFIG_META}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/htmx/2.0.4/htmx.min.js"></script>
 <style>
   :root { color-scheme: light dark; }
@@ -212,12 +238,13 @@ export function settingsPage(hints: CredentialHint[], roleRows: { role: Role; pr
 </html>`;
 }
 
-/** Shown at the top of the home page when a generation would fail right now for lack of a
- * credential, so the gap surfaces before someone spends a wait on a failed generation. */
-export function missingCredentialBanner(missing: { role: Role; provider: ProviderId }[]): string {
+/** Shown at the top of the home page when a generation would fail right now — for lack of a
+ * credential, or because a role has no model configured at all — so the gap surfaces before
+ * someone spends a wait on a failed generation. */
+export function missingCredentialBanner(missing: RoleProblem[]): string {
   if (missing.length === 0) return "";
-  const parts = missing.map((m) => `${m.role} needs ${m.provider}`).join(", ");
-  return `<p class="cred-banner">No credential configured for: ${escapeHtml(parts)}. <a href="/settings">Add one</a> or set the matching key in <code>.env</code>.</p>`;
+  const parts = missing.map((m) => m.message).join(", ");
+  return `<p class="cred-banner">${escapeHtml(parts)}. <a href="/settings">Add a credential</a> or check the matching <code>LLM_*</code> vars in <code>.env</code>.</p>`;
 }
 
 export function generationList(generations: Generation[]): string {
@@ -238,7 +265,7 @@ export function generationList(generations: Generation[]): string {
 
 export function homePage(
   generations: Generation[],
-  missing: { role: Role; provider: ProviderId }[] = [],
+  missing: RoleProblem[] = [],
 ): string {
   return `<!doctype html>
 <html lang="en">
@@ -246,6 +273,7 @@ export function homePage(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>any-app studio</title>
+${HTMX_CONFIG_META}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/htmx/2.0.4/htmx.min.js"></script>
 <style>
   :root { color-scheme: light dark; }
@@ -328,7 +356,13 @@ export function homePage(
       var form = event.target;
       var target = form.elements["target"].value;
       if (!target || target === "css") return;
-      var match = /\/generations\/([^/]+)\/edits/.exec(form.getAttribute("hx-post") || "");
+      // Built with the RegExp constructor, not a regex literal, on purpose: this whole
+      // script is the body of a TEMPLATE LITERAL, where \\/ is not a recognised escape, so a
+      // literal /\\/generations\\/.../ silently loses its backslashes on the way out and the
+      // served line becomes a // comment — which killed the parse of this entire block, and
+      // with it all three helpers here, on every homepage load (testing-review.md S10).
+      // A constructor string needs no backslash at all, so it cannot regress the same way.
+      var match = new RegExp("/generations/([^/]+)/edits").exec(form.getAttribute("hx-post") || "");
       var frame = match && anyappFrameFor(match[1]);
       if (!frame) return;
       // No JSON block to read appOrigin off of yet (the response hasn't come back) — the
