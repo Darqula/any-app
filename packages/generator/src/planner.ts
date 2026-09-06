@@ -1,4 +1,9 @@
-import { SLOT_ID_PATTERN, slotIdsInShell, COLLECTION_PATTERN } from "@any-app/protocol";
+import {
+  SLOT_ID_PATTERN,
+  slotIdsInShell,
+  COLLECTION_PATTERN,
+  unmatchedSlotAttributes,
+} from "@any-app/protocol";
 import type { AppPlan, SlotSpec, CollectionSpec } from "@any-app/protocol";
 import { resolve } from "./resolve";
 import type { ProviderCredential } from "./providers/types";
@@ -59,6 +64,18 @@ export function parsePlan(raw: string): AppPlan {
   // placed; one present in SHELL but absent from SLOTS gets a default-sized skeleton.
   const inShell = slotIdsInShell(shell);
   if (inShell.length === 0) throw new PlanError("shell contains no slot placeholders");
+
+  // A region can vanish silently if it has a `data-slot="x"` attribute the tolerant scan
+  // could not treat as a complete placeholder (real content inside the element, a mismatched
+  // closing tag, a malformed quote) — that slot would just never be requested from fill and
+  // never appear, with no error anywhere. Fail loudly instead: a PlanError here falls back to
+  // the working linear path, which is strictly better than silently shipping a broken app.
+  const unmatched = unmatchedSlotAttributes(shell);
+  if (unmatched.length > 0) {
+    throw new PlanError(
+      `shell has data-slot attribute(s) that did not parse as placeholders: ${unmatched.join(", ")}`,
+    );
+  }
 
   // Two placeholders sharing an id would render as two elements with the same DOM id —
   // swap() would only ever fill the first, leaving the second a permanent skeleton. Reject

@@ -76,6 +76,35 @@ test("A4.7 — shell with zero placeholders: PlanError", () => {
   assert.throws(() => parsePlan(raw), PlanError);
 });
 
+test("A4.7b — placeholder with a styling class (the real-world shape that used to be missed entirely): parses fine", () => {
+  const raw =
+    "===TITLE===\nMy App\n===CSS===\nbody{}\n" +
+    '===SHELL===\n<div class="panel" data-slot="chart"></div>\n===SLOTS===\nchart|200|Chart\n';
+  const plan = parsePlan(raw); // must not throw — this is exactly the case the fix targets
+  assert.deepEqual(plan.slots.map((s) => s.id), ["chart"]);
+});
+
+test("A4.7c — non-div placeholder (<span>) parses fine", () => {
+  const raw =
+    "===TITLE===\nMy App\n===CSS===\nbody{}\n" +
+    '===SHELL===\n<span data-slot="last-updated"></span>\n===SLOTS===\nlast-updated|20|Timestamp\n';
+  const plan = parsePlan(raw);
+  assert.deepEqual(plan.slots.map((s) => s.id), ["last-updated"]);
+});
+
+test("A4.7d — a data-slot attribute that fails to parse as a complete placeholder: PlanError naming it (fail loudly, not silently)", () => {
+  // Real content inside the element is genuinely ambiguous (guard 3) — the tolerant scan
+  // correctly does not match it, but that must not mean the region silently vanishes: it
+  // must surface as a loud PlanError, not a plan that quietly drops "chart".
+  const raw =
+    "===TITLE===\nMy App\n===CSS===\nbody{}\n" +
+    '===SHELL===\n<div data-slot="a"></div><div data-slot="chart"><p>x</p></div>\n===SLOTS===\na|200|A\nchart|200|Chart\n';
+  assert.throws(
+    () => parsePlan(raw),
+    (err: unknown) => err instanceof PlanError && /chart/.test(err.message),
+  );
+});
+
 test("A4.8 — whole response wrapped in a code fence: parsed anyway", () => {
   const raw =
     "```\n===TITLE===\nMy App\n===CSS===\nbody{}\n" +

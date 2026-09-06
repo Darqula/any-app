@@ -48,8 +48,102 @@ export const SLOT_ID_PATTERN = /^[a-z][a-z0-9-]{0,30}$/;
  */
 export const COLLECTION_PATTERN = /^[a-z][a-z0-9_]{0,30}$/;
 
-/** Matches the placeholder the planner is required to write, exactly. */
-const PLACEHOLDER = /<div data-slot="([a-z][a-z0-9-]{0,30})"><\/div>/g;
+/**
+ * Tolerant placeholder scan.
+ *
+ * The planner prompt asks for `<div data-slot="id"></div>` exactly, but the model routinely
+ * writes `<div class="panel" data-slot="chart"></div>` (a styling hook for its own CSS) or
+ * `<span data-slot="last-updated"></span>` — a byte-exact regex missed those entirely,
+ * measured at 28% of real generations losing the whole shell/slots architecture to the
+ * linear fallback (`shell contains no slot placeholders`), plus silent partial drops when
+ * only some placeholders in a shell matched. See `.docs/open-problems.md`'s "Phase 6
+ * pre-flight" section.
+ *
+ * Any tag name, any attributes in any order (in either quote style), self-closing or
+ * open/close with only whitespace between — but never non-whitespace content, which is
+ * genuinely ambiguous and not something a regex can safely treat as an empty placeholder.
+ * Groups: 1 = tag, 2 = attribute blob, 3 = id (double-quoted), 4 = id (single-quoted).
+ */
+const ATTR = '[a-z-]+\\s*=\\s*(?:"[^"]*"|\'[^\']*\')';
+const DS = 'data-slot\\s*=\\s*(?:"([a-z][a-z0-9-]{0,30})"|\'([a-z][a-z0-9-]{0,30})\')';
+const OPEN = "<([a-z][a-z0-9]*)((?:\\s+" + ATTR + ")*?\\s+" + DS + "(?:\\s+" + ATTR + ")*)\\s*";
+const PLACEHOLDER_PATTERN = OPEN + "(?:\\/>|>\\s*<\\/\\1\\s*>)";
+
+/** One `data-slot="id"` attribute occurrence, in the form the generic attribute scan finds it. */
+const DATA_SLOT_ATTR = /data-slot\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
+
+/** A generic `name="value"`/`name='value'` attribute, used to pull attributes out of a match's blob. */
+const GENERIC_ATTR = /([a-zA-Z-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+
+/**
+ * Blanks out `<script>...</script>` bodies (replacing with equal-length spaces, so every
+ * other match's index stays valid against the original string). The shell legitimately
+ * contains scripts, and a model writing `el.innerHTML = '<div data-slot="x"></div>'` must
+ * not have that string rewritten as if it were a real placeholder.
+ */
+function maskScripts(shell: string): string {
+  return shell.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, (m) => " ".repeat(m.length));
+}
+
+interface PlaceholderMatch {
+  index: number;
+  length: number;
+  tag: string;
+  attrs: string;
+  id: string;
+}
+
+/**
+ * Runs the tolerant scan against `shell`, script-masked, skipping any match that is our own
+ * previously-rendered output (contains `id="slot-…"`, either quote style) — since S12,
+ * `renderSkeletons` emits `data-slot` itself, and without this guard a rendered document
+ * would re-scan as if it were an unfilled shell. Both `renderSkeletons` and `slotIdsInShell`
+ * go through this one function so they can never disagree about what counts as a placeholder.
+ */
+function scanPlaceholders(shell: string): PlaceholderMatch[] {
+  const masked = maskScripts(shell);
+  const re = new RegExp(PLACEHOLDER_PATTERN, "gi");
+  const out: PlaceholderMatch[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(masked))) {
+    const full = m[0];
+    if (/id\s*=\s*["']slot-/i.test(full)) continue;
+    const id = (m[3] ?? m[4])!;
+    out.push({ index: m.index, length: full.length, tag: m[1]!, attrs: m[2] ?? "", id });
+  }
+  return out;
+}
+
+function parseAttrs(blob: string): Array<{ name: string; value: string }> {
+  const attrs: Array<{ name: string; value: string }> = [];
+  GENERIC_ATTR.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = GENERIC_ATTR.exec(blob))) {
+    attrs.push({ name: m[1]!, value: m[2] ?? m[3] ?? "" });
+  }
+  return attrs;
+}
+
+/**
+ * Ids named by a `data-slot="..."` attribute somewhere in the (script-masked) shell that the
+ * tolerant scan above did NOT recognize as a complete placeholder — e.g. real content inside
+ * the element, a mismatched closing tag, or a malformed quote. Used by `parsePlan` to fail
+ * loudly with `PlanError` instead of silently dropping the region (see `.docs/open-problems.md`).
+ */
+export function unmatchedSlotAttributes(shell: string): string[] {
+  const masked = maskScripts(shell);
+  const matchedSpans = scanPlaceholders(shell).map((m) => [m.index, m.index + m.length] as const);
+  const isInsideMatch = (i: number) => matchedSpans.some(([start, end]) => i >= start && i < end);
+  const out: string[] = [];
+  DATA_SLOT_ATTR.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = DATA_SLOT_ATTR.exec(masked))) {
+    if (isInsideMatch(m.index)) continue;
+    const raw = (m[1] ?? m[2] ?? "").trim();
+    out.push(raw || "(unparseable)");
+  }
+  return out;
+}
 
 /**
  * Server-owned skeleton styling. Deliberately not left to the planner: skeletons should
@@ -81,29 +175,70 @@ export function isSlotErrorPlaceholder(html: string): boolean {
 }
 
 /**
- * Replaces each `<div data-slot="x"></div>` with a sized skeleton the browser can paint
- * immediately. Unknown slot ids are left as an empty div rather than throwing — a plan
- * with one stray placeholder should still render.
+ * Renders one matched placeholder as a sized skeleton, keeping the model's tag and
+ * attributes rather than discarding them — the model's own stylesheet targets classes it
+ * put on the placeholder (e.g. `class="panel"`), so replacing the element wholesale silently
+ * broke that styling even when the old exact-match regex succeeded.
  *
- * Keeps `data-slot="x"` on the rendered element alongside `id="slot-x"` (S12): the planner
- * prompt shows the model only the `data-slot` placeholder and never states the `id="slot-…"`
- * mapping, so a model that reaches for its own region with `[data-slot="x"]` — exactly the
- * identifier it was given — would otherwise always get `null`, since `swap()`/`fill()`
- * (`swap-runtime.ts`) replace this element's *children*, never the element itself. Carrying
- * the attribute through makes that selector work too, independent of prompt compliance.
+ * Merges rather than clobbers: an existing `style` gets `min-height:<height>px` appended, an
+ * existing `class` gets `anyapp-skeleton` appended, and `id`/`data-slot` are always forced to
+ * our own `id="slot-<id>"` / `data-slot="<id>"` (S12 — see the comment on
+ * `unmatchedSlotAttributes`'s sibling scan above) regardless of what the model wrote there.
+ */
+function renderSkeletonElement(m: PlaceholderMatch, height: number): string {
+  const attrs = parseAttrs(m.attrs);
+  let classValue: string | null = null;
+  let styleValue: string | null = null;
+  const rest: string[] = [];
+  for (const a of attrs) {
+    const lname = a.name.toLowerCase();
+    if (lname === "id" || lname === "data-slot") continue;
+    if (lname === "class") {
+      classValue = a.value;
+      continue;
+    }
+    if (lname === "style") {
+      styleValue = a.value;
+      continue;
+    }
+    rest.push(`${a.name}="${a.value}"`);
+  }
+  const trimmedClass = classValue?.trim() ?? "";
+  const mergedClass = trimmedClass ? `${trimmedClass} anyapp-skeleton` : "anyapp-skeleton";
+  const trimmedStyle = styleValue?.trim() ?? "";
+  const styleSep = trimmedStyle && !trimmedStyle.endsWith(";") ? "; " : "";
+  const mergedStyle = trimmedStyle ? `${trimmedStyle}${styleSep}min-height:${height}px` : `min-height:${height}px`;
+  const parts = [`id="slot-${m.id}"`, `data-slot="${m.id}"`, ...rest, `class="${mergedClass}"`, `style="${mergedStyle}"`];
+  return `<${m.tag} ${parts.join(" ")}></${m.tag}>`;
+}
+
+/**
+ * Replaces each slot placeholder with a sized skeleton the browser can paint immediately.
+ * Unknown slot ids are left with height 0 rather than throwing — a plan with one stray
+ * placeholder should still render. See `unmatchedSlotAttributes` above for why the scan is
+ * tolerant of shape and `renderSkeletonElement` for why the model's own element is kept
+ * rather than replaced.
  */
 export function renderSkeletons(shell: string, slots: SlotSpec[]): string {
   const byId = new Map(slots.map((s) => [s.id, s]));
-  return shell.replace(PLACEHOLDER, (_match, id: string) => {
-    const slot = byId.get(id);
+  const matches = scanPlaceholders(shell);
+  if (matches.length === 0) return shell;
+  let out = "";
+  let last = 0;
+  for (const m of matches) {
+    out += shell.slice(last, m.index);
+    const slot = byId.get(m.id);
     const height = slot ? slot.height : 0;
-    return `<div id="slot-${id}" data-slot="${id}" class="anyapp-skeleton" style="min-height:${height}px"></div>`;
-  });
+    out += renderSkeletonElement(m, height);
+    last = m.index + m.length;
+  }
+  out += shell.slice(last);
+  return out;
 }
 
 /** The list of slot ids actually referenced by the shell, in document order. */
 export function slotIdsInShell(shell: string): string[] {
-  return [...shell.matchAll(PLACEHOLDER)].map((m) => m[1]!);
+  return scanPlaceholders(shell).map((m) => m.id);
 }
 
 /** Opening tag for a slot's content block. Shared with the streaming emitter. */
