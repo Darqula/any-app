@@ -139,10 +139,44 @@ genuinely ambiguous in the spec text itself, not just simplified for time:
   slot's placeholder text is free to *mention* a URL without "referencing" it) but has a real
   gap: an inline `fetch("https://...")` inside a slot's own `<script>` is neither a `src` nor
   an `href` and would slip through.
-- **F8 (backend, class names)** only checks classes present in *static* `class="..."`
-  attributes in the initial HTML. A class added later via `classList.add(...)` — common in
-  exactly the interactive apps this sweep asks for — is invisible to a string-level check and
-  is simply not counted, in either direction.
+- **F8 (backend, class names)** is scored at *element* granularity, not token granularity: an
+  element fails F8 only when **none** of its class tokens is defined in the planner CSS. This
+  was narrowed from an earlier version that failed a slot on *any* undefined token, even one
+  sitting beside a defined class on the same element — e.g. `class="tab js-tab-hook"` where
+  `tab` is defined and `js-tab-hook` never appears in the CSS in any form. The spec's own
+  justification for F8 is "catches the 'content appears unstyled' failure before a human sees
+  it" — an element with a defined base class is not unstyled, so failing it over an extra
+  undefined modifier token was flagging a case the spec's stated purpose doesn't describe as a
+  defect. An element with *zero* defined class tokens still fails F8 exactly as before; that's
+  the genuine "content appears unstyled" case, unchanged. This is a narrowing to match the
+  spec's stated purpose, not a relaxation to improve the number — the underlying "no defined
+  class" defect is still fully caught. The token-level signal didn't vanish: undefined modifiers
+  on an otherwise-styled element are still reported separately as `checks-doc.ts`'s
+  `checkF8ModifierDiagnostic` (id `DIAG:undefined-modifier`), which `report.ts` prints in its own
+  "Backend diagnostics" table, explicitly marked informational and never folded into the F1-F8
+  pass rate.
+  Worth being candid about: the real examples first used to motivate this narrowing
+  (`class="counter-btn minus"`, `class="mode-btn active"`) turned out to be a *different* bug,
+  not real modifiers — `CSS_CLASS_SELECTOR` used to carry a lookbehind that silently failed to
+  credit the second and later class in a compound selector (`.counter-btn.minus{}` never
+  registered `minus` as defined), so those "modifiers" were always actually styled. Once that
+  regex bug was fixed (see its comment in `checks-doc.ts`), the diagnostic bucket fires on
+  nothing at all across this project's one measured real sweep (20 documents) — every
+  "undefined modifier" seen so far was the planner defining it as a compound selector, which the
+  fixed regex now credits. The element-vs-token distinction F8 makes is still the right reading
+  of the spec on its own terms (a class that is genuinely never defined anywhere, compound
+  included, really is just a selector hook on an otherwise-styled element), it just turns out to
+  matter far less often in practice than first thought. The diagnostic stays in the report as a
+  tripwire: an always-empty bucket that starts firing on a future sweep is a real, new "planner
+  forgot to style this state" signal.
+  F8 also only checks classes present in *static* `class="..."`/`class='...'` attributes in the
+  initial HTML — `<script>` bodies and `<!-- -->` comments are masked out before the scan, so a
+  class added later via `classList.add(...)`, or built into markup a script injects at runtime
+  via string concatenation (`'<span class="' + cls + '">'`), is invisible to this string-level
+  check and is simply not counted, in either direction. The masking is load-bearing, not
+  optional: before it existed, that concatenation pattern was scored as used-but-undefined
+  almost every time — the regex ran off the end of the JS string to the next literal quote and
+  produced a "class list" made of JS tokens, not real classes.
 - **F5 (frontend, "no lorem ipsum")** is exactly as gameable as the spec itself says: a model
   writing "Lörem Ipsüm" or splitting the phrase across elements passes trivially. Implemented
   as the literal substring check the spec describes, no more.

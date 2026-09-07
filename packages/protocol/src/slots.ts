@@ -157,6 +157,54 @@ export const SKELETON_CSS = `
 .anyapp-slot-error{padding:16px;border:1px dashed color-mix(in srgb,currentColor 25%,transparent);border-radius:8px;opacity:.65;font:14px system-ui,sans-serif}
 `.trim();
 
+/**
+ * CSS class selectors appearing in a stylesheet: a `.` followed by a name that starts with a
+ * letter, `_`, or `-`. No lookbehind excluding a preceding word character — a decimal like
+ * `0.5` or `.65` is already excluded by the capture group alone, since the character right
+ * after the `.` there is a digit, which the group's first character class rejects. A
+ * lookbehind would additionally (and wrongly) reject the second class of a genuine compound
+ * selector — `.form-panel.hidden` — since `.hidden` there is preceded by the word character
+ * `l`. That was a real bug caught during review: it made `utilityCss` below blind to a
+ * planner that legitimately defined `.hidden` as part of a compound selector, which is
+ * exactly the "clobber a planner's own opinion" failure mode `utilityCss`'s doc comment says
+ * must be avoided. `tests/quality/checks-doc.ts` keeps its own separate copy of a
+ * similarly-named regex for its own class-usage scan (tests cannot reach into production
+ * internals not exported for it) — that copy is not this one and is not affected by this fix.
+ */
+const CSS_CLASS_SELECTOR = /\.(-?[a-zA-Z_][a-zA-Z0-9_-]*)/g;
+
+/**
+ * A `.hidden{display:none}` fallback, returned only when the planner's own stylesheet does not
+ * already define a `.hidden` class selector; an empty string otherwise. Real cause: the fill
+ * call is told "never write a `<style>` element or a style attribute" and to use the planner's
+ * classes, but the planner writes the stylesheet before any region's actual states (toggled
+ * panels, active tabs, positive/negative values) are known — so slot content routinely emits
+ * `class="confirmation-panel hidden"` with no `.hidden` rule anywhere. `.hidden` is the one
+ * state class safe to guess a fallback for, because "hidden" has exactly one reasonable
+ * meaning; `.active`/`.selected`/`.positive` do not, and must not get guessed styling here.
+ *
+ * Callers MUST place the returned rule in a `<style>` emitted AFTER `<style id="anyapp-css">`
+ * — see `renderShellHead` — so that when it fires it wins ties on source order alone. Two
+ * simpler designs were rejected:
+ *  - Folding a plain `.hidden{display:none}` into `SKELETON_CSS` (emitted BEFORE the planner
+ *    stylesheet) loses to any later planner rule of equal specificity — a planner-written
+ *    `.confirmation-panel{display:block}` would beat an earlier `.hidden`, which is exactly
+ *    the observed bug (a JS-toggled success panel stuck permanently visible).
+ *  - Using `!important` to force the rule to win regardless of order would clobber a planner
+ *    that legitimately defined `.hidden` itself (e.g. `visibility:hidden` plus a transition) —
+ *    we cannot tell that apart from an accident, so we must not override it.
+ * Emitting last, and only in the planner's silence, avoids both failure modes without
+ * guessing at styling the planner never asked for.
+ */
+export function utilityCss(planCss: string): string {
+  CSS_CLASS_SELECTOR.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = CSS_CLASS_SELECTOR.exec(planCss))) {
+    if (m[1] === "hidden") return "";
+  }
+  return ".hidden{display:none}";
+}
+
 const SLOT_ERROR_MARKER = 'class="anyapp-slot-error"';
 
 /** Stored as a slot's content when generation fails, so the document stays complete. */

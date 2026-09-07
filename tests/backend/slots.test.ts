@@ -6,7 +6,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { renderSkeletons, renderDocument, slotIdsInShell } from "@any-app/protocol";
+import { renderSkeletons, renderDocument, slotIdsInShell, utilityCss } from "@any-app/protocol";
 import type { FilledApp } from "@any-app/protocol";
 import { parsePlan, PlanError } from "../../packages/generator/src/planner";
 
@@ -171,6 +171,58 @@ test("A5.6 — duplicate slot id in shell: parsePlan throws PlanError naming the
     "===TITLE===\nMy App\n===CSS===\nbody{}\n" +
     '===SHELL===\n<div data-slot="a"></div><div data-slot="a"></div>\n===SLOTS===\na|200|A\n';
   assert.throws(() => parsePlan(raw), (err: unknown) => err instanceof PlanError && /a/.test(err.message));
+});
+
+// ---------------------------------------------------------------------------------------
+// utilityCss — the `.hidden` fallback (see slots.ts's doc comment on the function for the
+// full rationale: emitted only in the planner's silence, and only meant to be placed AFTER
+// the planner stylesheet by its caller — the ordering itself is covered in shell.test.ts,
+// since it is `renderShellHead`, not this function, that controls placement).
+// ---------------------------------------------------------------------------------------
+
+test("utilityCss — planner CSS has no .hidden anywhere: the fallback rule is returned", () => {
+  const css = ".panel{padding:8px} .btn.active{color:blue}";
+  assert.equal(utilityCss(css), ".hidden{display:none}");
+});
+
+test("utilityCss — planner CSS already defines a standalone .hidden selector: nothing is returned", () => {
+  const css = ".panel{padding:8px} .hidden{visibility:hidden}";
+  assert.equal(utilityCss(css), "");
+});
+
+test("utilityCss — planner .hidden definition inside a combinator/pseudo-class context still counts", () => {
+  // `.hidden:not(.foo)` and `.hidden.other` both still contain `.hidden` as a selector token,
+  // so they count as the planner having an opinion.
+  const css = ".hidden:not(.foo){display:none}";
+  assert.equal(utilityCss(css), "");
+});
+
+test("utilityCss — a COMPOUND selector defining .hidden (e.g. .form-panel.hidden) must also suppress the fallback", () => {
+  // Regression for a real bug: an earlier version of CSS_CLASS_SELECTOR carried a
+  // `(?<![\w.])` lookbehind meant only to reject decimals (`0.5`), but it also rejected the
+  // second class of a compound selector — `.hidden` in `.form-panel.hidden` is preceded by
+  // the word character `l`. That made utilityCss blind to a planner that legitimately defined
+  // `.hidden` this way, which is precisely the "clobber the planner's own opinion" failure
+  // utilityCss's doc comment says must never happen. This is the real shape found in
+  // tests/quality/artifacts/2026-09-06T17-31-26-174Z/parallel-contact-form.html.
+  const css = ".form-panel.hidden, .confirmation-panel.hidden { display: none; }";
+  assert.equal(utilityCss(css), "");
+});
+
+test("utilityCss — a compound selector .a.b credits BOTH class names as defined", () => {
+  const css = ".ctrl-btn.start{color:green}";
+  assert.equal(utilityCss(css), ".hidden{display:none}"); // neither name is "hidden" — sanity
+  const cssWithHidden = ".ctrl-btn.hidden{color:green}";
+  assert.equal(utilityCss(cssWithHidden), ""); // the second class, "hidden", must be credited
+});
+
+test("utilityCss — empty planner CSS: the fallback rule is returned", () => {
+  assert.equal(utilityCss(""), ".hidden{display:none}");
+});
+
+test("utilityCss — a decimal number in CSS is never mistaken for a .hidden definition", () => {
+  const css = ".panel{opacity:0.5}";
+  assert.equal(utilityCss(css), ".hidden{display:none}");
 });
 
 test("A5.7 — renderDocument emits slots in plan order (P4), even when content was populated in completion order", () => {

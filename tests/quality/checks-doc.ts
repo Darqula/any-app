@@ -53,18 +53,92 @@ const ALLOWED_EXTERNAL_HOST = "cdnjs.cloudflare.com";
  * whole-document scan over-fires. */
 const ATTR_URL = /\b(?:src|href)="(https?:\/\/[^"]+)"/gi;
 
-/** CSS class selectors: `.name` not immediately preceded by a word character (so `0.5` in a
- * numeric value is never mistaken for a class) and not followed by a digit-starting run
- * (decimals). Deliberately permissive about what follows — combinators, pseudo-classes,
- * attribute selectors — since the goal is the set of names the planner *declared*, not a full
- * CSS parse. See `checkF8`'s comment for the real limits of this approach. */
-const CSS_CLASS_SELECTOR = /(?<![\w.])\.(-?[a-zA-Z_][a-zA-Z0-9_-]*)/g;
-const CLASS_ATTR = /\bclass="([^"]*)"/gi;
+/** CSS class selectors: `.name`, where `name` starts with `-`, a letter, or `_` and continues
+ * with word characters/`-`. That first-character requirement is already what keeps a decimal
+ * like `0.5rem`/`1.5em`/`.65` from being misread as a class — `.5` in `0.5rem` can't match
+ * because a selector name may not start with a digit — so nothing upstream of the capture
+ * group needs to police what precedes the `.` at all.
+ *
+ * An earlier version of this regex added a `(?<!` lookbehind (`.name` not preceded by a word
+ * character) meant to reinforce that same decimal guard. It was redundant for that purpose —
+ * the first-character requirement alone already excludes every decimal case — but it had a
+ * real, unintended side effect: it also refused to credit the second and later class in a
+ * *compound* selector. `.ctrl-btn.start{...}` has `.start` immediately preceded by `n`, a word
+ * character, so the lookbehind silently dropped `start` from the defined set even though the
+ * planner CSS plainly defines it. Measured on a real sweep's 20 saved documents: 12 of 27
+ * total "undefined" offender occurrences were exactly this — a class that only ever appears as
+ * the second+ part of a compound selector (`.counter-btn.minus`, `.mode-btn.active`,
+ * `.ctrl-btn.start`/`.pause`/`.reset`, `.form-panel.hidden`, etc.) — misread as undefined
+ * because of the lookbehind alone, not because the planner failed to define anything. Dropping
+ * the lookbehind fixes all of them.
+ *
+ * Deliberately permissive about what follows the name — combinators, pseudo-classes, attribute
+ * selectors, being the second+ class in a compound selector — since the goal is the set of
+ * names the planner *declared*, not a full CSS parse. See `checkF8`'s comment for the real
+ * limits of this approach. One that remains after this fix: a class name that appears only
+ * inside a CSS comment or inside a string literal (e.g. a `content:"..."` value) is still
+ * credited as "defined" by this loose a scan, same as before — this under-flags (accepts a
+ * class that isn't really a live selector) rather than over-flags, which is the safe direction
+ * for a check whose whole purpose is catching *undefined* classes, not extra ones. */
+const CSS_CLASS_SELECTOR = /\.(-?[a-zA-Z_][a-zA-Z0-9_-]*)/g;
+/** Matches both quote styles for `class="..."`/`class='...'` — group 1 for double-quoted,
+ * group 2 for single-quoted. Only ever run against content already passed through
+ * `maskForClassScan`, which is what makes the single-quoted half safe to include (see that
+ * function's comment). */
+const CLASS_ATTR = /\bclass=(?:"([^"]*)"|'([^']*)')/gi;
+
+/**
+ * Blanks out `<script>...</script>` bodies and `<!-- ... -->` comments before F8's
+ * `CLASS_ATTR` scan, replacing each with equal-length spaces so nothing downstream needs to
+ * know offsets moved. The script half is the same fix, same technique, as `maskScripts` in
+ * `packages/protocol/src/slots.ts` (written for the tolerant slot-placeholder matcher) — not
+ * imported from there since it isn't exported, so this is a deliberate local duplicate rather
+ * than a shared util.
+ *
+ * Scripts: slot content commonly builds markup by string concatenation
+ * (`'<span class="badge ' + cls + '">'`), and without this mask `CLASS_ATTR`'s `[^"]*` runs
+ * straight through the JS to the next literal quote, producing a bogus "class list" made of
+ * JS tokens (`+`, `'`, a variable name) that can never appear in the CSS — see `checkF8`'s
+ * "Known gaps" for the direct consequence of masking.
+ *
+ * Comments: the same species of false positive, just rarer in practice — a `class="..."`
+ * fragment left inside an HTML comment (commented-out markup, or a model's own inline note)
+ * is not live content and should not be scored as "used".
+ *
+ * Masking scripts before comments (rather than matching `<!--...-->` against the raw string)
+ * is also what makes it safe to have `CLASS_ATTR` match single-quoted attributes too: the
+ * mirror-image false positive — a double-quoted JS string that itself contains a literal
+ * `class='...'` fragment (e.g. `html += "<span class='badge'>";`) — lives inside a
+ * `<script>` element and is already blanked out by the first pass before the single-quote
+ * half of `CLASS_ATTR` ever sees it.
+ *
+ * The script half falls back to end-of-string when there is no `</script>` at all (`<\/script
+ * \s*>|$`), rather than requiring the closing tag and leaving an unterminated script
+ * unmasked. This is not just a defensive fallback — it's the textually correct reading: per
+ * HTML's own parsing rules an unclosed `<script>` consumes everything to end-of-input, so a
+ * truncated fill (a real failure mode on this project — mid-generation timeouts happen) that
+ * cuts a slot off partway through its own `<script>` would otherwise leave the tail of that
+ * script unmasked and reintroduce exactly the false positive this function exists to remove.
+ */
+function maskForClassScan(content: string): string {
+  const noScripts = content.replace(/<script\b[^>]*>[\s\S]*?(?:<\/script\s*>|$)/gi, (m) => " ".repeat(m.length));
+  return noScripts.replace(/<!--[\s\S]*?-->/g, (m) => " ".repeat(m.length));
+}
 
 /** Server-owned classes (`SKELETON_CSS` in `packages/protocol/src/slots.ts`) that are always
  * available even though the planner never writes them into its own CSS. A slot referencing
- * `anyapp-slot-error` on purpose (unlikely, but not wrong) should not be flagged as undefined. */
-const ALWAYS_DEFINED_CLASSES = new Set(["anyapp-skeleton", "anyapp-slot-error"]);
+ * `anyapp-slot-error` on purpose (unlikely, but not wrong) should not be flagged as undefined.
+ * `hidden` joined this set alongside `SKELETON_CSS`'s own server-owned `.hidden{display:none}`
+ * utility (`packages/protocol/src/slots.ts`), which is emitted whenever the planner's own CSS
+ * doesn't already define `.hidden` itself — so from this checker's perspective `hidden` is
+ * always available, exactly like `anyapp-skeleton`/`anyapp-slot-error`, regardless of whether
+ * the planner CSS text happens to contain a `.hidden` rule. This is now belt-and-braces rather
+ * than load-bearing for most real cases: once `CSS_CLASS_SELECTOR`'s lookbehind bug was fixed
+ * (see that regex's comment), the one saved generation that used `hidden` turned out to define
+ * `.form-panel.hidden` itself as a compound selector — the checker just couldn't see it before.
+ * `hidden` stays in this set regardless, for the apps that genuinely rely on the server utility
+ * and never define `.hidden` in their own CSS at all. */
+const ALWAYS_DEFINED_CLASSES = new Set(["anyapp-skeleton", "anyapp-slot-error", "hidden"]);
 
 /** F1: no `<style>` element in any slot's filled content — the coherence rule (CSS belongs
  * only to the planner's single stylesheet; a slot writing its own means the fan-out or the
@@ -218,48 +292,196 @@ function checkF7(document: string): CheckResult {
 }
 
 /**
- * F8: class names used in slot content are defined in the planner CSS. Extracts class
- * *selectors* from `plan.css` via a permissive regex (not a real CSS parser — see
- * `CSS_CLASS_SELECTOR`'s comment) and class *usages* from each slot's static `class="..."`
- * attributes, then checks the used set is a subset of the defined set (plus the two
- * server-owned skeleton/error classes, which are legitimately always available).
+ * F8: "Class names used in slot content" are "Defined in the planner CSS — catches the
+ * 'content appears unstyled' failure before a human sees it" (`.docs/tests-backend.md`).
+ *
+ * **Scored at element granularity, not token granularity.** An element (one `class="..."`/
+ * `class='...'` attribute) fails F8 only when *none* of its class tokens is defined in the
+ * planner CSS (counting `ALWAYS_DEFINED_CLASSES`) — i.e. only when the element is provably
+ * unstyled by the planner's stylesheet. An element with at least one defined class token does
+ * not fail F8, no matter what else rides along on the same attribute.
+ *
+ * This was deliberately narrowed from an earlier token-level version that failed a slot if
+ * *any* class token anywhere was undefined, regardless of whether the element carrying it also
+ * had a defined class. That broader reading does not match the spec's own stated purpose: an
+ * element carrying one class the planner CSS genuinely never defines anywhere — e.g.
+ * `class="tab js-tab-hook"` where `js-tab-hook` is purely a JS selector hook
+ * (`document.querySelector('.js-tab-hook')`) and never appears in the CSS, compound selector or
+ * otherwise — is still a *styled* element (`tab` is defined), and nothing about it "appears
+ * unstyled" to a human looking at it. Scoring that as an F8 failure was flagging exactly the
+ * case the spec's own justification says F8 is not about. The genuine "content appears
+ * unstyled" defect — an element with *no* defined class at all (`class="stat-value"` where
+ * `stat-value` is never in the planner CSS, in any form) — still fails F8 under this
+ * element-level reading, unchanged. Token-level undefined modifiers did not disappear: they
+ * moved to `F8_MODIFIER_DIAGNOSTIC_ID` below, which is informational and explicitly not part of
+ * this pass rate — see that function's comment for why they're still worth tracking in
+ * principle, and for what actually remains in that bucket once `CSS_CLASS_SELECTOR`'s own bug
+ * (below) is accounted for.
+ *
+ * Worth being honest about the history here: the motivating real-world examples first used to
+ * justify this narrowing (`class="counter-btn minus"`, `class="mode-btn active"`, and similar,
+ * from a real sweep's 20 saved documents) turned out to be a *different* bug, not evidence for
+ * this one. `CSS_CLASS_SELECTOR` used to carry a lookbehind that silently failed to credit the
+ * second and later class in a compound selector (`.counter-btn.minus{}` never registered
+ * `minus` as defined) — so `minus`/`active`/`start`/etc. in those examples were always actually
+ * defined, just invisible to the buggy scan. See that regex's comment for the fix and the
+ * measurement. The element-vs-token distinction this function makes is still the correct
+ * reading of the spec on its own terms (a class that is *never* defined, compound or otherwise,
+ * really is just a selector hook on an otherwise-styled element) — it just turns out to matter
+ * far less often in practice than the original (buggy-regex-driven) analysis suggested, once the
+ * regex bug that was inflating the "used but undefined" set is fixed.
+ *
+ * To be unmistakable: this narrowing is an alignment with the spec's stated purpose, not a
+ * relaxation to make the number look better. It changes which failures F8 *counts*, not
+ * whether the underlying "no defined class" defect is detected — that defect still fails F8
+ * exactly as before. What no longer fails is a case the spec's own justification never
+ * described as a defect in the first place.
+ *
+ * Extracts class *selectors* from `plan.css` via a permissive regex (not a real CSS parser —
+ * see `CSS_CLASS_SELECTOR`'s comment) and class *usages* from each slot's static
+ * `class="..."`/`class='...'` attributes (after masking out `<script>` bodies and `<!-- -->`
+ * comments — see `maskForClassScan`), via the shared `scanClassAttrUsages` helper below.
  *
  * Known gaps, worth being explicit about rather than implying coverage this does not have:
- *   - Only static `class="..."` attributes present in the initial HTML are checked. A class
- *     added later via `classList.add(...)` in a slot's own `<script>` — extremely common for
- *     "active"/"selected"/"open" style toggling in exactly the interactive apps this sweep
- *     asks for — is invisible to a string-level check and is not counted as "used" either way.
- *     A true measurement needs the rendered DOM's class list at various interaction states,
- *     which is out of scope for a doc-level check (the frontend checks in `checks-rendered.ts`
- *     never assert on class names at all).
+ *   - Only static `class="..."`/`class='...'` attributes present in the initial HTML are
+ *     checked. A class added later via `classList.add(...)` in a slot's own `<script>` —
+ *     extremely common for "active"/"selected"/"open" style toggling in exactly the
+ *     interactive apps this sweep asks for — is invisible to a string-level check and is not
+ *     counted as "used" either way. A true measurement needs the rendered DOM's class list at
+ *     various interaction states, which is out of scope for a doc-level check (the frontend
+ *     checks in `checks-rendered.ts` never assert on class names at all).
+ *   - Relatedly, a class name that exists only *inside* a slot's own `<script>` — built up by
+ *     string concatenation or template literals into markup the script injects at runtime
+ *     (`html += '<span class="badge ' + cls + '">'`) — is deliberately not counted as "used"
+ *     either, now that script bodies are masked out before the scan. Before this mask existed
+ *     that pattern was scored as used-but-undefined almost every time (the regex ran off the
+ *     end of the JS string into the next literal quote, producing a "class list" made of JS
+ *     tokens like `+`/`'`/a variable name — never real class names, and never a real failure).
+ *     Masking trades that reliable false positive for a rarer false negative: a script that
+ *     builds a *genuinely* undefined class name into markup at runtime is now silently not
+ *     checked in either direction, the same blind spot `classList.add(...)` already has.
+ *   - Content inside an HTML comment is masked the same way and for the same reason — a
+ *     `class="..."` fragment sitting in commented-out markup is not live content and is
+ *     simply not counted as "used", either direction.
  *   - The CSS selector regex does not understand nesting, `@media` blocks, or that a class
- *     mentioned only inside a comment still counts as "defined" by this loose a scan. It will
+ *     mentioned only inside a *CSS* comment still counts as "defined" by this loose a scan
+ *     (this is about `plan.css`, a separate scan from the slot-content masking above). It will
  *     under-flag (accept a class that only appears in a dead comment) far more often than it
  *     over-flags.
  *   - Utility classes the model invents but never uses anywhere are not checked at all — this
  *     case only ever fires in the "used but never defined" direction, which is the direction
  *     that actually causes the "content appears unstyled" symptom the case exists to catch.
+ *   - An element with an empty `class=""` attribute (zero tokens) is not scored either way —
+ *     there is nothing to judge "defined" or "undefined", and it was never scored before this
+ *     narrowing either.
  */
-function checkF8(plan: FilledApp): CheckResult {
-  const defined = new Set<string>();
-  for (const m of plan.css.matchAll(CSS_CLASS_SELECTOR)) defined.add(m[1]!);
 
-  const offendersBySlot = new Map<string, Set<string>>();
+/** One `class="..."`/`class='...'` attribute occurrence found in a slot's (masked) content,
+ * plus how its tokens resolved against the planner's defined-class set. Shared by `checkF8`
+ * and the modifier diagnostic below so the CSS/content scan only happens once per plan. */
+interface ClassAttrUsage {
+  slotId: string;
+  /** The full matched attribute text, e.g. `class="stat-value positive"` — kept verbatim
+   * (not just the token list) because a bare token list stopped being enough to convey the
+   * finding once the check moved from token-level to element-level: naming the whole
+   * attribute is what lets a reader see the element's full class list, not just its
+   * undefined pieces. */
+  classAttr: string;
+  tokens: string[];
+  undefinedTokens: string[];
+  hasDefinedToken: boolean;
+}
+
+function scanClassAttrUsages(plan: FilledApp, defined: Set<string>): ClassAttrUsage[] {
+  const usages: ClassAttrUsage[] = [];
   for (const slot of plan.slots) {
-    const content = plan.content[slot.id] ?? "";
-    const used = new Set<string>();
+    const content = maskForClassScan(plan.content[slot.id] ?? "");
     for (const m of content.matchAll(CLASS_ATTR)) {
-      for (const cls of m[1]!.split(/\s+/).filter(Boolean)) used.add(cls);
+      const classList = m[1] ?? m[2] ?? "";
+      const tokens = classList.split(/\s+/).filter(Boolean);
+      if (tokens.length === 0) continue; // class="" — nothing to judge either way
+      const undefinedTokens = tokens.filter((c) => !defined.has(c) && !ALWAYS_DEFINED_CLASSES.has(c));
+      usages.push({
+        slotId: slot.id,
+        classAttr: m[0]!,
+        tokens,
+        undefinedTokens,
+        hasDefinedToken: undefinedTokens.length < tokens.length,
+      });
     }
-    const missing = [...used].filter((c) => !defined.has(c) && !ALWAYS_DEFINED_CLASSES.has(c));
-    if (missing.length) offendersBySlot.set(slot.id, new Set(missing));
   }
+  return usages;
+}
 
-  const pass = offendersBySlot.size === 0;
+/**
+ * Id for the non-spec diagnostic split out of F8's old token-level behavior (see `checkF8`'s
+ * comment above for the full rationale). Deliberately shaped nothing like `F<n>` — it must
+ * never be mistaken for one of the spec's F1-F8 cases by anyone scanning ids in a table or in
+ * `report.ts`'s `DOC_CASE_IDS`. It is *not* added to `DOC_CASE_IDS`: that list is what drives
+ * the spec pass-rate table and the attemptError fallback in `report.ts`, and this diagnostic is
+ * reported separately there, on purpose.
+ */
+export const F8_MODIFIER_DIAGNOSTIC_ID = "DIAG:undefined-modifier";
+
+/**
+ * Non-spec diagnostic: an element that *passes* F8 (it has at least one defined class) but
+ * also carries at least one undefined "modifier" token on the same attribute — e.g.
+ * `class="tab js-tab-hook"` where `tab` is defined and `js-tab-hook` never appears in the
+ * planner CSS in any form, compound selector included. This is deliberately never folded into
+ * F8's own pass/fail — the spec's "content appears unstyled" justification does not describe
+ * this as a defect, and F8 above no longer scores it.
+ *
+ * In principle it is still worth tracking on its own: an undefined modifier *could* be a
+ * state-toggle class (`.active`, `.selected`, `.open`) that the model's own script adds via
+ * `classList.add(...)` at runtime, expecting the planner CSS to style that state, where the
+ * planner CSS simply never defined it. `.active` on a tab that never visually looks selected
+ * would be a real, if milder, defect than "unstyled" — the element renders fine at rest, but a
+ * state change a user triggers has no visible effect.
+ *
+ * In practice, on the one real sweep measured so far (20 saved documents), this bucket fires on
+ * **nothing at all** once `CSS_CLASS_SELECTOR`'s compound-selector bug is fixed (see that
+ * regex's comment) — every real "undefined modifier" this project has seen so far
+ * (`counter-btn minus`, `mode-btn active`, `ctrl-btn start`/`pause`/`reset`, `note-item active`,
+ * `form-panel hidden`) was the planner defining the modifier as a compound selector
+ * (`.counter-btn.minus{}`), which the fixed regex now credits correctly. That is a genuinely
+ * good result, not a sign this diagnostic has nothing to check — a real "state-toggle class the
+ * planner forgot to style" defect would still show up here if a model ever produced one; this
+ * project's models simply have not, so far, on this prompt set. See `checks-doc.ts`'s handling
+ * in `runDocChecks`/`report.ts`'s dedicated diagnostics table for how it stays visible (an
+ * always-100%-pass row, not silently dropped) rather than disappearing from the report.
+ *
+ * Never let this move the spec's F8 pass rate. Report it as its own line, clearly marked as a
+ * diagnostic — see `report.ts`'s handling of `F8_MODIFIER_DIAGNOSTIC_ID` for how it stays out
+ * of the F1-F8 table.
+ */
+function checkF8ModifierDiagnostic(usages: ClassAttrUsage[]): CheckResult {
+  const offenders = usages.filter((u) => u.hasDefinedToken && u.undefinedTokens.length > 0);
+  const pass = offenders.length === 0;
   const detail = pass
     ? undefined
-    : [...offendersBySlot.entries()].map(([id, cls]) => `${id}: ${[...cls].join(",")}`).join(" | ");
-  return ok("F8", "Class names used in slot content are defined in the planner CSS", pass, detail);
+    : offenders
+        .map((u) => `${u.slotId}: ${u.classAttr} (undefined modifier(s): ${u.undefinedTokens.join(", ")})`)
+        .join(" | ");
+  return ok(
+    F8_MODIFIER_DIAGNOSTIC_ID,
+    "[diagnostic, not spec F8] styled element also carries an undefined modifier class",
+    pass,
+    detail,
+  );
+}
+
+function checkF8(usages: ClassAttrUsage[]): CheckResult {
+  const offenders = usages.filter((u) => !u.hasDefinedToken);
+  const pass = offenders.length === 0;
+  const detail = pass
+    ? undefined
+    : offenders.map((u) => `${u.slotId}: ${u.classAttr}`).join(" | ");
+  return ok(
+    "F8",
+    "Elements in slot content have at least one class defined in the planner CSS",
+    pass,
+    detail,
+  );
 }
 
 /**
@@ -276,6 +498,7 @@ export function runDocChecks(row: GenerationRow, rawStreamBody: string, fillMode
     // shell written before the failure — internal.ts writes the shell before fill runs).
     const reason = `generation did not complete (status: ${row.status}${row.error ? `, error: ${row.error}` : ""})`;
     for (const id of ["F1", "F2", "F3", "F4", "F5", "F6", "F8"]) results.push(skip(id, id, reason));
+    results.push(skip(F8_MODIFIER_DIAGNOSTIC_ID, F8_MODIFIER_DIAGNOSTIC_ID, reason));
     results.push(
       row.document ? checkF7(row.document) : skip("F7", "F7", reason),
     );
@@ -288,6 +511,7 @@ export function runDocChecks(row: GenerationRow, rawStreamBody: string, fillMode
   if (!isFilledApp(row.plan)) {
     const reason = "no structured plan persisted — parsePlan likely threw (PlanError), row went through the linear fallback";
     for (const id of ["F1", "F2", "F3", "F5", "F6", "F8"]) results.push(skip(id, id, reason));
+    results.push(skip(F8_MODIFIER_DIAGNOSTIC_ID, F8_MODIFIER_DIAGNOSTIC_ID, reason));
     return results;
   }
 
@@ -297,6 +521,14 @@ export function runDocChecks(row: GenerationRow, rawStreamBody: string, fillMode
   results.push(checkF3(plan, rawStreamBody, fillMode));
   results.push(checkF5(plan));
   results.push(checkF6(plan));
-  results.push(checkF8(plan));
+
+  // F8 and its non-spec modifier diagnostic share one scan of the CSS + slot content — see
+  // `scanClassAttrUsages`'s comment — so it only runs once per plan rather than twice.
+  const defined = new Set<string>();
+  for (const m of plan.css.matchAll(CSS_CLASS_SELECTOR)) defined.add(m[1]!);
+  const usages = scanClassAttrUsages(plan, defined);
+  results.push(checkF8(usages));
+  results.push(checkF8ModifierDiagnostic(usages));
+
   return results;
 }

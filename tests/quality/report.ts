@@ -7,6 +7,7 @@
  */
 import { writeFile } from "node:fs/promises";
 import type { CheckResult } from "./checks-doc";
+import { F8_MODIFIER_DIAGNOSTIC_ID } from "./checks-doc";
 
 export type FillMode = "sequential" | "parallel";
 
@@ -43,16 +44,29 @@ interface CaseTally {
   error: number;
 }
 
-function tallyChecks(records: GenerationRecord[], mode: FillMode, source: "doc" | "rendered"): CaseTally[] {
+/**
+ * Tallies `CheckResult`s into per-id pass/fail/skip/error counts, restricted to `idFilter` —
+ * this is what keeps the spec's F1-F8 table and the non-spec diagnostic table (see
+ * `DOC_DIAGNOSTIC_CASE_IDS` below) from bleeding into each other even though both draw from
+ * the same `docChecks` array on `GenerationRecord`. A result whose id isn't in `idFilter` is
+ * silently skipped here, not because it doesn't matter, but because this function is called
+ * once per table and each call only owns the ids that belong in that table.
+ */
+function tallyChecks(
+  records: GenerationRecord[],
+  mode: FillMode,
+  source: "doc" | "rendered",
+  idFilter: readonly string[],
+): CaseTally[] {
+  const allowed = new Set(idFilter);
   const byId = new Map<string, CaseTally>();
   for (const rec of records) {
     if (rec.mode !== mode) continue;
     const checks = source === "doc" ? rec.docChecks : rec.renderedChecks;
     if (rec.attemptError) {
-      // The generation itself never produced anything to check — every case this source
-      // would have covered gets a hard "error" mark rather than being left out entirely.
-      const ids = source === "doc" ? DOC_CASE_IDS : RENDERED_CASE_IDS;
-      for (const id of ids) {
+      // The generation itself never produced anything to check — every case this table
+      // covers gets a hard "error" mark rather than being left out entirely.
+      for (const id of idFilter) {
         const t = byId.get(id) ?? { id, label: id, pass: 0, fail: 0, skip: 0, error: 0 };
         t.error++;
         byId.set(id, t);
@@ -60,6 +74,7 @@ function tallyChecks(records: GenerationRecord[], mode: FillMode, source: "doc" 
       continue;
     }
     for (const c of checks) {
+      if (!allowed.has(c.id)) continue;
       const t = byId.get(c.id) ?? { id: c.id, label: c.label, pass: 0, fail: 0, skip: 0, error: 0 };
       if (c.status === "pass") t.pass++;
       else if (c.status === "fail") t.fail++;
@@ -73,6 +88,16 @@ function tallyChecks(records: GenerationRecord[], mode: FillMode, source: "doc" 
 
 const DOC_CASE_IDS = ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8"];
 const RENDERED_CASE_IDS = ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8"];
+/**
+ * Non-spec diagnostics that ride along on `GenerationRecord.docChecks` but must never be
+ * counted toward, or displayed inside, the spec's F1-F8 pass-rate table — see
+ * `checks-doc.ts`'s `checkF8ModifierDiagnostic` for what this one measures and why it exists
+ * as a diagnostic rather than a spec case. Deliberately kept as its own list rather than
+ * folded into `DOC_CASE_IDS`: that list is also what the `attemptError` fallback above uses to
+ * decide which ids get a hard "error" mark, and mixing a diagnostic into it would make it
+ * silently start looking like a ninth spec case everywhere `DOC_CASE_IDS` is read.
+ */
+const DOC_DIAGNOSTIC_CASE_IDS = [F8_MODIFIER_DIAGNOSTIC_ID];
 
 function rate(t: CaseTally): string {
   const scored = t.pass + t.fail; // skip/error excluded from the rate itself, shown alongside
@@ -142,16 +167,25 @@ export function renderStdoutReport(report: SweepReport): string {
   lines.push(
     renderTable(
       "Backend section F — provider-output contract (doc-level)",
-      tallyChecks(seq, "sequential", "doc"),
-      tallyChecks(par, "parallel", "doc"),
+      tallyChecks(seq, "sequential", "doc", DOC_CASE_IDS),
+      tallyChecks(par, "parallel", "doc", DOC_CASE_IDS),
+    ),
+  );
+  lines.push("");
+  lines.push(
+    renderTable(
+      "Backend diagnostics (INFORMATIONAL — not part of any spec F-case pass rate; see" +
+        " checks-doc.ts's checkF8ModifierDiagnostic)",
+      tallyChecks(seq, "sequential", "doc", DOC_DIAGNOSTIC_CASE_IDS),
+      tallyChecks(par, "parallel", "doc", DOC_DIAGNOSTIC_CASE_IDS),
     ),
   );
   lines.push("");
   lines.push(
     renderTable(
       "Frontend section F — generated-app quality (rendered)",
-      tallyChecks(seq, "sequential", "rendered"),
-      tallyChecks(par, "parallel", "rendered"),
+      tallyChecks(seq, "sequential", "rendered", RENDERED_CASE_IDS),
+      tallyChecks(par, "parallel", "rendered", RENDERED_CASE_IDS),
     ),
   );
   lines.push("");
@@ -160,9 +194,15 @@ export function renderStdoutReport(report: SweepReport): string {
     const durS = g.generationMs != null ? `${(g.generationMs / 1000).toFixed(0)}s` : "n/a";
     lines.push(`  [${g.mode}] ${g.promptId} (${durS})${g.attemptError ? "  *** ERRORED: " + g.attemptError : ""}`);
     if (!g.attemptError) {
-      const failedDoc = g.docChecks.filter((c) => c.status === "fail").map((c) => c.id);
+      const failedDoc = g.docChecks.filter((c) => c.status === "fail" && DOC_CASE_IDS.includes(c.id)).map((c) => c.id);
+      const failedDiagnostics = g.docChecks
+        .filter((c) => c.status === "fail" && DOC_DIAGNOSTIC_CASE_IDS.includes(c.id))
+        .map((c) => c.id);
       const failedRendered = g.renderedChecks.filter((c) => c.status === "fail").map((c) => c.id);
       if (failedDoc.length) lines.push(`      doc fails: ${failedDoc.join(", ")}`);
+      if (failedDiagnostics.length) {
+        lines.push(`      doc diagnostics (informational, NOT a spec fail): ${failedDiagnostics.join(", ")}`);
+      }
       if (failedRendered.length) lines.push(`      rendered fails: ${failedRendered.join(", ")}`);
       if (!failedDoc.length && !failedRendered.length) lines.push("      all scored checks passed");
     }

@@ -6,7 +6,7 @@ Reply with exactly these sections, each header alone on its own line. No prose b
 A short title for the app.
 
 ===CSS===
-The complete stylesheet for the app. This is the ONLY place CSS may appear — the content pass is forbidden from writing any. Style the shell and every class the slots will need. Include a responsive layout that works on a phone.
+The complete stylesheet for the app. This is the ONLY place CSS may appear — the content pass is forbidden from writing any. Style the shell and every class the slots will need, including state and modifier classes (selected/active, hidden, positive/negative) — the regions cannot add their own CSS later. Include a responsive layout that works on a phone.
 
 ===SHELL===
 The body markup. Write the fixed parts (headers, navigation, footers, layout containers) in full. For every region whose content is generated separately, write EXACTLY this and nothing else:

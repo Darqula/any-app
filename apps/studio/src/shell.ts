@@ -1,4 +1,4 @@
-import { SKELETON_CSS, swapRuntime, renderSkeletons, dataRuntime } from "@any-app/protocol";
+import { SKELETON_CSS, swapRuntime, renderSkeletons, dataRuntime, utilityCss } from "@any-app/protocol";
 import type { AppPlan } from "@any-app/protocol";
 
 function escapeHtml(value: string): string {
@@ -32,6 +32,11 @@ export const DOCTYPE_AND_PADDING = `<!doctype html>\n<!--${" ".repeat(1024)}-->\
  */
 export function renderShellHead(plan: AppPlan, studioOrigin: string, appToken: string): string {
   const data = plan.collections.length > 0 ? `<script>${dataRuntime(appToken)}</script>\n` : "";
+  // Emitted AFTER `<style id="anyapp-css">`, and only when the planner didn't already define
+  // `.hidden` itself — see `utilityCss`'s doc comment for why both of those are load-bearing,
+  // not stylistic (source order is what lets a `!important`-free rule still win).
+  const utility = utilityCss(plan.css);
+  const utilityStyle = utility ? `<style>${utility}</style>\n` : "";
   return `<html lang="en">
 <head>
 <meta charset="utf-8">
@@ -39,7 +44,7 @@ export function renderShellHead(plan: AppPlan, studioOrigin: string, appToken: s
 <title>${escapeHtml(plan.title)}</title>
 <style>${SKELETON_CSS}</style>
 <style id="anyapp-css">${plan.css}</style>
-<script>${swapRuntime(studioOrigin)}</script>
+${utilityStyle}<script>${swapRuntime(studioOrigin)}</script>
 ${data}</head>
 <body>
 ${renderSkeletons(plan.shell, plan.slots)}
