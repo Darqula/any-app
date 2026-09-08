@@ -36,15 +36,34 @@ function skip(id: string, label: string, reason: string): CheckResult {
 }
 
 /**
- * F6's exact required shape (`packages/protocol/src/slots.ts`'s `PLACEHOLDER`). Anchored with
- * `^`/`$` per match via the `g` flag below only after being applied to one already-isolated
- * near-miss candidate, not to the whole shell — see `checkF6`.
+ * F6 constants — see `checkF6`'s doc comment for what F6 measures now and why.
+ *
+ * Deliberately a self-contained scan, not an import of `packages/protocol/src/slots.ts`'s
+ * `scanPlaceholders`/`sanitizePlaceholders`/`PLACEHOLDER_PATTERN` — same reasoning `checkF4`'s
+ * comment gives for not calling `parsePlan`: a check that calls the production scanner passes
+ * by construction and measures nothing.
  */
-const EXACT_PLACEHOLDER = /^<div data-slot="[a-z][a-z0-9-]{0,30}"><\/div>$/;
-/** Loose net for anything *trying* to be a slot placeholder, so near-misses are visible at
- * all — a strict-only scan would just silently not find them, since by construction anything
- * that fails the strict shape never became a `SlotSpec` in the first place. */
-const NEAR_MISS_PLACEHOLDER = /<div[^>]*\bdata-slot\b[^>]*>(?:\s*<\/div>)?/gi;
+
+/** Matches any opening (or self-closing) HTML tag — any tag name, any attributes — capturing
+ * its name and the raw text between the name and the final `>` (attributes, plus a trailing
+ * `/` for a self-closing form). Never matches a closing tag (`</...>` fails the `[a-zA-Z]`
+ * requirement right after `<`). Same "any tag, any attrs" permissiveness as `TOP_LEVEL_TAG`
+ * below and as the real `PLACEHOLDER_PATTERN` in `packages/protocol/src/slots.ts` — this scan
+ * exists precisely so a `<section data-slot="…">` is examined, not just a `<div>`. */
+const F6_OPEN_TAG = /<([a-zA-Z][a-zA-Z0-9-]*)\b([^>]*)>/g;
+
+/** One `data-slot="…"` / `data-slot='…'` / bare-unquoted attribute, applied to one
+ * already-isolated tag's attribute blob. Deliberately captures ANY value, not just one already
+ * shaped like a valid id — an invalid id (`data-slot="Chart"`) must still be found and reported
+ * as a failure, not silently missed by a capture group that simply never matches it. Groups:
+ * 1 = double-quoted, 2 = single-quoted, 3 = unquoted/bare value. */
+const F6_DATA_SLOT_VALUE = /\bdata-slot\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]*))/i;
+
+/** The id shape the spec actually requires. Mirrors `SLOT_ID_PATTERN` in
+ * `packages/protocol/src/slots.ts` as a plain literal rather than an import of it — this is one
+ * shape constant, not scanning logic, so it doesn't reintroduce the "passes by construction"
+ * problem the ban on importing the scanner functions exists to avoid. */
+const F6_ID_PATTERN = /^[a-z][a-z0-9-]{0,30}$/;
 
 /** F7's allowed external host. */
 const ALLOWED_EXTERNAL_HOST = "cdnjs.cloudflare.com";
@@ -264,21 +283,124 @@ function checkF5(plan: FilledApp): CheckResult {
   return ok("F5", "Slot count is between 2 and 6", n >= 2 && n <= 6, `slot count: ${n}`);
 }
 
-/** F6: every placeholder matches the exact required shape. Scans the raw `shell` text (not
- * the parsed `slots` array — a placeholder that failed the strict shape was never turned into
- * a `SlotSpec` at all, so checking only the parsed output could never find one) for anything
- * that looks like an attempted placeholder, then requires each candidate to match the strict
- * shape exactly. A candidate that is itself just the strict shape trivially passes; the check
- * exists for the ones that don't (an added attribute, inner whitespace, a self-closing form,
- * a non-lowercase id). */
+/**
+ * F6: invariants on every `data-slot`-carrying element in the **persisted** shell
+ * (`plan.shell`, after `parsePlan`'s `sanitizePlaceholders` pass — see below).
+ *
+ * The planner prompt now explicitly asks for `<div data-slot="chart" class="card"></div>` —
+ * a placeholder carrying the region's own class is the fix for S13
+ * (`.docs/testing-review.md`), not a defect. The old byte-exact shape this check used to
+ * assert (`<div data-slot="id"></div>`, no attributes, `<div>` only) was deleted on
+ * 2026-09-06 for exactly that reason; in the 2026-09-07 sweep it read 2/14 and every failure
+ * was a placeholder correctly carrying a class. This rewrite asserts what the contract
+ * actually is now:
+ *
+ *   - every element carrying `data-slot` has an id matching `[a-z][a-z0-9-]{0,30}`;
+ *   - no two such elements share an id;
+ *   - the element is empty (no non-whitespace content) — see the wrinkle below for what this
+ *     one specific sub-check can and can't tell you;
+ *   - any tag name is fine, any other attributes are fine — neither is a failure.
+ *
+ * **The emptiness wrinkle.** `parsePlan` now calls `sanitizePlaceholders` before a plan is
+ * persisted, which deterministically strips non-whitespace content out of a `data-slot`
+ * element (see that function's doc comment in `packages/protocol/src/slots.ts`). F6 runs over
+ * `plan.shell`, which is that already-sanitized shell — so "the model wrote content inside a
+ * placeholder" is a condition F6 can no longer observe here; it has already been repaired
+ * upstream by the time this check ever sees the row. The emptiness assertion below is kept
+ * anyway, but as an **invariant guard**, not a model-quality measurement: it should always
+ * hold given what `sanitizePlaceholders` guarantees, and a failure here means something
+ * downstream of that function is broken, not that the model behaved badly. **The
+ * model-behaviour signal for this case now lives in the studio log**, not in this check — every
+ * time `sanitizePlaceholders` actually strips something, `parsePlan` logs
+ * `[parsePlan] stripped-placeholder-content: slot "<id>" had non-empty content in SHELL (…
+ * chars removed)` (`packages/generator/src/planner.ts`), captured in the runner's
+ * `studio-<mode>.log` artifact. A human auditing model behaviour on this case should grep
+ * that log, not this check's pass rate — deliberately not built as log-parsing plumbing here,
+ * that's out of scope.
+ *
+ * Self-closing (`<div data-slot="z"/>`) is treated as trivially empty and PASSES: it has no
+ * body at all, so there is nothing to be non-whitespace, and `packages/protocol/src/slots.ts`'s
+ * own `PLACEHOLDER_PATTERN` already accepts this shape as a legitimate placeholder — F6 should
+ * not fail a form the production scanner treats as valid.
+ *
+ * Scans the raw `shell` text with its own tag/attribute regexes (`F6_OPEN_TAG`,
+ * `F6_DATA_SLOT_VALUE`) rather than the parsed `slots` array, and rather than importing
+ * `scanPlaceholders`/`sanitizePlaceholders`/`PLACEHOLDER_PATTERN` — see the comment above those
+ * constants. `<script>` bodies and `<!-- comments -->` are masked first via the existing
+ * `maskForClassScan` (shared with F8) so a `data-slot`-shaped string sitting in a script or a
+ * comment is never mistaken for a real element.
+ */
+function findDataSlotContentEnd(masked: string, tagName: string, contentStart: number): number | null {
+  const lower = tagName.toLowerCase();
+  if (VOID_ELEMENTS.has(lower)) return contentStart; // no legal body to be non-empty
+  // Fresh regex instance per call — deliberately not sharing a module-level regex's mutable
+  // `lastIndex` with the outer scan in checkF6, which is itself mid-iteration over a different
+  // regex object when this runs.
+  const tagScan = /<(\/?)([a-zA-Z][a-zA-Z0-9-]*)\b([^>]*)>/g;
+  tagScan.lastIndex = contentStart;
+  let depth = 1;
+  let m: RegExpExecArray | null;
+  while ((m = tagScan.exec(masked))) {
+    const closing = m[1] === "/";
+    const name = m[2]!.toLowerCase();
+    if (name !== lower) continue;
+    const selfClosing = /\/\s*$/.test(m[3]!) || VOID_ELEMENTS.has(name);
+    if (closing) {
+      depth--;
+      if (depth === 0) return m.index;
+    } else if (!selfClosing) {
+      depth++;
+    }
+    // a self-closing same-name tag nested inside doesn't open a new depth level
+  }
+  return null; // no matching close found before end of string — ambiguous
+}
+
 function checkF6(plan: FilledApp): CheckResult {
-  const candidates = plan.shell.match(NEAR_MISS_PLACEHOLDER) ?? [];
-  const offenders = candidates.filter((c) => !EXACT_PLACEHOLDER.test(c));
+  const masked = maskForClassScan(plan.shell);
+  const offenders: string[] = [];
+  const seenIds = new Map<string, number>();
+
+  F6_OPEN_TAG.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = F6_OPEN_TAG.exec(masked))) {
+    const tag = m[1]!;
+    const attrs = m[2]!;
+    const dsMatch = F6_DATA_SLOT_VALUE.exec(attrs);
+    if (!dsMatch) continue; // not a data-slot element at all — any tag/attrs otherwise is fine
+
+    const rawId = (dsMatch[1] ?? dsMatch[2] ?? dsMatch[3] ?? "").trim();
+    if (!F6_ID_PATTERN.test(rawId)) {
+      offenders.push(`invalid data-slot id "${rawId || "(empty)"}" on <${tag}>`);
+      continue; // malformed id — don't also chase content/duplicate checks for it
+    }
+
+    seenIds.set(rawId, (seenIds.get(rawId) ?? 0) + 1);
+
+    const selfClosing = /\/\s*$/.test(attrs);
+    if (!selfClosing) {
+      const contentStart = m.index + m[0]!.length;
+      const closeIndex = findDataSlotContentEnd(masked, tag, contentStart);
+      if (closeIndex === null) {
+        offenders.push(`"${rawId}": no matching </${tag}> found`);
+      } else {
+        const inner = masked.slice(contentStart, closeIndex);
+        if (inner.trim() !== "") {
+          offenders.push(`"${rawId}": non-empty content (${inner.trim().length} char(s))`);
+        }
+      }
+    }
+  }
+
+  for (const [id, count] of seenIds) {
+    if (count > 1) offenders.push(`duplicate data-slot id "${id}" (${count}x)`);
+  }
+
   return ok(
     "F6",
-    "Every placeholder matches the exact required shape",
+    "Every data-slot element has a valid, unique id and is empty",
     offenders.length === 0,
-    offenders.length ? `near-miss placeholder(s): ${offenders.slice(0, 5).join(" | ")}` : undefined,
+    offenders.length ? offenders.slice(0, 5).join(" | ") : undefined,
   );
 }
 
@@ -620,7 +742,7 @@ function escapeRegExp(s: string): string {
  * Finds the placeholder tag for one specific slot id in the raw planner shell (`plan.shell`,
  * *before* `renderSkeletonElement` merges anything into the rendered skeleton wrapper — see
  * `packages/protocol/src/slots.ts`) and returns its class tokens, if any. Deliberately as
- * tolerant of shape as `NEAR_MISS_PLACEHOLDER` above / the real `PLACEHOLDER_PATTERN` in
+ * tolerant of shape as `F6_OPEN_TAG`/`F6_DATA_SLOT_VALUE` above / the real `PLACEHOLDER_PATTERN` in
  * `packages/protocol/src/slots.ts`: any tag name, attributes in any order — this needs to keep
  * working if the planner starts writing `class="..."` on the placeholder itself, which is
  * exactly the change `DIAG:doubled-region-class` exists to catch (see its comment below).

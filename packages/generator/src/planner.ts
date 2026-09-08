@@ -3,6 +3,7 @@ import {
   slotIdsInShell,
   COLLECTION_PATTERN,
   unmatchedSlotAttributes,
+  sanitizePlaceholders,
 } from "@any-app/protocol";
 import type { AppPlan, SlotSpec, CollectionSpec } from "@any-app/protocol";
 import { resolve } from "./resolve";
@@ -18,12 +19,21 @@ export class PlanError extends Error {
   }
 }
 
-export function parsePlan(raw: string): AppPlan {
+/** One diagnostic `parsePlan` can report through its optional callback. Only one kind exists
+ * today (`sanitizePlaceholders` stripping real content out of a placeholder); the `kind`
+ * field is there so a future diagnostic can be added without changing this shape. */
+export interface PlanDiagnostic {
+  kind: "stripped-placeholder-content";
+  id: string;
+  removed: string;
+}
+
+export function parsePlan(raw: string, onDiagnostic?: (d: PlanDiagnostic) => void): AppPlan {
   const sections = parseSections(stripTrailingFence(raw.replace(/^\s*```[a-z]*\n/, "")));
 
   const title = sections.TITLE?.trim();
   const css = sections.CSS;
-  const shell = sections.SHELL;
+  let shell = sections.SHELL;
   const script = sections.SCRIPT ?? "";
   const slotLines = sections.SLOTS;
 
@@ -57,6 +67,22 @@ export function parsePlan(raw: string): AppPlan {
       height: Number.isFinite(height) ? Math.min(Math.max(height, 40), 2000) : 200,
       spec: rest.join("|").trim(),
     });
+  }
+
+  // Deterministic safety net (not the primary repair — see sanitizePlaceholders' own doc
+  // comment): strip real content the model wrote inside a data-slot element before the
+  // unmatched-attribute check below runs, rather than reject the whole plan over it. Anything
+  // stripped here was destined to be overwritten by the fill call anyway, so this cannot lose
+  // content that was ever going to be user-visible. The SANITIZED shell — not the raw one — is
+  // what continues through slotIdsInShell/unmatchedSlotAttributes below and what ends up in
+  // the returned AppPlan, since it is what gets persisted and rendered.
+  const sanitized = sanitizePlaceholders(shell);
+  shell = sanitized.shell;
+  for (const s of sanitized.stripped) {
+    console.warn(
+      `[parsePlan] stripped-placeholder-content: slot "${s.id}" had non-empty content in SHELL (${s.removed.length} chars removed)`,
+    );
+    onDiagnostic?.({ kind: "stripped-placeholder-content", id: s.id, removed: s.removed });
   }
 
   // The shell is the source of truth for which slots exist and in what order — it is what
@@ -117,6 +143,9 @@ export async function planApp(
   // raw text on a `PlanError` (i.e. everyone but `internal.ts`'s diagnostic capture) simply
   // omits it, and this function's behavior for them is unchanged byte-for-byte.
   onRawResponse?: (raw: string) => void,
+  // Threaded straight through to parsePlan — see PlanDiagnostic's doc comment. Optional and
+  // synchronous, same contract as onRawResponse; omitting it changes nothing.
+  onDiagnostic?: (d: PlanDiagnostic) => void,
 ): Promise<AppPlan> {
   const { provider, model, maxTokens } = resolve("planner", credential);
 
@@ -130,5 +159,5 @@ export async function planApp(
   });
   onRawResponse?.(raw);
 
-  return parsePlan(raw);
+  return parsePlan(raw, onDiagnostic);
 }

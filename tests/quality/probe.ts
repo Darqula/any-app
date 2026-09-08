@@ -47,6 +47,7 @@ import type { AppPlan, SlotSpec, FilledApp } from "@any-app/protocol";
 // tests/backend/fan-out.test.ts — a relative filesystem import, not a production-code change.
 import { PLANNER_PROMPT } from "../../packages/generator/src/planner-prompt";
 import { parsePlan } from "../../packages/generator/src/planner";
+import type { PlanDiagnostic } from "../../packages/generator/src/planner";
 import { REPO_ROOT } from "../harness/db";
 import { QUALITY_PROMPTS } from "./prompts";
 import type { QualityPrompt } from "./prompts";
@@ -184,6 +185,11 @@ interface Tier1PromptResult {
   rawPath: string;
   parseError: string | null;
   slots: Tier1SlotResult[] | null;
+  /** `parsePlan`'s onDiagnostic callback firing — currently only ever
+   * "stripped-placeholder-content" (see planner.ts's PlanDiagnostic). Recorded so a probe run
+   * can count how often the deterministic-strip safety net actually fires, separate from
+   * whether the plan went on to parse cleanly. */
+  diagnostics: PlanDiagnostic[];
 }
 
 async function runTier1(
@@ -209,14 +215,15 @@ async function runTier1(
 
     let parseError: string | null = null;
     let slots: Tier1SlotResult[] | null = null;
+    const diagnostics: PlanDiagnostic[] = [];
     try {
-      const plan = parsePlan(raw);
+      const plan = parsePlan(raw, (d) => diagnostics.push(d));
       slots = plan.slots.map((s) => ({ id: s.id, classes: placeholderClassTokens(plan.shell, s.id) }));
     } catch (error) {
       parseError = error instanceof Error ? error.message : String(error);
     }
 
-    results.push({ promptId: prompt.id, rawPath, parseError, slots });
+    results.push({ promptId: prompt.id, rawPath, parseError, slots, diagnostics });
   }
   return results;
 }
@@ -225,7 +232,14 @@ function printTier1Report(results: Tier1PromptResult[], label: string): { totalS
   console.log(`\n--- Tier 1 report (${label}) ---`);
   let totalSlots = 0;
   let withClass = 0;
+  let totalStripped = 0;
   for (const r of results) {
+    for (const d of r.diagnostics) {
+      totalStripped++;
+      console.log(
+        `  ${r.promptId}: stripped-placeholder-content — slot "${d.id}" (${d.removed.length} chars removed)`,
+      );
+    }
     if (r.parseError) {
       console.log(`  ${r.promptId}: PARSE FAILED — ${r.parseError} (raw saved: ${path.relative(REPO_ROOT, r.rawPath)})`);
       continue;
@@ -242,6 +256,7 @@ function printTier1Report(results: Tier1PromptResult[], label: string): { totalS
   const pct = totalSlots ? Math.round((withClass / totalSlots) * 1000) / 10 : 0;
   console.log(`  TOTAL: ${withClass} of ${totalSlots} placeholders carry a class (${pct}%)`);
   console.log(`  Baseline (independently measured, 2026-09-06 sweep): 10 of 49 (20%).`);
+  console.log(`  TOTAL stripped-placeholder-content events (sanitizePlaceholders safety net firing): ${totalStripped}`);
   return { totalSlots, withClass };
 }
 

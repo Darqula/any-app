@@ -12,6 +12,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parsePlan } from "../../packages/generator/src/planner";
 import { PlanError } from "../../packages/generator/src/planner";
+import type { PlanDiagnostic } from "../../packages/generator/src/planner";
 
 test("A4.1 — well-formed plan: AppPlan with slots in shell order, not SLOTS order", () => {
   const raw =
@@ -92,17 +93,69 @@ test("A4.7c — non-div placeholder (<span>) parses fine", () => {
   assert.deepEqual(plan.slots.map((s) => s.id), ["last-updated"]);
 });
 
-test("A4.7d — a data-slot attribute that fails to parse as a complete placeholder: PlanError naming it (fail loudly, not silently)", () => {
-  // Real content inside the element is genuinely ambiguous (guard 3) — the tolerant scan
-  // correctly does not match it, but that must not mean the region silently vanishes: it
-  // must surface as a loud PlanError, not a plan that quietly drops "chart".
+test("A4.7d — a data-slot element with real content inside it: sanitized and kept, NOT rejected (deterministic safety net)", () => {
+  // REVERSAL, deliberate: this used to be guard 3's PlanError case — the tolerant scan
+  // correctly does not match this as a complete placeholder, but rejecting the whole plan
+  // over it discarded the entire shell/slots architecture for content that was always going
+  // to be overwritten by the fill call anyway. sanitizePlaceholders (slots.ts) now strips
+  // "<p>x</p>" deterministically before the unmatched-attribute check runs, so this parses
+  // fine — see slots.ts's doc comment on sanitizePlaceholders for the full argument, and
+  // A4.15/A4.16 below for the narrower cases that must still throw.
   const raw =
     "===TITLE===\nMy App\n===CSS===\nbody{}\n" +
     '===SHELL===\n<div data-slot="a"></div><div data-slot="chart"><p>x</p></div>\n===SLOTS===\na|200|A\nchart|200|Chart\n';
+  const plan = parsePlan(raw); // must NOT throw
+  assert.deepEqual(plan.slots.map((s) => s.id), ["a", "chart"]);
+  assert.ok(!plan.shell.includes("<p>x</p>"), "the stripped content must not survive into the returned plan");
+  assert.ok(plan.shell.includes('<div data-slot="chart"></div>'), "the element itself is kept, just emptied");
+});
+
+test("A4.13 — parsePlan returns the SANITIZED shell, not the raw one, when content was stripped", () => {
+  const raw =
+    "===TITLE===\nMy App\n===CSS===\nbody{}\n" +
+    '===SHELL===\n<div data-slot="a" class="card">stale content</div>\n===SLOTS===\na|200|A\n';
+  const plan = parsePlan(raw);
+  assert.equal(plan.shell, '<div data-slot="a" class="card"></div>');
+});
+
+test("A4.14 — onDiagnostic fires with the right id and removed text when content is stripped", () => {
+  const raw =
+    "===TITLE===\nMy App\n===CSS===\nbody{}\n" +
+    '===SHELL===\n<div data-slot="chart">Loading chart...</div>\n===SLOTS===\nchart|200|Chart\n';
+  const diagnostics: PlanDiagnostic[] = [];
+  parsePlan(raw, (d) => diagnostics.push(d));
+  assert.deepEqual(diagnostics, [
+    { kind: "stripped-placeholder-content", id: "chart", removed: "Loading chart..." },
+  ]);
+});
+
+test("A4.14b — onDiagnostic omitted: parsePlan behaves exactly as with a callback, minus the call (no throw)", () => {
+  const raw =
+    "===TITLE===\nMy App\n===CSS===\nbody{}\n" +
+    '===SHELL===\n<div data-slot="a">x</div>\n===SLOTS===\na|200|A\n';
+  const plan = parsePlan(raw); // no second argument at all — must not throw
+  assert.equal(plan.shell, '<div data-slot="a"></div>');
+});
+
+test("A4.15 — nested data-slot element inside content: PlanError survives (a different, worse problem than guard 3)", () => {
+  // The stripper deliberately refuses to touch this case (slots.ts's sanitizePlaceholders
+  // doc comment) — silently deleting the outer element would also delete the distinct "b"
+  // region nested inside it, which is not something the fill call was ever going to
+  // overwrite back into existence. Must keep failing loudly.
+  const raw =
+    "===TITLE===\nMy App\n===CSS===\nbody{}\n" +
+    '===SHELL===\n<div data-slot="a"><div data-slot="b"></div>text</div>\n===SLOTS===\na|200|A\nb|200|B\n';
   assert.throws(
     () => parsePlan(raw),
-    (err: unknown) => err instanceof PlanError && /chart/.test(err.message),
+    (err: unknown) => err instanceof PlanError && /a/.test(err.message),
   );
+});
+
+test("A4.16 — unterminated data-slot element (no matching close tag before end of input): PlanError survives", () => {
+  const raw =
+    "===TITLE===\nMy App\n===CSS===\nbody{}\n" +
+    '===SHELL===\n<div data-slot="a">no closing tag here\n===SLOTS===\na|200|A\n';
+  assert.throws(() => parsePlan(raw), PlanError);
 });
 
 test("A4.8 — whole response wrapped in a code fence: parsed anyway", () => {

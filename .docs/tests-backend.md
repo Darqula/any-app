@@ -158,22 +158,44 @@ case where `decided` flips one chunk too soon.
 | A4.10 | No `DATA` section at all (P5) | `collections` is `[]`, no throw — the common case, and it must stay the cheap one |
 | A4.11 | `DATA` with one valid line (P5) | One collection, name and description split on the first `\|` |
 | A4.12 | `DATA` with an invalid collection name (P5) | That line skipped, the rest kept — same tolerance as A4.4 |
+| A4.7d | `data-slot` element with real content inside it | `sanitizePlaceholders` strips it — parses fine, **not** `PlanError` (reversed; see below) |
+| A4.13 | Content stripped from a placeholder | `parsePlan` returns the **sanitized** shell, not the raw one — it is what gets persisted/rendered |
+| A4.14 | Content stripped from a placeholder, `onDiagnostic` passed | Fires once with `{kind:"stripped-placeholder-content", id, removed}` |
+| A4.14b | `onDiagnostic` omitted | Unchanged behaviour, no throw — same optional-callback contract as `onRawResponse` |
+| A4.15 | A `data-slot` element nested inside another `data-slot` element's content | `PlanError` — a nested slot is a different, worse problem; `sanitizePlaceholders` refuses to touch it |
+| A4.16 | A `data-slot` element with no matching close tag before end of input | `PlanError` — boundaries not unambiguous, `sanitizePlaceholders` refuses to touch it |
 
 A4.10 is load-bearing rather than trivial. `DATA` is optional precisely because most apps are
 static and this project's planner is the fragile call — a required sixth section would turn
 "this app has no backend" into a plan-parse failure and a linear fallback.
+
+A4.7d is a deliberate reversal, not a new case. Before `sanitizePlaceholders` (`packages/protocol/src/slots.ts`)
+existed, this exact shape threw `PlanError` and fell back to the linear path — the whole
+motivation for the sanitizer. A4.15/A4.16 are the narrower cases `sanitizePlaceholders`
+still refuses to touch, so `PlanError` still fires for those.
 
 ### A5 — `renderSkeletons` / `renderDocument` / `slotIdsInShell` (P2)
 
 | ID | Case | Passes when |
 |---|---|---|
 | A5.1 | Exact placeholder | Replaced with `<div id="slot-x" class="anyapp-skeleton" style="min-height:Npx">` |
-| A5.2 | Placeholder with an extra attribute | **Not** replaced — locks in the deliberate strictness |
+| A5.2 | Placeholder with an extra attribute | Matched, and the attribute is **kept**, not discarded — the tolerant scan; see `tests/backend/slots.test.ts:24` |
 | A5.3 | Placeholder for an id absent from the spec list | Rendered with height 0, no throw |
 | A5.4 | `renderDocument` with content missing for a slot | Empty template, no `undefined` in output |
 | A5.5 | `slotIdsInShell` | Returns ids in document order |
 | A5.6 | **Duplicate slot id in shell** | `parsePlan` throws `PlanError` naming the repeated id |
 | A5.7 | `renderDocument` emits slots in **plan** order (P4) | True even when `content` was populated in completion order — the live stream and the replay are no longer byte-identical, and that is correct |
+| A5.12 | Real content inside a `data-slot` element | `parsePlan` no longer throws — `sanitizePlaceholders` strips it first (reversed; see A4 table) |
+| A5.13 | `sanitizePlaceholders`: simple content | Stripped; `stripped` reports `{id, removed}` |
+| A5.14 | `sanitizePlaceholders`: nested element of the same tag name | Depth tracking closes on the correct (outer) close tag |
+| A5.15 | `sanitizePlaceholders`: void element (`<br>`) inside content | Does not affect depth tracking |
+| A5.16 | `sanitizePlaceholders`: attribute value containing `>` inside nested markup | Tag-boundary detection respects the quote |
+| A5.17 | `sanitizePlaceholders`: content that is (or contains) a `<!-- comment -->` | Stripped; a `data-slot`-shaped string inside the comment does not block stripping |
+| A5.18 | `sanitizePlaceholders`: `data-slot` text inside a `<script>`, top-level and nested inside another element's content | Never treated as a placeholder or as a nested slot |
+| A5.19 | `sanitizePlaceholders`: a genuine nested `data-slot` element inside content | Left alone (bail) — a different, worse problem |
+| A5.20 | `sanitizePlaceholders`: no matching close tag before end of input | Left alone (bail) |
+| A5.21 | `sanitizePlaceholders`: the placeholder's own tag is a void element | Left alone (bail) — no legal body to strip |
+| A5.22 | `sanitizePlaceholders` run twice | Idempotent — second pass strips nothing further, for both stripped and left-alone shapes |
 
 > A5.4 and the section title previously named `renderFilled`, which no longer exists. Phase
 > 2's replay-divergence fix made the streamed bytes themselves the stored document and
@@ -355,13 +377,29 @@ or on-demand job, not in CI. Rendered-output checks live in the frontend doc.
 | F3 | Fill output (P2) | Emits a section for **every** slot in the plan, in order |
 | F4 | Plan output (P2) | Parses without a `PlanError` |
 | F5 | Plan output (P2) | Slot count is between 2 and 6 |
-| F6 | Plan output (P2) | Every placeholder matches the exact required shape |
+| F6 | Persisted shell (P2) | Every `data-slot` element has a valid, unique id and is empty — any tag name, any other attributes |
 | F7 | Any generated document | External references only from `cdnjs.cloudflare.com` |
 | F8 | Class names used in slot content (P2) | Defined in the planner CSS — catches the "content appears unstyled" failure before a human sees it |
 
 Track these as a **pass rate across N runs**, not as a binary. F1 and F8 in particular are the
 early warning for the fan-out coherence problem: if they are already flaky with one sequential
 call, N isolated calls will be worse.
+
+**F6 changed shape on 2026-09-08 — do not "fix" it back to a byte-exact match.** The old case
+("every placeholder matches the exact required shape") asserted a shape the planner prompt no
+longer writes: `<div data-slot="chart" class="card"></div>`, a placeholder carrying the
+region's own class, is now the *correct*, prompt-required output (the fix for S13 —
+`testing-review.md`), and the exact-shape assertion was penalising it — in the 2026-09-07
+sweep it read 2/14, and every failure was a placeholder correctly carrying a class. Separately,
+`parsePlan` now runs `sanitizePlaceholders` before a plan is persisted, which deterministically
+strips non-whitespace content out of a `data-slot` element — so "the model wrote content inside
+a placeholder" is no longer something this case can observe at all: it is repaired upstream of
+everything F6 reads. F6 now asserts what's left that's still genuinely checkable on the
+persisted shell (valid, unique ids; any tag/attributes; empty content as an invariant, not a
+quality measurement) and points a human at the `[parsePlan] stripped-placeholder-content:` line
+in the `studio-<mode>.log` artifact for the model-behaviour question the old case used to
+answer. See `checkF6`'s own doc comment in `tests/quality/checks-doc.ts` for the full
+reasoning.
 
 Since Phase 4 landed, these have a second use — **run the set in both fill modes and compare
 the rates.** "Does per-slot generation produce worse apps than one coherent pass?" is the

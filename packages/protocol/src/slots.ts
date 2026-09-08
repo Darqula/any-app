@@ -166,6 +166,254 @@ export function unmatchedSlotAttributes(shell: string): string[] {
   return out;
 }
 
+/** Elements that can never have a close tag / children — depth-tracking must not treat one
+ * of these as opening or closing a nesting level, even if the model wrote a matching-name
+ * void element inside a placeholder's content. */
+const VOID_ELEMENTS = new Set([
+  "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source",
+  "track", "wbr",
+]);
+
+type TagToken = { end: number; name: string; closing: boolean; selfClosing: boolean };
+
+/**
+ * Reads one tag starting at `s[start] === '<'`, respecting quoted attribute values so a
+ * `<div title="a > b">` doesn't end the tag at the `>` inside the quote. Three outcomes:
+ *  - a `TagToken` for a real, fully-terminated tag (open, close, or self-closing);
+ *  - `null` when `start` is not actually the beginning of a tag at all (a stray `<` in text,
+ *    a `<!DOCTYPE ...>`, a processing instruction) — safe to treat as literal text and keep
+ *    scanning from the next character;
+ *  - the string `"unterminated"` when a tag name was found but no unquoted `>` (or the
+ *    closing quote of an attribute value) ever arrives before end of string — genuinely
+ *    ambiguous, and the caller must bail out entirely rather than guess.
+ */
+function readTag(s: string, start: number): TagToken | "unterminated" | null {
+  let i = start + 1;
+  let closing = false;
+  if (s[i] === "/") {
+    closing = true;
+    i++;
+  }
+  const nameStart = i;
+  while (i < s.length && /[a-zA-Z0-9]/.test(s[i]!)) i++;
+  if (i === nameStart) return null;
+  const name = s.slice(nameStart, i).toLowerCase();
+
+  let inQuote: string | null = null;
+  while (i < s.length) {
+    const ch = s[i];
+    if (inQuote) {
+      if (ch === inQuote) inQuote = null;
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inQuote = ch;
+      i++;
+      continue;
+    }
+    if (ch === ">") {
+      const selfClosing = s[i - 1] === "/";
+      return { end: i, name, closing, selfClosing };
+    }
+    i++;
+  }
+  return "unterminated";
+}
+
+/**
+ * Depth-tracked scan for the close tag matching the same-named element that opened at
+ * `contentStart` (the index right after that element's own opening `>`). Counts nesting of
+ * the SAME tag name only (so `<div data-slot="x"><div>a</div></div>` closes correctly),
+ * skips void elements and explicit self-closing tags (neither opens a nesting level),
+ * and skips over `<!-- comments -->` and `<script>`/`<style>` bodies wholesale so markup-
+ * shaped text inside them is never mistaken for a real tag.
+ *
+ * Returns `null` — "cannot determine unambiguously" — when: no matching close tag is found
+ * before end of input; a comment, `<script>`, or `<style>` body is left unterminated; or an
+ * attribute-value quote inside a tag encountered during the scan is left unterminated. Every
+ * one of those is exactly the case `sanitizePlaceholders` must leave alone so `PlanError`
+ * still fires, per its own doc comment.
+ */
+function findMatchingClose(
+  shell: string,
+  tagName: string,
+  contentStart: number,
+): { contentEnd: number; closeEnd: number; closeText: string } | null {
+  const lower = tagName.toLowerCase();
+  let i = contentStart;
+  const n = shell.length;
+  let depth = 1;
+  while (i < n) {
+    const lt = shell.indexOf("<", i);
+    if (lt === -1) return null;
+
+    if (shell.startsWith("<!--", lt)) {
+      const end = shell.indexOf("-->", lt + 4);
+      if (end === -1) return null;
+      i = end + 3;
+      continue;
+    }
+
+    const tag = readTag(shell, lt);
+    if (tag === "unterminated") return null;
+    if (tag === null) {
+      i = lt + 1; // stray '<' in text — not a tag, keep scanning
+      continue;
+    }
+    const { end, name, closing, selfClosing } = tag;
+
+    if (name === "script" || name === "style") {
+      if (closing || selfClosing) {
+        i = end + 1;
+        continue;
+      }
+      const rest = shell.slice(end + 1);
+      const bodyMatch = new RegExp(`<\\/${name}\\s*>`, "i").exec(rest);
+      if (!bodyMatch) return null; // unterminated script/style body
+      i = end + 1 + bodyMatch.index + bodyMatch[0].length;
+      continue;
+    }
+
+    if (name === lower) {
+      if (selfClosing || VOID_ELEMENTS.has(name)) {
+        i = end + 1;
+        continue;
+      }
+      if (closing) {
+        depth--;
+        if (depth === 0) {
+          return { contentEnd: lt, closeEnd: end + 1, closeText: shell.slice(lt, end + 1) };
+        }
+        i = end + 1;
+        continue;
+      }
+      depth++;
+      i = end + 1;
+      continue;
+    }
+
+    i = end + 1;
+  }
+  return null;
+}
+
+/**
+ * Blanks out `<!-- comments -->` and `<script>`/`<style>` bodies (equal-length spaces, same
+ * trick as `maskScripts`) purely so the "does this content contain another data-slot
+ * element" check below can't be fooled by a `data-slot`-shaped string sitting in a comment or
+ * inside a nested script/style body — text like that is not markup and must not trigger the
+ * nested-slot bail-out. (If such a region is left unterminated, `findMatchingClose` above has
+ * already bailed the whole candidate before this function is ever reached.)
+ */
+function maskNonMarkupForNestedSlotCheck(html: string): string {
+  let out = html.replace(/<!--[\s\S]*?-->/g, (m) => " ".repeat(m.length));
+  out = out.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, (m) => " ".repeat(m.length));
+  out = out.replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, (m) => " ".repeat(m.length));
+  return out;
+}
+
+/** One placeholder `sanitizePlaceholders` rewrote, for diagnostics/logging. */
+export interface StrippedPlaceholder {
+  /** The slot id from its `data-slot="id"` attribute. */
+  id: string;
+  /** The raw inner content that was removed, verbatim. */
+  removed: string;
+}
+
+/**
+ * Deterministically strips real content out of a `data-slot` element the tolerant scan could
+ * not treat as a placeholder — `<div data-slot="chart" class="card"><div
+ * class="loading-spinner">Loading chart...</div></div>` becomes `<div data-slot="chart"
+ * class="card"></div>` — instead of leaving it for `unmatchedSlotAttributes`/`parsePlan` to
+ * reject the whole plan over.
+ *
+ * This is safe, not just convenient: `swap()` replaces a filled slot element's entire
+ * contents with the fill call's generated output, unconditionally. Whatever the model wrote
+ * inside a placeholder in the SHELL was already never going to survive past the fill call —
+ * it is destined to be overwritten regardless. Removing it here changes nothing about the
+ * finished app; it cannot lose user-visible content, because that content was never going to
+ * be user-visible in the first place.
+ *
+ * This is a deterministic safety net, not the primary repair — a prompt-side fix already
+ * landed (the planner prompt now names the auto-rendered skeleton as the reason the slot must
+ * stay empty), and a 6-prompt live probe on 2026-09-08 came back clean. This function exists
+ * for whatever the prompt fix doesn't catch, and should not be oversold as the main defense.
+ *
+ * Deliberately conservative: every case below leaves the element untouched (so
+ * `unmatchedSlotAttributes` still reports it and `parsePlan` still raises `PlanError`) rather
+ * than risk mangling the shell —
+ *  - the element's own tag is a void element (no legal body to strip content out of);
+ *  - it is written self-closing (no body to strip — and if it were a genuinely complete,
+ *    valid placeholder, `scanPlaceholders` would already have matched it);
+ *  - no depth-tracked matching close tag can be found before end of input (`findMatchingClose`
+ *    returns `null` — see its own doc comment for every sub-case that triggers this);
+ *  - the content contains ANOTHER `data-slot` attribute — a nested slot is a genuinely
+ *    different and worse problem (silently deleting it would drop a distinct planned region,
+ *    not just doomed placeholder filler) and must keep failing loudly, not be stripped away
+ *    along with its parent.
+ *
+ * Never touches text inside a top-level `<script>` in the shell (reuses `maskScripts`, so
+ * every match index found here still lines up against the original, unmasked `shell`) or our
+ * own already-rendered output (`id="slot-…"` — the same guard `scanPlaceholders` applies).
+ *
+ * Idempotent: every element this strips becomes a complete, empty placeholder — exactly what
+ * `scanPlaceholders` matches — so calling this again on its own output finds nothing left to
+ * strip and returns the shell unchanged.
+ */
+export function sanitizePlaceholders(shell: string): { shell: string; stripped: StrippedPlaceholder[] } {
+  const masked = maskScripts(shell);
+  const matchedSpans = scanPlaceholders(shell).map((m) => [m.index, m.index + m.length] as const);
+  const isInsideMatch = (i: number) => matchedSpans.some(([start, end]) => i >= start && i < end);
+
+  // Same OPEN building block as PLACEHOLDER_PATTERN, but matching just the opening tag (any
+  // attributes, in any order, carrying a valid data-slot), with an optional trailing `/` so a
+  // self-closing occurrence can be recognized (and skipped — see doc comment) rather than
+  // misread as an open tag with content following.
+  const openTagPattern = OPEN + "(\\/)?>";
+  const re = new RegExp(openTagPattern, "gi");
+  const replacements: { start: number; end: number; text: string }[] = [];
+  const stripped: StrippedPlaceholder[] = [];
+
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(masked))) {
+    const full = m[0];
+    if (/id\s*=\s*["']slot-/i.test(full)) continue; // our own rendered output — never touch
+    if (isInsideMatch(m.index)) continue; // already a complete, valid empty placeholder
+    if (m[5]) continue; // self-closing — no content to strip
+
+    const tag = m[1]!;
+    const id = (m[3] ?? m[4])!;
+    if (VOID_ELEMENTS.has(tag.toLowerCase())) continue; // no legal body to strip
+
+    const openEnd = m.index + full.length;
+    const close = findMatchingClose(shell, tag, openEnd);
+    if (!close) continue; // boundaries not unambiguous — leave for PlanError
+
+    const content = shell.slice(openEnd, close.contentEnd);
+
+    const maskedContent = maskNonMarkupForNestedSlotCheck(content);
+    DATA_SLOT_ATTR.lastIndex = 0;
+    if (DATA_SLOT_ATTR.test(maskedContent)) continue; // nested data-slot — keep failing loudly
+
+    const openText = shell.slice(m.index, openEnd);
+    replacements.push({ start: m.index, end: close.closeEnd, text: openText + close.closeText });
+    stripped.push({ id, removed: content });
+  }
+
+  if (replacements.length === 0) return { shell, stripped: [] };
+
+  let out = "";
+  let last = 0;
+  for (const r of replacements) {
+    out += shell.slice(last, r.start);
+    out += r.text;
+    last = r.end;
+  }
+  out += shell.slice(last);
+  return { shell: out, stripped };
+}
+
 /**
  * Server-owned skeleton styling. Deliberately not left to the planner: skeletons should
  * look identical across every generated app, and a planner that invents its own each time

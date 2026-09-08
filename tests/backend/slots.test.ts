@@ -6,7 +6,13 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { renderSkeletons, renderDocument, slotIdsInShell, utilityCss } from "@any-app/protocol";
+import {
+  renderSkeletons,
+  renderDocument,
+  slotIdsInShell,
+  utilityCss,
+  sanitizePlaceholders,
+} from "@any-app/protocol";
 import type { FilledApp } from "@any-app/protocol";
 import { parsePlan, PlanError } from "../../packages/generator/src/planner";
 
@@ -292,14 +298,139 @@ test("A5.11 — an unquoted attribute value (class=x) on a placeholder no longer
   assert.deepEqual(plan.slots.map((s) => s.id), ["a"]);
 });
 
-test("A5.12 — real content inside a data-slot element still throws PlanError (guard #3 must survive)", () => {
-  // This one is NOT in the "fixed" table — a regex genuinely cannot tell an intentional
-  // placeholder from real content the model forgot to strip, so this must keep failing
-  // loudly via unmatchedSlotAttributes rather than silently dropping the region.
+test("A5.12 — real content inside a data-slot element: parsePlan no longer throws — sanitizePlaceholders strips it first", () => {
+  // REVERSAL, deliberate: under the old byte-exact-content guard this was rejected outright
+  // (unmatchedSlotAttributes -> PlanError -> linear fallback, losing the whole shell). A
+  // regex still genuinely cannot tell an intentional placeholder from real content the model
+  // forgot to strip, but sanitizePlaceholders now resolves that ambiguity with a proper
+  // depth-tracked scan instead of a regex, and strips it deterministically — see slots.ts's
+  // doc comment on sanitizePlaceholders for why that is safe (the content was always going to
+  // be overwritten by the fill call). See A5.19/A5.20 below for the narrower cases where the
+  // scan genuinely cannot determine the boundaries and correctly still leaves PlanError to fire.
   const raw =
     "===TITLE===\nMy App\n===CSS===\nbody{}\n" +
     '===SHELL===\n<div data-slot="a">actual content</div>\n===SLOTS===\na|200|A\n';
-  assert.throws(() => parsePlan(raw), (err: unknown) => err instanceof PlanError);
+  const plan = parsePlan(raw); // must NOT throw
+  assert.equal(plan.shell, '<div data-slot="a"></div>');
+});
+
+// ---------------------------------------------------------------------------------------
+// sanitizePlaceholders — the stack-based sanitizer parsePlan runs before the unmatched-
+// attribute check. Tested directly here (lower-level than the parsePlan integration tests
+// above and in planner.test.ts) so each bail-out condition and each correctness requirement
+// from the task brief has its own isolated case, independent of SLOT_ID_PATTERN/section
+// parsing noise.
+// ---------------------------------------------------------------------------------------
+
+test("A5.13 — simple content: stripped, and reported in `stripped`", () => {
+  const shell = '<div data-slot="chart" class="card">Loading chart...</div>';
+  const out = sanitizePlaceholders(shell);
+  assert.equal(out.shell, '<div data-slot="chart" class="card"></div>');
+  assert.deepEqual(out.stripped, [{ id: "chart", removed: "Loading chart..." }]);
+});
+
+test("A5.14 — nested element of the SAME tag name: depth tracking closes on the correct (outer) close tag", () => {
+  const shell = '<div data-slot="a"><div>inner</div></div>';
+  const out = sanitizePlaceholders(shell);
+  assert.equal(out.shell, '<div data-slot="a"></div>');
+  assert.deepEqual(out.stripped, [{ id: "a", removed: "<div>inner</div>" }]);
+});
+
+test("A5.15 — void element inside content: does not affect depth tracking, whole content still stripped", () => {
+  const shell = '<div data-slot="a">line one<br>line two</div>';
+  const out = sanitizePlaceholders(shell);
+  assert.equal(out.shell, '<div data-slot="a"></div>');
+  assert.deepEqual(out.stripped, [{ id: "a", removed: "line one<br>line two" }]);
+});
+
+test("A5.16 — attribute value containing '>' inside nested markup: tag-boundary detection respects the quote, not the first '>'", () => {
+  const shell = '<div data-slot="a"><span title="a > b">x</span></div>';
+  const out = sanitizePlaceholders(shell);
+  assert.equal(out.shell, '<div data-slot="a"></div>');
+  assert.deepEqual(out.stripped, [{ id: "a", removed: '<span title="a > b">x</span>' }]);
+});
+
+test("A5.17 — content that is only a comment, and content containing a comment that mentions a fake data-slot: both stripped", () => {
+  const commentOnly = sanitizePlaceholders('<div data-slot="a"><!-- todo --></div>');
+  assert.equal(commentOnly.shell, '<div data-slot="a"></div>');
+  assert.deepEqual(commentOnly.stripped, [{ id: "a", removed: "<!-- todo -->" }]);
+
+  // A data-slot-shaped string sitting inside a comment is not markup and must not trip the
+  // nested-data-slot bail-out — it is exactly as inert as text the model happened to type.
+  const fakeSlotInComment = sanitizePlaceholders(
+    '<div data-slot="a"><!-- <div data-slot="fake"></div> --></div>',
+  );
+  assert.equal(fakeSlotInComment.shell, '<div data-slot="a"></div>');
+  assert.deepEqual(fakeSlotInComment.stripped, [
+    { id: "a", removed: "<!-- <div data-slot=\"fake\"></div> -->" },
+  ]);
+});
+
+test("A5.18 — data-slot text inside a <script> — never treated as a placeholder, in the shell overall or inside another element's content", () => {
+  // Top-level: mirrors A5.2j, but for sanitizePlaceholders — a script anywhere in the shell
+  // must never be scanned for candidate elements to strip.
+  const topLevel = '<script>var x = \'<div data-slot="fake">y</div>\';</script>';
+  assert.deepEqual(sanitizePlaceholders(topLevel), { shell: topLevel, stripped: [] });
+
+  // Nested: a script INSIDE a real placeholder's content, alongside other real content so
+  // this actually reaches the depth-tracked scan (a placeholder whose content is ONLY a
+  // <script> reads as whitespace-only once maskScripts blanks it out — see maskScripts' own
+  // doc comment — so the pre-existing tolerant scan already treats that shape as a complete,
+  // valid empty placeholder before sanitizePlaceholders' candidate loop ever runs; "real text"
+  // here is what makes this a genuine strip candidate). The script's body happens to mention
+  // data-slot as a string and must not block stripping (same reasoning as the comment case in
+  // A5.17 — script/style bodies are masked before the nested-slot check), and the fake
+  // `</div>` inside the script string must not be mistaken for the real closing tag either.
+  const nested = sanitizePlaceholders(
+    '<div data-slot="a"><script>var x = \'<div data-slot="fake"></div>\';</script>real text</div>',
+  );
+  assert.equal(nested.shell, '<div data-slot="a"></div>');
+  assert.deepEqual(nested.stripped, [
+    { id: "a", removed: "<script>var x = '<div data-slot=\"fake\"></div>';</script>real text" },
+  ]);
+});
+
+test("A5.19 — a genuine nested data-slot element inside content: left alone (bail — a different, worse problem)", () => {
+  const shell = '<div data-slot="a"><div data-slot="b"></div>text</div>';
+  const out = sanitizePlaceholders(shell);
+  assert.equal(out.shell, shell, "shell must be byte-identical — nothing touched");
+  assert.deepEqual(out.stripped, []);
+});
+
+test("A5.20 — no matching close tag before end of input: left alone (bail)", () => {
+  const shell = '<div data-slot="a">never closes';
+  const out = sanitizePlaceholders(shell);
+  assert.equal(out.shell, shell);
+  assert.deepEqual(out.stripped, []);
+});
+
+test("A5.21 — the placeholder's own tag is a void element: left alone (no legal body to strip)", () => {
+  // Malformed HTML (a void element cannot legally have a close tag), but sanitizePlaceholders
+  // must not guess at what this means — leave it for PlanError rather than mangle it.
+  const shell = '<br data-slot="a">stray text</br>';
+  const out = sanitizePlaceholders(shell);
+  assert.equal(out.shell, shell);
+  assert.deepEqual(out.stripped, []);
+});
+
+test("A5.22 — idempotency: sanitizePlaceholders(sanitizePlaceholders(shell).shell) strips nothing further", () => {
+  const shells = [
+    '<div data-slot="chart" class="card">Loading chart...</div>',
+    '<div data-slot="a"><div>inner</div></div>',
+    '<div data-slot="a">line one<br>line two</div>',
+    '<div data-slot="a"><span title="a > b">x</span></div>',
+    '<div data-slot="a"><!-- todo --></div>',
+    // Left-alone shapes must also be stable under a second pass (nothing to change, so
+    // nothing changes).
+    '<div data-slot="a"><div data-slot="b"></div>text</div>',
+    '<div data-slot="a">never closes',
+  ];
+  for (const shell of shells) {
+    const first = sanitizePlaceholders(shell);
+    const second = sanitizePlaceholders(first.shell);
+    assert.equal(second.shell, first.shell, `not idempotent for: ${shell}`);
+    assert.deepEqual(second.stripped, [], `second pass must find nothing left to strip for: ${shell}`);
+  }
 });
 
 // ---------------------------------------------------------------------------------------
