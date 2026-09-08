@@ -80,7 +80,7 @@ const ATTR_URL = /\b(?:src|href)="(https?:\/\/[^"]+)"/gi;
  * credited as "defined" by this loose a scan, same as before — this under-flags (accepts a
  * class that isn't really a live selector) rather than over-flags, which is the safe direction
  * for a check whose whole purpose is catching *undefined* classes, not extra ones. */
-const CSS_CLASS_SELECTOR = /\.(-?[a-zA-Z_][a-zA-Z0-9_-]*)/g;
+export const CSS_CLASS_SELECTOR = /\.(-?[a-zA-Z_][a-zA-Z0-9_-]*)/g;
 /** Matches both quote styles for `class="..."`/`class='...'` — group 1 for double-quoted,
  * group 2 for single-quoted. Only ever run against content already passed through
  * `maskForClassScan`, which is what makes the single-quoted half safe to include (see that
@@ -120,7 +120,7 @@ const CLASS_ATTR = /\bclass=(?:"([^"]*)"|'([^']*)')/gi;
  * cuts a slot off partway through its own `<script>` would otherwise leave the tail of that
  * script unmasked and reintroduce exactly the false positive this function exists to remove.
  */
-function maskForClassScan(content: string): string {
+export function maskForClassScan(content: string): string {
   const noScripts = content.replace(/<script\b[^>]*>[\s\S]*?(?:<\/script\s*>|$)/gi, (m) => " ".repeat(m.length));
   return noScripts.replace(/<!--[\s\S]*?-->/g, (m) => " ".repeat(m.length));
 }
@@ -139,6 +139,19 @@ function maskForClassScan(content: string): string {
  * `hidden` stays in this set regardless, for the apps that genuinely rely on the server utility
  * and never define `.hidden` in their own CSS at all. */
 const ALWAYS_DEFINED_CLASSES = new Set(["anyapp-skeleton", "anyapp-slot-error", "hidden"]);
+
+/** Extracts the set of class names the planner's stylesheet actually defines (via
+ * `CSS_CLASS_SELECTOR`) — the same `defined` set `runDocChecks` builds inline before calling
+ * `checkF8`/`analyzeSlotRoots`, pulled out so a caller outside this file (the S13 probe
+ * harness, `tests/quality/probe.ts`) can build the identical set from a reconstructed plan's
+ * CSS without re-deriving the regex or the loop. Does NOT fold in `ALWAYS_DEFINED_CLASSES` —
+ * callers that need that too (F8 itself; `analyzeSlotRoots`'s `rootHasDefinedClass`) still
+ * check it separately, same as before this was extracted. */
+export function definedClassesFromCss(css: string): Set<string> {
+  const defined = new Set<string>();
+  for (const m of css.matchAll(CSS_CLASS_SELECTOR)) defined.add(m[1]!);
+  return defined;
+}
 
 /** F1: no `<style>` element in any slot's filled content — the coherence rule (CSS belongs
  * only to the planner's single stylesheet; a slot writing its own means the fan-out or the
@@ -485,6 +498,263 @@ function checkF8(usages: ClassAttrUsage[]): CheckResult {
 }
 
 /**
+ * S13 diagnostics (`.docs/testing-review.md`) — "`[data-slot="x"]` resolves to the region
+ * *container* we render. The fill call often wraps its content in its own element carrying the
+ * region's semantic class," so a planner shell script's `[data-slot="x"]` selector and the
+ * planner's own `.the-class{}` CSS rule can end up targeting two different elements. Neither
+ * diagnostic below is part of any spec F-case pass rate — same convention as
+ * `F8_MODIFIER_DIAGNOSTIC_ID` above: reported in `report.ts`'s own diagnostics table, never
+ * folded into F1-F8.
+ */
+
+/** HTML void elements — never have a closing tag or children, so `scanTopLevel` must not wait
+ * for one before treating depth as back at 0. Small, fixed list; anything not on it is assumed
+ * to need a closing tag, the same "permissive scan, not a real parser" trade-off the rest of
+ * this file's regexes make. */
+const VOID_ELEMENTS = new Set([
+  "area", "base", "br", "col", "embed", "hr", "img", "input",
+  "link", "meta", "param", "source", "track", "wbr",
+]);
+
+/** Matches one open or close tag: group 1 is `/` for a close tag, group 2 the tag name, group
+ * 3 everything between the tag name and the closing `>` (attributes, plus a trailing `/` for a
+ * self-closing tag). Only ever run against content already passed through `maskForClassScan` —
+ * same precondition as `CLASS_ATTR` above, and for the same reason: a stray `<`/`>` inside a
+ * `<script>` body or an HTML comment would otherwise be misread as a tag boundary here too. */
+const TOP_LEVEL_TAG = /<(\/?)([a-zA-Z][a-zA-Z0-9-]*)\b([^>]*)>/g;
+
+export interface TopLevelScan {
+  /** Count of element nodes at depth 0 — direct children of the scanned fragment. */
+  elementCount: number;
+  /** True when depth-0 contains any text that isn't pure whitespace. A slot that wraps its
+   * markup in one element AND leaves a stray top-level text node beside it (rare, but
+   * possible) is not a clean single root either. */
+  hasNonWhitespaceText: boolean;
+  /** Tag name of the first depth-0 element, lowercased. `null` when there is none. */
+  firstElementTag: string | null;
+  /** Raw attribute text (group 3 of `TOP_LEVEL_TAG`) of the first depth-0 element's opening
+   * tag, for `extractClassTokens` to pull a `class="..."` out of. `null` when there is none. */
+  firstElementAttrs: string | null;
+}
+
+/**
+ * Walks `masked` (already passed through `maskForClassScan`) tag by tag, tracking nesting
+ * depth, to see what sits at depth 0 — what a slot's fill content looks like from *outside*
+ * its own markup. Backing scan for `checkWrappedRootDiagnostic`/`checkDoubledClassDiagnostic`
+ * below.
+ *
+ * Not a real parser: it does not validate tag nesting (a malformed `<div><span></div></span>`
+ * is read the same as if the tags were properly nested) and it does not special-case
+ * `<template>` (whose real children live in `.content`, not the light DOM — irrelevant here
+ * since a slot's own fill content is never itself a bare `<template>`). Good enough for the
+ * same reason the rest of this file's regex scans are: the input is model-generated markup,
+ * not adversarial HTML, and a rare misparse is visible in the `detail` string when it happens
+ * rather than silently wrong.
+ */
+export function scanTopLevel(masked: string): TopLevelScan {
+  let depth = 0;
+  let lastIndex = 0;
+  let elementCount = 0;
+  let hasNonWhitespaceText = false;
+  let firstElementTag: string | null = null;
+  let firstElementAttrs: string | null = null;
+
+  TOP_LEVEL_TAG.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = TOP_LEVEL_TAG.exec(masked))) {
+    const full = m[0]!;
+    const closing = m[1]!;
+    const tagName = m[2]!;
+    const attrs = m[3]!;
+    const textBefore = masked.slice(lastIndex, m.index);
+    if (depth === 0 && textBefore.trim() !== "") hasNonWhitespaceText = true;
+    lastIndex = m.index + full.length;
+
+    const lname = tagName.toLowerCase();
+    const selfClosing = /\/\s*$/.test(attrs) || VOID_ELEMENTS.has(lname);
+
+    if (!closing) {
+      if (depth === 0) {
+        elementCount++;
+        if (elementCount === 1) {
+          firstElementTag = lname;
+          firstElementAttrs = attrs;
+        }
+      }
+      if (!selfClosing) depth++;
+    } else if (depth > 0) {
+      depth--;
+    }
+  }
+  const tail = masked.slice(lastIndex);
+  if (depth === 0 && tail.trim() !== "") hasNonWhitespaceText = true;
+
+  return { elementCount, hasNonWhitespaceText, firstElementTag, firstElementAttrs };
+}
+
+/** Single (non-global) `class="..."`/`class='...'` matcher, for pulling the class list out of
+ * one already-isolated tag or attribute blob — as opposed to `CLASS_ATTR`, which is `g`-flagged
+ * for scanning a whole document for every occurrence. */
+const SINGLE_CLASS_ATTR = /\bclass=(?:"([^"]*)"|'([^']*)')/;
+
+export function extractClassTokens(attrsOrTag: string): string[] {
+  const m = SINGLE_CLASS_ATTR.exec(attrsOrTag);
+  if (!m) return [];
+  const classList = m[1] ?? m[2] ?? "";
+  return classList.split(/\s+/).filter(Boolean);
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Finds the placeholder tag for one specific slot id in the raw planner shell (`plan.shell`,
+ * *before* `renderSkeletonElement` merges anything into the rendered skeleton wrapper — see
+ * `packages/protocol/src/slots.ts`) and returns its class tokens, if any. Deliberately as
+ * tolerant of shape as `NEAR_MISS_PLACEHOLDER` above / the real `PLACEHOLDER_PATTERN` in
+ * `packages/protocol/src/slots.ts`: any tag name, attributes in any order — this needs to keep
+ * working if the planner starts writing `class="..."` on the placeholder itself, which is
+ * exactly the change `DIAG:doubled-region-class` exists to catch (see its comment below).
+ */
+export function placeholderClassTokens(shell: string, slotId: string): string[] {
+  const re = new RegExp(
+    `<[a-zA-Z][a-zA-Z0-9-]*\\b[^>]*\\bdata-slot=(?:"${escapeRegExp(slotId)}"|'${escapeRegExp(slotId)}')[^>]*>`,
+    "i",
+  );
+  const m = re.exec(shell);
+  if (!m) return [];
+  return extractClassTokens(m[0]);
+}
+
+/** Per-slot verdict shared by both S13 diagnostics below, computed once per plan (same
+ * "share one scan" reasoning as `scanClassAttrUsages` above). */
+export interface SlotRootInfo {
+  slotId: string;
+  /** True when the slot's (masked) content is exactly one top-level element and nothing else
+   * at depth 0 — see `scanTopLevel`. */
+  singleRoot: boolean;
+  rootTag: string | null;
+  rootClasses: string[];
+  /** True when `rootClasses` contains at least one class the planner CSS actually defines
+   * (`defined`, the same set F8 builds from `CSS_CLASS_SELECTOR`). */
+  rootHasDefinedClass: boolean;
+}
+
+export function analyzeSlotRoots(plan: FilledApp, defined: Set<string>): SlotRootInfo[] {
+  return plan.slots.map((slot) => {
+    const masked = maskForClassScan(plan.content[slot.id] ?? "");
+    const scan = scanTopLevel(masked);
+    const singleRoot = scan.elementCount === 1 && !scan.hasNonWhitespaceText;
+    const rootClasses = singleRoot && scan.firstElementAttrs != null ? extractClassTokens(scan.firstElementAttrs) : [];
+    return {
+      slotId: slot.id,
+      singleRoot,
+      rootTag: scan.firstElementTag,
+      rootClasses,
+      rootHasDefinedClass: rootClasses.some((c) => defined.has(c)),
+    };
+  });
+}
+
+/** Id for the "fill call wrapped its content in a single semantic root" diagnostic — see
+ * `checkWrappedRootDiagnostic`'s comment. Shaped nothing like `F<n>` for the same reason
+ * `F8_MODIFIER_DIAGNOSTIC_ID` is — never mistaken for a spec F-case, never added to
+ * `DOC_CASE_IDS` in `report.ts`. */
+export const F_WRAPPED_ROOT_DIAGNOSTIC_ID = "DIAG:fill-wrapped-root";
+
+/**
+ * Non-spec diagnostic (S13): counts slots whose fill call wrapped its entire output in one
+ * semantic root element — a single top-level element (masked of its own `<script>`/`<!-- -->`
+ * content, same as F8's scan) carrying at least one class the planner CSS actually defines.
+ * This is exactly the shape at the center of S13: `[data-slot="x"]` resolves to the *skeleton
+ * wrapper* the server renders, not to whatever the fill call wrote, so a shell script's
+ * `[data-slot="x"]` selector and the planner's own `.the-class{}` CSS rule both end up
+ * targeting this inner element instead — nothing here is a bug on its own (a slot is allowed
+ * to emit one root element, and the fill prompt's "write only what goes INSIDE the region"
+ * instruction is nominally obeyed), it is only the *setup* for S13 once a shell script or
+ * stylesheet rule assumes `[data-slot="x"]` and "the region's semantic class" are the same
+ * element. Reported as its own line so a rising rate stays visible on its own, rather than
+ * only showing up later as another inert shell-script defect; never folded into F8's own pass
+ * rate.
+ *
+ * "Root" requires the wrap to be genuine: a slot whose content is a *fragment* (more than one
+ * top-level element, or any non-whitespace top-level text) does not count, regardless of any
+ * individual element's class — there is no single element for a shell script's
+ * `[data-slot="x"]` selector to be silently redirected to. Likewise a single root element with
+ * no class, or with only classes the planner CSS never defines anywhere, does not count: the
+ * class-goes-missing failure this measures needs both halves — one wrapping element, *and* a
+ * real planner-defined class riding on it.
+ */
+/**
+ * The single definition of "this slot's fill content wrapped itself in its own semantic
+ * root" — a genuine single top-level element (see `scanTopLevel`) carrying at least one class
+ * the planner CSS actually defines. Extracted out of `checkWrappedRootDiagnostic` so the S13
+ * probe harness (`tests/quality/probe.ts`, Tier 2) can ask this exact question about content a
+ * fresh `fillSlot` call just produced, without a second hand-rolled definition of "wrapped"
+ * that could quietly drift from this one — see that harness's own comment for why that
+ * matters here specifically.
+ */
+export function wrappedRootOffenders(roots: SlotRootInfo[]): SlotRootInfo[] {
+  return roots.filter((r) => r.singleRoot && r.rootHasDefinedClass);
+}
+
+function checkWrappedRootDiagnostic(roots: SlotRootInfo[]): CheckResult {
+  const offenders = wrappedRootOffenders(roots);
+  const pass = offenders.length === 0;
+  const detail = pass
+    ? undefined
+    : offenders.map((r) => `${r.slotId}: <${r.rootTag} class="${r.rootClasses.join(" ")}">`).join(" | ");
+  return ok(
+    F_WRAPPED_ROOT_DIAGNOSTIC_ID,
+    "[diagnostic, S13] fill call wrapped its content in a single semantic root",
+    pass,
+    detail,
+  );
+}
+
+/** Id for the "same class on both the shell placeholder and the fill content's root"
+ * diagnostic — see `checkDoubledClassDiagnostic`'s comment. Same non-spec conventions as
+ * `F_WRAPPED_ROOT_DIAGNOSTIC_ID` above. */
+export const F_DOUBLED_CLASS_DIAGNOSTIC_ID = "DIAG:doubled-region-class";
+
+/**
+ * Non-spec diagnostic (S13): fires when the SAME class appears both on the shell's placeholder
+ * element (`plan.shell`, before server rendering merges it into the skeleton wrapper — see
+ * `renderSkeletonElement` in `packages/protocol/src/slots.ts`) and on the fill content's own
+ * wrapped root (`checkWrappedRootDiagnostic` above, restricted to slots where that diagnostic
+ * found a genuine single root).
+ *
+ * Fires zero times today: the planner prompt currently forbids attributes on the placeholder
+ * at all, so `plan.shell`'s placeholders never carry a class for this to double up with. That
+ * is the point of shipping this diagnostic *before* it can ever fire, not after — it is a
+ * tripwire for a prompt change that starts putting the region's own class on the placeholder
+ * itself (S13's suggested fixes #2/#3 in `.docs/testing-review.md` both point that direction).
+ * If the fill call then *also* wraps its content in that same class — which
+ * `checkWrappedRootDiagnostic` above shows already happens routinely — the class lands twice,
+ * nested: once on the rendered skeleton wrapper (`renderSkeletonElement` merges the
+ * placeholder's own class onto it), once again on the fill content's inner root. Same rule,
+ * same selector, matching both the outer and inner element: doubled padding, border, and
+ * background from one CSS declaration.
+ */
+function checkDoubledClassDiagnostic(plan: FilledApp, roots: SlotRootInfo[]): CheckResult {
+  const offenders: string[] = [];
+  for (const r of roots) {
+    if (!r.singleRoot || r.rootClasses.length === 0) continue;
+    const placeholderClasses = placeholderClassTokens(plan.shell, r.slotId);
+    const shared = r.rootClasses.filter((c) => placeholderClasses.includes(c));
+    if (shared.length) offenders.push(`${r.slotId}: ${shared.join(", ")}`);
+  }
+  const pass = offenders.length === 0;
+  return ok(
+    F_DOUBLED_CLASS_DIAGNOSTIC_ID,
+    "[diagnostic, S13] same class on both the shell placeholder and the fill content's root",
+    pass,
+    pass ? undefined : offenders.join(" | "),
+  );
+}
+
+/**
  * Runs the whole of section F over one generation. `rawStreamBody` is the literal bytes this
  * sweep received while driving the generation (see `runner.ts`) — used only by F3's order
  * half. `fillMode` is the `LLM_FILL_MODE` the server that produced this row was started with.
@@ -499,6 +769,8 @@ export function runDocChecks(row: GenerationRow, rawStreamBody: string, fillMode
     const reason = `generation did not complete (status: ${row.status}${row.error ? `, error: ${row.error}` : ""})`;
     for (const id of ["F1", "F2", "F3", "F4", "F5", "F6", "F8"]) results.push(skip(id, id, reason));
     results.push(skip(F8_MODIFIER_DIAGNOSTIC_ID, F8_MODIFIER_DIAGNOSTIC_ID, reason));
+    results.push(skip(F_WRAPPED_ROOT_DIAGNOSTIC_ID, F_WRAPPED_ROOT_DIAGNOSTIC_ID, reason));
+    results.push(skip(F_DOUBLED_CLASS_DIAGNOSTIC_ID, F_DOUBLED_CLASS_DIAGNOSTIC_ID, reason));
     results.push(
       row.document ? checkF7(row.document) : skip("F7", "F7", reason),
     );
@@ -512,6 +784,8 @@ export function runDocChecks(row: GenerationRow, rawStreamBody: string, fillMode
     const reason = "no structured plan persisted — parsePlan likely threw (PlanError), row went through the linear fallback";
     for (const id of ["F1", "F2", "F3", "F5", "F6", "F8"]) results.push(skip(id, id, reason));
     results.push(skip(F8_MODIFIER_DIAGNOSTIC_ID, F8_MODIFIER_DIAGNOSTIC_ID, reason));
+    results.push(skip(F_WRAPPED_ROOT_DIAGNOSTIC_ID, F_WRAPPED_ROOT_DIAGNOSTIC_ID, reason));
+    results.push(skip(F_DOUBLED_CLASS_DIAGNOSTIC_ID, F_DOUBLED_CLASS_DIAGNOSTIC_ID, reason));
     return results;
   }
 
@@ -524,11 +798,16 @@ export function runDocChecks(row: GenerationRow, rawStreamBody: string, fillMode
 
   // F8 and its non-spec modifier diagnostic share one scan of the CSS + slot content — see
   // `scanClassAttrUsages`'s comment — so it only runs once per plan rather than twice.
-  const defined = new Set<string>();
-  for (const m of plan.css.matchAll(CSS_CLASS_SELECTOR)) defined.add(m[1]!);
+  const defined = definedClassesFromCss(plan.css);
   const usages = scanClassAttrUsages(plan, defined);
   results.push(checkF8(usages));
   results.push(checkF8ModifierDiagnostic(usages));
+
+  // S13 diagnostics share the same `defined` set F8 just built, and their own single scan of
+  // each slot's top-level structure (`analyzeSlotRoots`) — see that function's comment.
+  const roots = analyzeSlotRoots(plan, defined);
+  results.push(checkWrappedRootDiagnostic(roots));
+  results.push(checkDoubledClassDiagnostic(plan, roots));
 
   return results;
 }

@@ -3,6 +3,7 @@ import type { Provider, ProviderCredential, ProviderRequest } from "./types";
 import { RefusalError } from "./types";
 import { logUsage } from "./usage";
 import type { UsageInfo } from "./usage";
+import { conversationHeaders } from "./session";
 
 function messagesFor(req: ProviderRequest) {
   // OpenAI-compatible caching is automatic on a long-enough shared prefix — there are no
@@ -57,7 +58,7 @@ export function createOpenAIProvider(credential: ProviderCredential): Provider {
           stream_options: { include_usage: true },
           messages: messagesFor(req),
         },
-        { signal: req.signal },
+        { signal: req.signal, headers: conversationHeaders(req.conversationId) },
       );
 
       let sawContent = false;
@@ -103,7 +104,7 @@ export function createOpenAIProvider(credential: ProviderCredential): Provider {
           max_tokens: req.maxTokens,
           messages: messagesFor(req),
         },
-        { signal: req.signal },
+        { signal: req.signal, headers: conversationHeaders(req.conversationId) },
       );
       logUsage(req.label, "openai", usageFrom(completion.usage));
       const choice = completion.choices[0];
@@ -116,9 +117,12 @@ export function createOpenAIProvider(credential: ProviderCredential): Provider {
     },
 
     async validate(model, signal) {
+      // No generation is in scope for a bare credential-validation ping — this always uses
+      // the process-stable fallback id (see conversationHeaders' doc comment), never a fresh
+      // one per call.
       await client.chat.completions.create(
         { model, max_tokens: 1, messages: [{ role: "user", content: "hi" }] },
-        { signal },
+        { signal, headers: conversationHeaders(undefined) },
       );
     },
   };

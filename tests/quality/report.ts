@@ -7,7 +7,8 @@
  */
 import { writeFile } from "node:fs/promises";
 import type { CheckResult } from "./checks-doc";
-import { F8_MODIFIER_DIAGNOSTIC_ID } from "./checks-doc";
+import { F8_MODIFIER_DIAGNOSTIC_ID, F_WRAPPED_ROOT_DIAGNOSTIC_ID, F_DOUBLED_CLASS_DIAGNOSTIC_ID } from "./checks-doc";
+import { FORM_SUBMIT_DIAGNOSTIC_ID } from "./checks-rendered";
 
 export type FillMode = "sequential" | "parallel";
 
@@ -97,7 +98,14 @@ const RENDERED_CASE_IDS = ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8"];
  * decide which ids get a hard "error" mark, and mixing a diagnostic into it would make it
  * silently start looking like a ninth spec case everywhere `DOC_CASE_IDS` is read.
  */
-const DOC_DIAGNOSTIC_CASE_IDS = [F8_MODIFIER_DIAGNOSTIC_ID];
+const DOC_DIAGNOSTIC_CASE_IDS = [F8_MODIFIER_DIAGNOSTIC_ID, F_WRAPPED_ROOT_DIAGNOSTIC_ID, F_DOUBLED_CLASS_DIAGNOSTIC_ID];
+/**
+ * Non-spec diagnostics riding along on `GenerationRecord.renderedChecks` — same reasoning as
+ * `DOC_DIAGNOSTIC_CASE_IDS` above, kept as its own list so it never bleeds into
+ * `RENDERED_CASE_IDS`'s F1-F8 pass-rate table. See `checks-rendered.ts`'s
+ * `checkFormSubmitDiagnostic` (S13) for what this one measures.
+ */
+const RENDERED_DIAGNOSTIC_CASE_IDS = [FORM_SUBMIT_DIAGNOSTIC_ID];
 
 function rate(t: CaseTally): string {
   const scored = t.pass + t.fail; // skip/error excluded from the rate itself, shown alongside
@@ -189,6 +197,15 @@ export function renderStdoutReport(report: SweepReport): string {
     ),
   );
   lines.push("");
+  lines.push(
+    renderTable(
+      "Frontend diagnostics (INFORMATIONAL — not part of any spec F-case pass rate; see" +
+        " checks-rendered.ts's checkFormSubmitDiagnostic)",
+      tallyChecks(seq, "sequential", "rendered", RENDERED_DIAGNOSTIC_CASE_IDS),
+      tallyChecks(par, "parallel", "rendered", RENDERED_DIAGNOSTIC_CASE_IDS),
+    ),
+  );
+  lines.push("");
   lines.push("Per-generation detail:");
   for (const g of report.generations) {
     const durS = g.generationMs != null ? `${(g.generationMs / 1000).toFixed(0)}s` : "n/a";
@@ -198,12 +215,20 @@ export function renderStdoutReport(report: SweepReport): string {
       const failedDiagnostics = g.docChecks
         .filter((c) => c.status === "fail" && DOC_DIAGNOSTIC_CASE_IDS.includes(c.id))
         .map((c) => c.id);
-      const failedRendered = g.renderedChecks.filter((c) => c.status === "fail").map((c) => c.id);
+      const failedRendered = g.renderedChecks
+        .filter((c) => c.status === "fail" && RENDERED_CASE_IDS.includes(c.id))
+        .map((c) => c.id);
+      const failedRenderedDiagnostics = g.renderedChecks
+        .filter((c) => c.status === "fail" && RENDERED_DIAGNOSTIC_CASE_IDS.includes(c.id))
+        .map((c) => c.id);
       if (failedDoc.length) lines.push(`      doc fails: ${failedDoc.join(", ")}`);
       if (failedDiagnostics.length) {
         lines.push(`      doc diagnostics (informational, NOT a spec fail): ${failedDiagnostics.join(", ")}`);
       }
       if (failedRendered.length) lines.push(`      rendered fails: ${failedRendered.join(", ")}`);
+      if (failedRenderedDiagnostics.length) {
+        lines.push(`      rendered diagnostics (informational, NOT a spec fail): ${failedRenderedDiagnostics.join(", ")}`);
+      }
       if (!failedDoc.length && !failedRendered.length) lines.push("      all scored checks passed");
     }
     if (g.artifacts?.screenshot) lines.push(`      screenshot: ${g.artifacts.screenshot}`);

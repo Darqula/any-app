@@ -24,6 +24,10 @@ export async function fillSlot(
   plan: AppPlan,
   slot: SlotSpec,
   signal?: AbortSignal,
+  // The generation id — see planner.ts's planApp for the full doc comment. Appended last
+  // (after `signal`), and optional, so existing positional call sites that stop at `signal`
+  // (or earlier) keep compiling unchanged.
+  conversationId?: string,
 ): Promise<string> {
   let raw = "";
   for await (const chunk of provider.streamText(model, {
@@ -40,6 +44,7 @@ What belongs in it: ${slot.spec}`,
     maxTokens,
     signal,
     label: `fill:${slot.id}`,
+    conversationId,
   })) {
     raw += chunk;
   }

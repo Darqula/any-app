@@ -124,6 +124,88 @@ After every mode requested has run, it prints the stdout table (per-case pass ra
 - `artifacts/` — gitignored. One subdirectory per run (`<ISO timestamp>/`), holding
   `report.json`, one screenshot, and one HTML file per generation attempted.
 
+## S13 probe (`probe.ts`) — not the sweep
+
+`probe.ts` (plus its two helper modules, `probe-reconstruct.ts` and `probe-stub.ts`) is a
+**separate, much cheaper tool**, not a smaller version of `runner.ts`. It exists to answer one
+specific question — did S13's prompt fix (`.docs/testing-review.md`) actually change model
+behaviour? — without paying for a full 20-generation sweep, and without conflating "the
+planner half of the fix worked" with "the fill half of the fix worked" the way one full
+generation necessarily does (a generation that still fails could be either half, or both).
+
+**Use `runner.ts` for a general quality read on the current prompts/model.** Use `probe.ts`
+only when the question is specifically S13: does the planner now put the region's class on
+the placeholder, and does the fill call stop wrapping its output once that class is there.
+
+Two independently-selectable tiers:
+
+- **Tier 1** (`--tier1`): one real PLANNER call per prompt (`resolve("planner", null)` +
+  `provider.completeText` with `PLANNER_PROMPT` directly — never `planApp`, so a malformed
+  response is captured raw before `parsePlan` is even attempted, not lost to a thrown
+  `PlanError`; see `.docs/open-problems.md`'s Q2). Measures: of every slot placeholder in the
+  returned shell, how many carry at least one class? Prompt count defaults to 5, is
+  configurable via `--count=N`, and always includes `contact-form` (S13's reproduction case)
+  regardless of `N` — selection is deterministic and is printed before anything runs.
+- **Tier 2** (`--tier2`): real FILL calls only, no planner spend. Plans are reconstructed from
+  the saved documents in `artifacts/2026-09-06T17-31-26-174Z/` (`probe-reconstruct.ts` pulls
+  `css`/`shell`/per-slot `content` back out of the rendered HTML — there was no existing
+  plan-from-document reconstruction in this repo to reuse, so this module is that reverse of
+  `renderDocument`/`renderHead`). Four documents whose placeholders already carried a class are
+  used as-is; the rest have the B-shape synthesized (the wrapped fill content's own root class
+  moved onto its placeholder) before calling `fillSlot`. Measures: does the fresh fill response
+  still wrap itself in a single element carrying a planner-defined class? Defaults to every
+  slot in the corpus (49 today); `--limit=N` caps it for a cheaper run, and `--only-wrapped`
+  restricts the corpus to slots that were already wrapped before the fix (28 today) — the only
+  slots the fix can actually move, since an already-unwrapped slot can only stay flat or
+  regress. `--limit` is applied AFTER `--only-wrapped`.
+
+Both tiers' "is this wrapped" measurement is `checks-doc.ts`'s own `analyzeSlotRoots` /
+`wrappedRootOffenders` (the exact logic behind `DIAG:fill-wrapped-root`), imported and reused,
+never reimplemented — see that file's comment on `wrappedRootOffenders` for why a second
+hand-rolled definition of "wrapped" is exactly the mistake this is avoiding.
+
+**A subset run (`--limit` and/or `--only-wrapped`) never reports the corpus-wide 28/49 as the
+comparison.** A 2026-09-07 `--tier2 --limit=12` run printed the corpus-wide baseline next to a
+12-slot result and read as a 57%->17% improvement; the true, paired figure for those same 12
+slots was 3->2 (inconclusive — two slots even moved the wrong way). `probe.ts` now prints a
+PAIRED before/after over exactly the slots a run covers (the corpus-wide number appears once,
+explicitly labelled "background only, NOT the comparison"), plus a per-slot flip count in both
+directions, with any unwrapped->wrapped regression flagged with a `>>> REGRESSION >>>` marker
+on its own row — not just visible in a net total. `--limit`'s sample is also no longer raw file
+order (which sorts every `parallel-*` document before every `sequential-*` one and produced the
+all-`parallel-*` sample behind that misread) — it's a deterministic order that interleaves
+documents by fill mode and then round-robins across their slots, so a prefix of any size draws
+from both modes and many documents rather than draining one. The exact slot selection (covered
+and excluded, and why) is always printed before any spend — see `printTier2Selection` in
+`probe.ts`.
+
+```powershell
+# Paired, targeted Tier 2 run: only slots that can show a difference, capped at 12, real calls.
+node --import tsx tests/quality/probe.ts --tier2 --only-wrapped --limit=12 --yes
+```
+
+**Cost guard**, same convention as `runner.ts`: prints the resolved provider/model and the
+planned call count per tier, then refuses to spend without `--yes` (or
+`ANYAPP_PROBE_RUN=1`), exiting non-zero. `--dry-run` swaps in an in-process stub `Provider`
+(`probe-stub.ts` — no network, not even `tests/harness/fake-provider.ts`'s HTTP fixture) and
+runs the same code end to end, printing explicit `[PASS]`/`[FAIL]` self-checks including a
+replay of Tier 2's baseline measurement over the real saved artifacts (no provider call) that
+must reproduce 28 of 49.
+
+```powershell
+# Validate the whole pipeline against a stub provider — no network, no cost.
+node --import tsx tests/quality/probe.ts --dry-run
+
+# Tier 1 only, real planner calls, default 5 prompts (always includes contact-form).
+node --import tsx tests/quality/probe.ts --tier1 --yes
+
+# Tier 2 only, real fill calls, capped at 10 slots for a cheap look before running all 49.
+node --import tsx tests/quality/probe.ts --tier2 --limit=10 --yes
+
+# Both tiers, real calls.
+node --import tsx tests/quality/probe.ts --tier1 --tier2 --yes
+```
+
 ## Where each F case had to approximate, and why
 
 Read the doc comment on each `check*` function in `checks-doc.ts`/`checks-rendered.ts` for the

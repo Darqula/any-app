@@ -12,8 +12,8 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { renderShellHead, renderFullHead } from "../../apps/studio/src/shell";
-import { mintAppToken, utilityCss } from "@any-app/protocol";
-import type { AppPlan } from "@any-app/protocol";
+import { mintAppToken, utilityCss, renderDocument, renderSkeletons } from "@any-app/protocol";
+import type { AppPlan, FilledApp } from "@any-app/protocol";
 
 // `__dirname` does not exist in ES modules — same pattern as tests/harness/*.ts and
 // packages/store/src/migrate.ts.
@@ -70,27 +70,32 @@ test("shell — renderFullHead (the edit-time render path) gates and places the 
 // Regression proof against the real persisted artifact
 // (tests/quality/artifacts/2026-09-06T17-31-26-174Z/parallel-contact-form.html).
 //
-// IMPORTANT — what this actually proves, and what it does not (corrected after review):
+// IMPORTANT — history, corrected twice now (see slots.ts's `hasStandaloneHiddenSelector` and
+// `utilityCss` doc comments for the full story):
 //
 // Reading that file shows the planner's stylesheet defines a COMPOUND selector,
 // `.form-panel.hidden, .confirmation-panel.hidden { display: none; }`, not a standalone
 // `.hidden` rule. An earlier version of `CSS_CLASS_SELECTOR` carried a `(?<![\w.])`
-// lookbehind that (wrongly) refused to credit the second class of a compound selector —
-// `.hidden` in `.confirmation-panel.hidden` is preceded by the word character `l` — so an
-// earlier version of `utilityCss` misread this real document as "the planner never defined
-// .hidden" and fired its fallback anyway. That was itself an instance of the exact failure
-// utilityCss's doc comment warns against ("clobber a planner that legitimately defined
-// .hidden"), caught in review and fixed by dropping the lookbehind (see the comment on
-// `CSS_CLASS_SELECTOR` in slots.ts).
+// lookbehind that (wrongly) refused to credit the second class of a compound selector at
+// all, so an even-earlier version of `utilityCss` misread this document as "the planner never
+// mentioned .hidden" and fired its fallback. Dropping the lookbehind fixed that misread —
+// but the fix over-corrected for THIS gate specifically: crediting a compound selector as
+// "the planner has an opinion on .hidden" is the right answer for F8 (is `hidden` styled at
+// all — yes, if you also carry `confirmation-panel`), but the WRONG question for `utilityCss`
+// (will adding `hidden` to an arbitrary element hide it — no, not unless it also carries
+// `confirmation-panel`). That wrong question is exactly what let a live bug through: the same
+// artifact's own submit handler toggles `hidden` on `.contact-form`, which has NO matching
+// rule, compound or otherwise — and the compound-crediting gate stood the fallback down
+// anyway, so `.contact-form` never hid.
 //
-// With that fixed, the correct, verified behaviour is: this document's planner CSS DOES
-// count as defining `.hidden` (via the compound selector), so `utilityCss` now correctly
-// returns "" for it — the fallback does not fire here, and nothing about this document
-// changes as a result of change 1. The confirmation panel's div,
-// `class="confirmation-panel hidden"`, was already hidden at initial render by the planner's
-// own compound rule, with or without this change.
+// `hasStandaloneHiddenSelector` (slots.ts) is the fix: it only credits a selector unit whose
+// ONLY class is `hidden`, so a compound `.confirmation-panel.hidden` no longer suppresses the
+// fallback. The tests below prove, against this exact real artifact: (1) `utilityCss` now
+// fires on this document's actual planner CSS (it did not before), and (2) the general
+// mechanism — a toggle with NO applicable `.hidden` rule at all — was, and remains, fixed.
 //
-// A separate, genuine defect is visible in this artifact: the submit handler calls
+// A separate, genuine defect is visible in this artifact, unrelated to any of the above: the
+// submit handler calls
 // `document.querySelector('[data-slot="confirmation-panel"]').classList.remove("hidden")`,
 // but `[data-slot="confirmation-panel"]` resolves to the OUTER skeleton wrapper (S12 forces
 // `data-slot` onto that element), which never carries the "hidden" class to begin with (only
@@ -98,15 +103,6 @@ test("shell — renderFullHead (the edit-time render path) gates and places the 
 // panel never becomes visible after a real submission either. That is a DOM-targeting bug in
 // the generated script, unrelated to CSS, and this change does not fix it (reported
 // separately, no action needed here).
-//
-// What the tests below prove: (1) with the corrected regex, utilityCss reads this exact real
-// CSS as "planner already defined .hidden" and stays silent — i.e. change 1 fires on ZERO of
-// the sweep's saved documents (this is the only one using a bare `hidden` class at all, and
-// it defines it compound), so change 1 is purely defensive for the cases actually observed,
-// not a fix for any live case; and (2) the general mechanism this change targets — a slot
-// writing `class="X hidden"` with NO applicable `.hidden`-matching rule anywhere — is still
-// correctly fixed, demonstrated on a reconstructed variant of this CSS with the compound rule
-// removed.
 // ---------------------------------------------------------------------------------------
 
 const ARTIFACT_PATH = path.join(
@@ -120,14 +116,18 @@ function extractPlannerCss(doc: string): string {
   return doc.slice(start, end);
 }
 
-test("regression — real artifact's actual CSS: the compound .hidden definition IS credited, so the fallback does NOT fire", () => {
+test("regression — real artifact's actual CSS: the compound-only .hidden definition does NOT suppress the fallback", () => {
   const artifact = readFileSync(ARTIFACT_PATH, "utf8");
   const plannerCss = extractPlannerCss(artifact);
   assert.ok(plannerCss.includes(".confirmation-panel.hidden"), "sanity: the compound rule is really there");
-  assert.equal(utilityCss(plannerCss), "", "the planner's own compound .hidden rule must be respected, not overridden");
+  assert.equal(
+    utilityCss(plannerCss),
+    ".hidden{display:none}",
+    "a compound-only .hidden rule must not stand the fallback down — .contact-form's toggle has no rule of its own",
+  );
 });
 
-test("regression — general case: NO .hidden-matching rule anywhere fixes a permanently-visible toggled panel", () => {
+test("regression — general case: NO .hidden-matching rule anywhere also fires the fallback (same outcome, simpler input)", () => {
   const artifact = readFileSync(ARTIFACT_PATH, "utf8");
   const plannerCss = extractPlannerCss(artifact);
   // Strip the two compound `.hidden` rules to reconstruct the more common real-world shape:
@@ -140,14 +140,120 @@ test("regression — general case: NO .hidden-matching rule anywhere fixes a per
 
   // Simulate what the browser's cascade would compute for the confirmation panel's div,
   // `class="confirmation-panel hidden"`, using the same rule the artifact's own content
-  // template emits (see the artifact's `<template id="c-confirmation-panel">`).
+  // template emits (see the artifact's `<template id="c-confirmation-panel">`). This is a
+  // TEXT heuristic, not a real cascade — good enough only because `cssWithNoHiddenRule`
+  // contains no `.hidden`-shaped substring at all (asserted above), so it cannot be fooled by
+  // a compound selector the way it would be for `plannerCss` itself (see the test above,
+  // which asks `utilityCss` directly rather than pattern-matching stylesheet text for that
+  // reason).
   function wouldBeHidden(doc: string): boolean {
-    // A `display:none` declaration reaches the element only if some rule in `doc` has a
-    // selector matching an element with classes {confirmation-panel, hidden} and sets
-    // display:none. With no compound/standalone .hidden rule (oldDoc), nothing does.
     return /\.hidden\s*\{[^}]*display\s*:\s*none/.test(doc);
   }
 
-  assert.equal(wouldBeHidden(oldDoc), false, "before the fix: nothing hides it — the permanently-visible bug");
-  assert.equal(wouldBeHidden(newDoc), true, "after the fix: the fallback rule hides it");
+  assert.equal(wouldBeHidden(oldDoc), false, "before the fallback: nothing hides it — the permanently-visible bug");
+  assert.equal(wouldBeHidden(newDoc), true, "after the fallback: the fallback rule hides it");
+});
+
+// ---------------------------------------------------------------------------------------
+// S13 (.docs/testing-review.md) — the shell script targets [data-slot="x"], but that element
+// only carries the classes the model's stylesheet/script depend on if the PLANNER put them on
+// the placeholder itself (planner-prompt.ts's SHELL rule) and the fill call did NOT re-wrap its
+// content in a container of its own (fill-prompt.ts / fill-slot-prompt.ts's rule). These tests
+// prove the *mechanism* end to end through the real, unmodified renderShellHead/renderSkeletons
+// path, using the real artifact's own CSS (`.form-panel.hidden, .confirmation-panel.hidden`)
+// and slot sizes. They do NOT prove the model will follow the reworded prompts — that is not
+// verifiable offline; see the prompt changes themselves and .docs/testing-review.md.
+// ---------------------------------------------------------------------------------------
+
+function b1Slots(): AppPlan["slots"] {
+  return [
+    { id: "form-panel", height: 380, spec: "The contact form." },
+    { id: "confirmation-panel", height: 180, spec: "Thank-you message shown after submit." },
+  ];
+}
+
+test("S13 — the real artifact's ACTUAL (pre-fix) shape: [data-slot=\"confirmation-panel\"] carries none of the CSS's toggle classes", () => {
+  const artifact = readFileSync(ARTIFACT_PATH, "utf8");
+  const plannerCss = extractPlannerCss(artifact);
+  const planA: AppPlan = {
+    title: "Contact Studio",
+    css: plannerCss,
+    // The planner's actual shell: bare placeholders, no class — this is what produced the
+    // real artifact's line `<div id="slot-confirmation-panel" data-slot="confirmation-panel"
+    // class="anyapp-skeleton" ...></div>`, which the artifact's own toggle script then misses.
+    shell: '<main><div data-slot="form-panel"></div><div data-slot="confirmation-panel"></div></main>',
+    script: "",
+    slots: b1Slots(),
+    collections: [],
+  };
+  const doc = renderShellHead(planA, "http://localhost:3000", mintAppToken(randomUUID(), SECRET));
+  const marker = 'data-slot="confirmation-panel"';
+  const start = doc.lastIndexOf("<", doc.indexOf(marker));
+  const end = doc.indexOf(">", doc.indexOf(marker)) + 1;
+  const element = doc.slice(start, end);
+  // The exact rendered opening tag: `class` is ONLY `anyapp-skeleton` — neither the semantic
+  // class the CSS rule needs (`confirmation-panel`) nor the initial toggle state (`hidden`) is
+  // on the element the artifact's own script queries via `[data-slot="confirmation-panel"]`.
+  assert.equal(
+    element,
+    '<div id="slot-confirmation-panel" data-slot="confirmation-panel" class="anyapp-skeleton" style="min-height:180px">',
+  );
+});
+
+test("S13 — B-shaped plan (Change 1): placeholder carries the region's class, merged with anyapp-skeleton, id/data-slot still forced", () => {
+  const artifact = readFileSync(ARTIFACT_PATH, "utf8");
+  const plannerCss = extractPlannerCss(artifact);
+  const planB: AppPlan = {
+    title: "Contact Studio",
+    css: plannerCss,
+    // Change 1: the planner puts the region's own class — including its initial "hidden"
+    // state, which is exactly the kind of thing a shell (not the not-yet-run fill call) can
+    // reasonably decide — directly on the placeholder.
+    shell:
+      '<main><div data-slot="form-panel" class="form-panel"></div>' +
+      '<div data-slot="confirmation-panel" class="confirmation-panel hidden"></div></main>',
+    script: "",
+    slots: b1Slots(),
+    collections: [],
+  };
+  const doc = renderShellHead(planB, "http://localhost:3000", mintAppToken(randomUUID(), SECRET));
+  const marker = 'data-slot="confirmation-panel"';
+  const start = doc.lastIndexOf("<", doc.indexOf(marker));
+  const end = doc.indexOf(">", doc.indexOf(marker)) + 1;
+  const element = doc.slice(start, end);
+  assert.equal(
+    element,
+    '<div id="slot-confirmation-panel" data-slot="confirmation-panel" class="confirmation-panel hidden anyapp-skeleton" style="min-height:180px">',
+  );
+  // The exact element the real artifact's own submit handler queries
+  // (`document.querySelector('[data-slot="confirmation-panel"]')`) now carries both the
+  // semantic class the CSS rule needs (`confirmation-panel`) and the initial toggle state
+  // (`hidden`) — the compound selector `.confirmation-panel.hidden{display:none}` applies to
+  // this exact element, and `.classList.remove("hidden")` on it is no longer a no-op.
+  assert.ok(doc.includes(".confirmation-panel.hidden"), "sanity: the real artifact's compound rule is present");
+});
+
+test("S13 — coupling: Change 1 (class on placeholder) WITHOUT Change 2 (fill call still wraps) doubles the class, nested", () => {
+  // Demonstrates the failure mode the doc comments in planner-prompt.ts/fill-prompt.ts warn
+  // about: if only the planner half of the fix ships, a fill call that (against the still-old
+  // fill-prompt wording, or simply non-compliant) wraps its own output in a container carrying
+  // the same class ends up with that class on two nested elements.
+  const filled: FilledApp = {
+    title: "t",
+    css: ".confirmation-panel{padding:2rem}",
+    shell: '<div data-slot="confirmation-panel" class="confirmation-panel hidden"></div>',
+    script: "",
+    slots: [{ id: "confirmation-panel", height: 180, spec: "s" }],
+    // What an UN-fixed fill call (still wrapping) would produce even though the placeholder
+    // now also carries the class — the bug Change 2 exists to prevent.
+    content: { "confirmation-panel": '<div class="confirmation-panel hidden"><p>Thanks!</p></div>' },
+    collections: [],
+  };
+  const doc = renderDocument(
+    filled,
+    (p) => `<head><style>${p.css}</style></head><body>${renderSkeletons(p.shell, p.slots)}`,
+    "</body>",
+  );
+  const occurrences = (doc.match(/class="[^"]*\bconfirmation-panel\b[^"]*"/g) ?? []).length;
+  assert.equal(occurrences, 2, "the class appears on two different elements — the outer slot AND the fill call's own wrapper");
 });

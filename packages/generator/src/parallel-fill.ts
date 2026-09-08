@@ -58,6 +58,7 @@ async function prewarm(
   plan: AppPlan,
   secrets: string[],
   signal?: AbortSignal,
+  conversationId?: string,
 ): Promise<void> {
   try {
     await provider.completeText(model, {
@@ -67,6 +68,7 @@ async function prewarm(
       maxTokens: 1,
       signal,
       label: "prewarm",
+      conversationId,
     });
   } catch (error) {
     if (isAbortError(error)) throw error;
@@ -95,10 +97,11 @@ async function fillSlotWithRetry(
   slot: SlotSpec,
   secrets: string[],
   signal?: AbortSignal,
+  conversationId?: string,
 ): Promise<SlotResult> {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const html = await fillSlot(provider, model, maxTokens, prompt, plan, slot, signal);
+      const html = await fillSlot(provider, model, maxTokens, prompt, plan, slot, signal, conversationId);
       if (html) return { slot, html, failed: false };
     } catch (error) {
       if (isAbortError(error)) throw error; // an abort is not a retryable failure
@@ -127,6 +130,10 @@ export async function* fillAllSlots(
   credential: ProviderCredential | null,
   concurrency: number,
   signal?: AbortSignal,
+  // The generation id — see planner.ts's planApp for the full doc comment. Shared by the
+  // pre-warm call and every fan-out slot call below, which is the entire point: they all
+  // need to land in the same gateway conversation to share one cache entry.
+  conversationId?: string,
 ): AsyncGenerator<SlotResult> {
   const { provider, model, secrets } = resolve("fill", credential);
   // Deliberately not `resolve()`'s own maxTokens: LLM_FILL_MAX_TOKENS is the sequential
@@ -142,12 +149,14 @@ export async function* fillAllSlots(
   // add if measurement showed it was needed, and Phase 4's own measurement (the fan-out
   // being slower than sequential on this model) is exactly that signal.
   if (plan.slots.length >= 3) {
-    await prewarm(provider, model, plan, secrets, signal);
+    await prewarm(provider, model, plan, secrets, signal, conversationId);
   }
 
   const limit = limitConcurrency(concurrency);
   const tasks = plan.slots.map((slot) =>
-    limit(() => fillSlotWithRetry(provider, model, maxTokens, prompt, plan, slot, secrets, signal)),
+    limit(() =>
+      fillSlotWithRetry(provider, model, maxTokens, prompt, plan, slot, secrets, signal, conversationId),
+    ),
   );
 
   yield* asCompleted(tasks);

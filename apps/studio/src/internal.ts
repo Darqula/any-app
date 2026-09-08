@@ -108,7 +108,7 @@ export function internalRouter(studioOrigin: string): Router {
 
       let plan;
       try {
-        plan = await planApp(generation.prompt, plannerCred, ac.signal);
+        plan = await planApp(generation.prompt, plannerCred, ac.signal, id);
       } catch (error) {
         if (isAbortError(error)) throw error;
         // Scrubbed even though this is a console line, not a stored or rendered one — a
@@ -144,7 +144,7 @@ export function internalRouter(studioOrigin: string): Router {
         // Unchanged from Phase 3.5: one call, slots land in plan order, any failure here
         // fails the whole document (caught by the outer catch below, same as before).
         const slotStream = createSlotStream();
-        for await (const chunk of streamFill(generation.prompt, plan, fillCred, ac.signal)) {
+        for await (const chunk of streamFill(generation.prompt, plan, fillCred, ac.signal, id)) {
           const out = slotStream.push(chunk);
           if (out) res.write(out);
         }
@@ -165,6 +165,7 @@ export function internalRouter(studioOrigin: string): Router {
             fillCred,
             concurrency,
             ac.signal,
+            id,
           )) {
             content[result.slot.id] = result.html;
             if (!result.failed) succeeded++;
@@ -239,7 +240,7 @@ async function runLinearFallback(
 ): Promise<void> {
   const fenceGuard = createTrailingFenceGuard();
   let document = DOCTYPE_AND_PADDING;
-  for await (const chunk of streamApp(prompt, credential, signal)) {
+  for await (const chunk of streamApp(prompt, credential, signal, id)) {
     const safe = fenceGuard.push(chunk);
     if (safe) {
       document += safe;

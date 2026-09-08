@@ -3,6 +3,13 @@ import type { Provider, ProviderCredential, ProviderRequest } from "./types";
 import { RefusalError } from "./types";
 import { logUsage } from "./usage";
 import type { UsageInfo } from "./usage";
+// Applied here too, not just in openai.ts: `ANTHROPIC_BASE_URL` is confirmed able to point
+// at this exact "zen" gateway's Anthropic-shaped endpoint (`/zen/go/v1/messages` — see
+// CLAUDE.md and open-problems.md's Phase 3.5 findings), which shares the same "Console Go"
+// routing layer the 2026-09-07 400 names — there is no reason to expect that layer's session
+// requirement to apply to one of its two endpoints and not the other. Harmless against real
+// api.anthropic.com either way: an extra custom header there is simply ignored.
+import { conversationHeaders } from "./session";
 
 /**
  * The system prompt and the per-app context go in `system` as a single text block carrying
@@ -55,7 +62,7 @@ export function createAnthropicProvider(credential: ProviderCredential): Provide
           system: systemFor(req),
           messages: [{ role: "user", content: req.user }],
         },
-        { signal: req.signal },
+        { signal: req.signal, headers: conversationHeaders(req.conversationId) },
       );
 
       let sawContent = false;
@@ -94,7 +101,7 @@ export function createAnthropicProvider(credential: ProviderCredential): Provide
           system: systemFor(req),
           messages: [{ role: "user", content: req.user }],
         },
-        { signal: req.signal },
+        { signal: req.signal, headers: conversationHeaders(req.conversationId) },
       );
 
       logUsage(req.label, "anthropic", usageFrom(message.usage));
@@ -110,9 +117,11 @@ export function createAnthropicProvider(credential: ProviderCredential): Provide
     },
 
     async validate(model, signal) {
+      // Same as openai.ts's validate(): no generation in scope, so this always uses the
+      // process-stable fallback id.
       await client.messages.create(
         { model, max_tokens: 1, messages: [{ role: "user", content: "hi" }] },
-        { signal },
+        { signal, headers: conversationHeaders(undefined) },
       );
     },
   };

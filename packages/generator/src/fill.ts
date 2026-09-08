@@ -9,6 +9,9 @@ export async function* streamFill(
   plan: AppPlan,
   credential: ProviderCredential | null,
   signal?: AbortSignal,
+  // See planApp's matching parameter — the generation id, shared across the whole app's
+  // conversation.
+  conversationId?: string,
 ): AsyncGenerator<string> {
   const { provider, model, maxTokens } = resolve("fill", credential);
 
@@ -19,5 +22,6 @@ export async function* streamFill(
     maxTokens,
     signal,
     label: "fill",
+    conversationId,
   });
 }

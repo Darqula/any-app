@@ -22,6 +22,9 @@ export async function* streamApp(
   prompt: string,
   credential: ProviderCredential | null,
   signal?: AbortSignal,
+  // See planApp's matching parameter — the generation id, shared across the whole app's
+  // conversation.
+  conversationId?: string,
 ): AsyncGenerator<string> {
   const stripFence = createFenceStripper();
   const { provider, model, maxTokens } = resolve("fill", credential);
@@ -32,6 +35,7 @@ export async function* streamApp(
     maxTokens,
     signal,
     label: "linear",
+    conversationId,
   })) {
     const text = stripFence(delta);
     if (text) yield text;

@@ -93,13 +93,13 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
         }
         target = { kind: "slot" as const, id: chosen };
       } else {
-        target = await routeEdit(instruction, filled, routerCred, ac.signal);
+        target = await routeEdit(instruction, filled, routerCred, ac.signal, id);
       }
 
       const next: FilledApp = { ...filled, content: { ...filled.content } };
       if (target.kind === "css") {
         const before = filled.css;
-        const after = await regenerateCss(instruction, filled, editCred, ac.signal);
+        const after = await regenerateCss(instruction, filled, editCred, ac.signal, id);
         // A truncated CSS edit is the riskier half of this guard, not an afterthought: a
         // short stylesheet does not damage one region like a short slot does, it unstyles
         // the whole app — and it would be saved before anyone sees it.
@@ -129,9 +129,9 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
               ]);
               const { provider, model, maxTokens, secrets: fillSecrets } = resolve("fill", fillCred);
               secrets = [...secrets, ...fillSecrets];
-              return fillSlot(provider, model, maxTokens, generation?.prompt ?? "", filled, slot, ac.signal);
+              return fillSlot(provider, model, maxTokens, generation?.prompt ?? "", filled, slot, ac.signal, id);
             })()
-          : await regenerateSlot(instruction, filled, target.id, before, editCred, ac.signal);
+          : await regenerateSlot(instruction, filled, target.id, before, editCred, ac.signal, id);
         if (looksTruncated(before, after)) {
           console.warn(
             `edit ${id}: slot "${target.id}" came back as ${after.length} chars against ${before.length} before — looks like a fragment, not a full region. Discarding.`,

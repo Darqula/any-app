@@ -174,10 +174,19 @@ test("A5.6 — duplicate slot id in shell: parsePlan throws PlanError naming the
 });
 
 // ---------------------------------------------------------------------------------------
-// utilityCss — the `.hidden` fallback (see slots.ts's doc comment on the function for the
-// full rationale: emitted only in the planner's silence, and only meant to be placed AFTER
-// the planner stylesheet by its caller — the ordering itself is covered in shell.test.ts,
-// since it is `renderShellHead`, not this function, that controls placement).
+// utilityCss — the `.hidden` fallback (see slots.ts's doc comment on the function, and on
+// `hasStandaloneHiddenSelector`, for the full rationale: emitted only when the planner's CSS
+// does not already define a STANDALONE `.hidden` — one that applies with no other class
+// required on the same element — and only meant to be placed AFTER the planner stylesheet by
+// its caller; the ordering itself is covered in shell.test.ts, since it is `renderShellHead`,
+// not this function, that controls placement).
+//
+// This gate deliberately asks a DIFFERENT, narrower question than F8's `CSS_CLASS_SELECTOR`
+// ("is `hidden` styled at all", which credits a compound selector's second class — see that
+// regex's own tests/comment). A planner that only ever writes `.x.hidden{}` has an opinion
+// about `.hidden` for F8's purposes, but NOT for this gate's: adding `hidden` to some other,
+// unrelated element does nothing, and this gate exists precisely to fix that case. See
+// shell.test.ts's regression tests for the real artifact this was caught on.
 // ---------------------------------------------------------------------------------------
 
 test("utilityCss — planner CSS has no .hidden anywhere: the fallback rule is returned", () => {
@@ -190,38 +199,74 @@ test("utilityCss — planner CSS already defines a standalone .hidden selector: 
   assert.equal(utilityCss(css), "");
 });
 
-test("utilityCss — planner .hidden definition inside a combinator/pseudo-class context still counts", () => {
-  // `.hidden:not(.foo)` and `.hidden.other` both still contain `.hidden` as a selector token,
-  // so they count as the planner having an opinion.
+test("utilityCss — planner .hidden definition inside a pseudo-class context still counts as standalone", () => {
+  // `.hidden:not(.foo)` applies `.hidden` on its own to any element that has it — `:not(.foo)`
+  // restricts what is EXCLUDED, not what else must additionally be present — so this is still
+  // standalone, unlike a compound class selector such as `.hidden.foo`.
   const css = ".hidden:not(.foo){display:none}";
   assert.equal(utilityCss(css), "");
 });
 
-test("utilityCss — a COMPOUND selector defining .hidden (e.g. .form-panel.hidden) must also suppress the fallback", () => {
-  // Regression for a real bug: an earlier version of CSS_CLASS_SELECTOR carried a
-  // `(?<![\w.])` lookbehind meant only to reject decimals (`0.5`), but it also rejected the
-  // second class of a compound selector — `.hidden` in `.form-panel.hidden` is preceded by
-  // the word character `l`. That made utilityCss blind to a planner that legitimately defined
-  // `.hidden` this way, which is precisely the "clobber the planner's own opinion" failure
-  // utilityCss's doc comment says must never happen. This is the real shape found in
-  // tests/quality/artifacts/2026-09-06T17-31-26-174Z/parallel-contact-form.html.
-  const css = ".form-panel.hidden, .confirmation-panel.hidden { display: none; }";
+test("utilityCss — a COMPOUND selector defining .hidden (e.g. .confirmation-panel.hidden) does NOT suppress the fallback", () => {
+  // This is the live bug this gate exists to fix, using the exact CSS from a real generation
+  // (tests/quality/artifacts/2026-09-06T17-31-26-174Z/parallel-contact-form.html): the planner
+  // defined `.confirmation-panel.hidden{display:none}`, but a DIFFERENT element
+  // (`.contact-form`) was toggled with `.classList.add("hidden")` and had no matching rule of
+  // its own. `.confirmation-panel.hidden` requires BOTH classes on the same element, so it
+  // does not answer "will adding hidden to an arbitrary element hide it?" — the fallback must
+  // still fire so `.contact-form.hidden`-shaped toggles actually hide something.
+  //
+  // This is a deliberate REVERSAL of this gate's old behavior (see git history / CLAUDE.md):
+  // an earlier version of this predicate reused F8's "is hidden mentioned at all" question and
+  // stood the fallback down here, which is exactly what let the live bug through.
+  const css =
+    ".contact-form { background:#fff; } " +
+    ".confirmation-panel.hidden { display: none; } " +
+    ".contact-form, .confirmation-panel { padding: 1.5rem; }";
+  assert.equal(utilityCss(css), ".hidden{display:none}");
+});
+
+test("utilityCss — .hidden in a descendant combinator position suppresses the fallback", () => {
+  // `.panel .hidden{}` is two separate compound units (descendant combinator splits them) —
+  // `.hidden` applies on its own to whatever carries it, regardless of an ancestor's class.
+  const css = ".panel .hidden{display:none}";
   assert.equal(utilityCss(css), "");
 });
 
-test("utilityCss — a compound selector .a.b credits BOTH class names as defined", () => {
+test("utilityCss — .hidden as one option of a grouped selector list suppresses the fallback", () => {
+  // `.a, .hidden{}` — the comma separates two independent selectors; `.hidden` alone is one of
+  // them, so it applies to any element carrying just `hidden`.
+  const css = ".a, .hidden{display:none}";
+  assert.equal(utilityCss(css), "");
+});
+
+test("utilityCss — a compound .a.hidden alongside a standalone .hidden in the same rule still suppresses", () => {
+  // `.a.hidden, .hidden{}` — the FIRST unit is compound (does not qualify on its own), but the
+  // SECOND unit is a standalone `.hidden` and qualifies by itself; one qualifying unit anywhere
+  // in the stylesheet is enough.
+  const css = ".a.hidden, .hidden{display:none}";
+  assert.equal(utilityCss(css), "");
+});
+
+test("utilityCss — a compound selector .a.b does NOT credit either class as a standalone definition", () => {
   const css = ".ctrl-btn.start{color:green}";
   assert.equal(utilityCss(css), ".hidden{display:none}"); // neither name is "hidden" — sanity
   const cssWithHidden = ".ctrl-btn.hidden{color:green}";
-  assert.equal(utilityCss(cssWithHidden), ""); // the second class, "hidden", must be credited
+  // Unlike F8's CSS_CLASS_SELECTOR (which credits "hidden" here), this gate must NOT treat a
+  // compound .ctrl-btn.hidden as an applicable rule for an arbitrary element — the fallback
+  // still fires.
+  assert.equal(utilityCss(cssWithHidden), ".hidden{display:none}");
 });
 
 test("utilityCss — empty planner CSS: the fallback rule is returned", () => {
   assert.equal(utilityCss(""), ".hidden{display:none}");
 });
 
-test("utilityCss — a decimal number in CSS is never mistaken for a .hidden definition", () => {
-  const css = ".panel{opacity:0.5}";
+test("utilityCss — decimal numbers in CSS declarations invent nothing", () => {
+  // Decimals appear only inside declaration blocks, which hasStandaloneHiddenSelector strips
+  // before scanning for selectors at all — `0.5`/`.65` must never be misread as `.hidden` (or
+  // any class) via the leading dot.
+  const css = ".panel{opacity:0.5;margin:0.5rem} .other{opacity:.65}";
   assert.equal(utilityCss(css), ".hidden{display:none}");
 });
 

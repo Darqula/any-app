@@ -1,5 +1,14 @@
 import type { AppPlan } from "@any-app/protocol";
 
+/**
+ * S13 (.docs/testing-review.md): this prompt's "region element already exists and carries the
+ * region's class(es)" rule is the other half of `planner-prompt.ts`'s SHELL rule — the planner
+ * may put the region's own class on the placeholder, and this call must never re-wrap that
+ * class in a container of its own. The two rules must change together: this half alone (no
+ * class on the placeholder) leaves the fill call's class unreachable from CSS/shell-script
+ * selectors targeting `[data-slot="id"]` (the original bug); the planner half alone (no "don't
+ * wrap" rule here) lands the class twice, nested, doubling any padding/border/background it sets.
+ */
 export const FILL_SYSTEM_PROMPT = `You write the content of individual regions of a web app whose layout and stylesheet already exist.
 
 Output format — reply with one section per region, in the order given, each header alone on its own line:
@@ -10,7 +19,7 @@ Output format — reply with one section per region, in the order given, each he
 Absolute rules:
 - Write HTML only. Never write markdown code fences and never write commentary.
 - NEVER write a <style> element or a style attribute. The stylesheet already exists and is shown to you. Use its classes. If something needs a style that is not there, choose the closest class that is.
-- Write only what goes INSIDE the region. Do not repeat the wrapping <div>.
+- The region element already exists and already carries the region's class(es) — write only its children. Never enclose your output in a single wrapper element (its own class would double up with the one already on the region).
 - A region may include its own <script> for behaviour local to that region. It will execute when the region lands. Shared state belongs to the shell script, which has already run.
 - Use realistic, specific placeholder content. Never lorem ipsum.
 - Emit every requested region, in order, even if one is nearly empty.

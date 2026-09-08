@@ -29,6 +29,9 @@ export async function routeEdit(
   plan: AppPlan,
   credential: ProviderCredential | null,
   signal?: AbortSignal,
+  // The generation id — see planApp's matching parameter. Edits reuse the same conversation
+  // the app's own generation used, so a routed edit can still hit the cached prefix.
+  conversationId?: string,
 ): Promise<EditTarget> {
   // `regions` is stable across every routed edit against this app in one session — this is
   // exactly the repeated-prefix shape confirmed live during Phase 3.5 testing (two router
@@ -45,6 +48,7 @@ export async function routeEdit(
       maxTokens,
       signal,
       label: "router",
+      conversationId,
     })
   )
     .trim()

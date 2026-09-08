@@ -170,18 +170,113 @@ export const SKELETON_CSS = `
  * must be avoided. `tests/quality/checks-doc.ts` keeps its own separate copy of a
  * similarly-named regex for its own class-usage scan (tests cannot reach into production
  * internals not exported for it) — that copy is not this one and is not affected by this fix.
+ *
+ * CROSS-REFERENCE, read before "unifying" anything: `utilityCss` below no longer feeds this
+ * regex's raw "is `hidden` mentioned as a selector token anywhere" answer into its own
+ * decision — it uses `hasStandaloneHiddenSelector`, a separate predicate defined just below
+ * this one, for a narrower question that turned out NOT to be the same one. This regex here
+ * still answers "is `hidden` styled at all" — correct and unchanged for F8 (a compound rule
+ * genuinely does style an element that also carries the compound's other class) — but
+ * `utilityCss` needs "will adding `hidden` to an arbitrary element hide it", which a compound
+ * rule does NOT answer yes to. See `hasStandaloneHiddenSelector`'s and `utilityCss`'s doc
+ * comments for the live case that proved the two questions must not share one answer.
  */
 const CSS_CLASS_SELECTOR = /\.(-?[a-zA-Z_][a-zA-Z0-9_-]*)/g;
 
 /**
+ * True when `css` contains a selector that applies `.hidden` to an element ON ITS OWN, with no
+ * other class required on that same element. This is deliberately a different, narrower
+ * question than `CSS_CLASS_SELECTOR` above answers ("is `hidden` styled at all", which is what
+ * F8's class-usage check needs). `.confirmation-panel.hidden{}` DOES style `hidden` for F8's
+ * purposes — an element that already carries `confirmation-panel` gets a real rule once
+ * `hidden` is added to it — but it does NOT mean adding `hidden` to an ARBITRARY element will
+ * hide it; only an element that also carries `confirmation-panel` is affected. `utilityCss`
+ * needs exactly that second, narrower question answered, because its fallback exists for the
+ * case where a slot's script adds `hidden` to whatever element it is toggling, with no
+ * guarantee that element also carries a companion class some compound rule requires.
+ *
+ * Live proof this distinction is real, not theoretical: a planner stylesheet defined only
+ * `.confirmation-panel.hidden{display:none}` and a slot's script toggled `hidden` on a
+ * DIFFERENT element (`.contact-form`, no matching rule at all). Crediting the compound
+ * selector as "the planner has an opinion on `.hidden`" — F8's question, which an earlier
+ * version of this gate also asked — stood `utilityCss`'s fallback down exactly when it was
+ * needed, and the form never hid. See `utilityCss`'s own doc comment for the full writeup.
+ *
+ * A selector answers yes only when one of its COMPOUND units — the simple selectors between
+ * combinators (whitespace, `>`, `+`, `~`) or commas, so `.confirmation-panel` and `.hidden`
+ * are two separate compound units in `.confirmation-panel .hidden` (descendant) but one single
+ * compound unit in `.confirmation-panel.hidden` — carries `.hidden` as its ONLY class:
+ *   - `.hidden{}`                    → standalone (trivially its own unit)
+ *   - `.panel .hidden{}`             → standalone (descendant combinator splits the units)
+ *   - `.a, .hidden{}`                → standalone (comma splits the units)
+ *   - `.a.hidden, .hidden{}`         → standalone (the SECOND unit alone already qualifies,
+ *                                      even though the first does not)
+ *   - `.confirmation-panel.hidden{}` → NOT standalone (one compound unit, two classes)
+ *
+ * DO NOT fold this into `CSS_CLASS_SELECTOR`, and do not delete either in favor of the other —
+ * they intentionally answer different questions for different callers (this one for
+ * `utilityCss`, that one for F8/`definedClassesFromCss`); see both doc comments before
+ * changing either.
+ */
+function hasStandaloneHiddenSelector(css: string): boolean {
+  // Selectors only ever appear before a `{` — drop declaration blocks first, so stray
+  // `.something`-shaped text inside a VALUE (a `url(x.hidden.png)`, a decimal such as
+  // `opacity:.65`) is never scanned as if it were a selector. `[^{}]*` deliberately does not
+  // span a nested brace, so this only strips one level — fine here, since a selector can never
+  // legally contain an unescaped `{` for this to mis-nest against.
+  const selectorsOnly = css.replace(/\{[^{}]*\}/g, " ");
+  // Drop parenthesized content (`:not(.foo)`, `:nth-child(2n+1)`, ...) so a class named inside
+  // a pseudo-class's argument is never mistaken for a class compounded onto the SAME element as
+  // `.hidden` — `.hidden:not(.foo)` still applies `.hidden` on its own, unconditionally, to any
+  // element that has it (`.foo` there restricts what does NOT get selected, not what else the
+  // selected element must additionally carry).
+  const withoutParens = selectorsOnly.replace(/\([^()]*\)/g, "");
+  const units = withoutParens.split(/[\s,>+~]+/).filter(Boolean);
+  for (const unit of units) {
+    const classes = new Set<string>();
+    CSS_CLASS_SELECTOR.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = CSS_CLASS_SELECTOR.exec(unit))) classes.add(m[1]!);
+    if (classes.size === 1 && classes.has("hidden")) return true;
+  }
+  return false;
+}
+
+/**
  * A `.hidden{display:none}` fallback, returned only when the planner's own stylesheet does not
- * already define a `.hidden` class selector; an empty string otherwise. Real cause: the fill
- * call is told "never write a `<style>` element or a style attribute" and to use the planner's
- * classes, but the planner writes the stylesheet before any region's actual states (toggled
- * panels, active tabs, positive/negative values) are known — so slot content routinely emits
- * `class="confirmation-panel hidden"` with no `.hidden` rule anywhere. `.hidden` is the one
- * state class safe to guess a fallback for, because "hidden" has exactly one reasonable
- * meaning; `.active`/`.selected`/`.positive` do not, and must not get guessed styling here.
+ * already define a STANDALONE `.hidden` selector (see `hasStandaloneHiddenSelector` above for
+ * exactly what "standalone" means here, and why that is a different, narrower question than
+ * "does `hidden` appear as a selector token anywhere" — the latter is what F8's
+ * `CSS_CLASS_SELECTOR` answers, for a different caller with a different need); an empty string
+ * otherwise. Real cause: the fill call is told "never write a `<style>` element or a style
+ * attribute" and to use the planner's classes, but the planner writes the stylesheet before any
+ * region's actual states (toggled panels, active tabs, positive/negative values) are known — so
+ * slot content routinely emits `class="confirmation-panel hidden"` with no rule that actually
+ * hides an element carrying just `hidden` on its own. `.hidden` is the one state class safe to
+ * guess a fallback for, because "hidden" has exactly one reasonable meaning; `.active`/
+ * `.selected`/`.positive` do not, and must not get guessed styling here.
+ *
+ * This gate used to ask F8's question — "does the planner CSS mention `.hidden` at all,
+ * including as part of a compound selector" — and stand down whenever the answer was yes. A
+ * real generation proved that wrong: the planner defined only
+ * `.confirmation-panel.hidden{display:none}`, and a DIFFERENT element's toggle
+ * (`.contact-form`'s) added `hidden` with no rule anywhere that matched it alone. The old gate
+ * saw `hidden` "mentioned" (via the compound rule) and stood down, exactly when its fallback
+ * would have fixed the bug — the form never hid. `hasStandaloneHiddenSelector` asks the
+ * question this gate actually needs — "will adding `hidden` to an arbitrary element hide it?"
+ * — so that case now correctly still fires the fallback.
+ *
+ * Trade-off, deliberately accepted, not hidden: firing more often means a planner that
+ * genuinely intended `.hidden` to apply only alongside a specific companion class — e.g.
+ * `.panel.hidden{opacity:0;transition:opacity .2s}`, written for a fade — now ALSO gets our
+ * `.hidden{display:none}`. Specificity does not save it, because there is no conflict for
+ * specificity to resolve: our rule sets `display`, a property theirs never mentions, so both
+ * rules simply apply together rather than one overriding the other — the element snaps to
+ * `display:none` on top of whatever fade the planner wrote, instead of fading. Judged the
+ * safer default: an element that fails to hide at all is a functional bug (content stuck on
+ * screen, a form that can't be dismissed); a fade that degrades to a snap is cosmetic. If that
+ * judgment stops looking right, this paragraph — not tribal memory — is where to revisit it,
+ * with real evidence from generations either way.
  *
  * Callers MUST place the returned rule in a `<style>` emitted AFTER `<style id="anyapp-css">`
  * — see `renderShellHead` — so that when it fires it wins ties on source order alone. Two
@@ -197,11 +292,7 @@ const CSS_CLASS_SELECTOR = /\.(-?[a-zA-Z_][a-zA-Z0-9_-]*)/g;
  * guessing at styling the planner never asked for.
  */
 export function utilityCss(planCss: string): string {
-  CSS_CLASS_SELECTOR.lastIndex = 0;
-  let m: RegExpExecArray | null;
-  while ((m = CSS_CLASS_SELECTOR.exec(planCss))) {
-    if (m[1] === "hidden") return "";
-  }
+  if (hasStandaloneHiddenSelector(planCss)) return "";
   return ".hidden{display:none}";
 }
 

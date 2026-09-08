@@ -30,10 +30,19 @@ async function complete(
   user: string,
   credential: ProviderCredential | null,
   signal: AbortSignal | undefined,
+  conversationId: string | undefined,
 ): Promise<string> {
   const { provider, model, maxTokens } = resolve("edit", credential);
 
-  const raw = await provider.completeText(model, { system, context, user, maxTokens, signal, label });
+  const raw = await provider.completeText(model, {
+    system,
+    context,
+    user,
+    maxTokens,
+    signal,
+    label,
+    conversationId,
+  });
 
   // The same fence handling as generation: models fence output despite being told not to.
   const strip = createFenceStripper();
@@ -69,6 +78,8 @@ export async function regenerateSlot(
   currentContent: string,
   credential: ProviderCredential | null,
   signal?: AbortSignal,
+  // The generation id — see planApp's matching parameter.
+  conversationId?: string,
 ): Promise<string> {
   const spec = plan.slots.find((s) => s.id === slotId)?.spec ?? "";
 
@@ -90,6 +101,7 @@ ${currentContent}
 The change requested: ${instruction}`,
     credential,
     signal,
+    conversationId,
   );
   return stripStyleTags(html, slotId);
 }
@@ -110,6 +122,8 @@ export async function regenerateCss(
   plan: AppPlan,
   credential: ProviderCredential | null,
   signal?: AbortSignal,
+  // The generation id — see planApp's matching parameter.
+  conversationId?: string,
 ): Promise<string> {
   // The shell and region list are stable across repeated CSS edits in one session; the
   // stylesheet itself is what's being rewritten (and differs after every successful call),
@@ -127,6 +141,7 @@ ${plan.css}
 The change requested: ${instruction}`,
     credential,
     signal,
+    conversationId,
   );
   return unwrapStyleTag(css);
 }

@@ -107,6 +107,10 @@ export async function planApp(
   prompt: string,
   credential: ProviderCredential | null,
   signal?: AbortSignal,
+  // The generation id, so this call shares the opencode.ai gateway's `x-opencode-session`
+  // conversation with every fill/edit call belonging to the same app — see
+  // ProviderRequest.conversationId's doc comment.
+  conversationId?: string,
 ): Promise<AppPlan> {
   const { provider, model, maxTokens } = resolve("planner", credential);
 
@@ -116,6 +120,7 @@ export async function planApp(
     maxTokens,
     signal,
     label: "planner",
+    conversationId,
   });
 
   return parsePlan(raw);

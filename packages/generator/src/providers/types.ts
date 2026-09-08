@@ -35,6 +35,17 @@ export interface ProviderRequest {
   signal?: AbortSignal;
   /** Log label for token-usage reporting (e.g. "planner", "fill"). Diagnostic only. */
   label: string;
+  /**
+   * The conversation this call belongs to, sent as the opencode.ai gateway's
+   * `x-opencode-session` header (see providers/session.ts) — required by that gateway since
+   * 2026-09-07, and otherwise unused/harmless elsewhere. MUST be stable across every call
+   * belonging to one generated app (planner, every fill call, every edit) and MUST NEVER be
+   * a freshly-generated id per request — a fresh id defeats exactly the routing/caching
+   * optimization the header exists for. The generation id is the natural value; call sites
+   * with no generation in scope may leave this unset and get a stable per-process fallback
+   * instead (see `providers/session.ts`'s `resolveConversationId`).
+   */
+  conversationId?: string;
 }
 
 export interface Provider {

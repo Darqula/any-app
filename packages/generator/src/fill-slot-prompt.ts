@@ -1,10 +1,17 @@
+/**
+ * S13 (.docs/testing-review.md): see the matching comment on `FILL_SYSTEM_PROMPT` in
+ * `fill-prompt.ts` — this is the parallel-fill path's copy of the same rule, paired with
+ * `planner-prompt.ts`'s SHELL rule the same way. Keep both fill prompts and the planner prompt
+ * in sync on this point; the real S13 document (parallel/contact-form) was produced by this
+ * path, not the sequential one.
+ */
 export const SLOT_FILL_PROMPT = `You write the contents of ONE region of a web app whose layout and stylesheet already exist.
 
 Output the HTML for that region and nothing else. No markdown code fences, no commentary, no section headers.
 
 Absolute rules:
 - NEVER write a <style> element or a style attribute. The stylesheet already exists and is shown to you. Use its classes. If something needs a style that is not there, choose the closest class that is.
-- Write only what goes INSIDE the region. Do not repeat the wrapping <div>.
+- The region element already exists and already carries the region's class(es) — write only its children. Never enclose your output in a single wrapper element (its own class would double up with the one already on the region).
 - Use realistic, specific placeholder content. Never lorem ipsum.
 - The region may include its own <script> for behaviour local to itself. Shared state belongs to the shell script, which has already run.
 
