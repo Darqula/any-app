@@ -97,6 +97,77 @@ test("A5.2h — existing style attribute is merged with min-height, not clobbere
   );
 });
 
+// ---------------------------------------------------------------------------------------
+// Broadened ATTR pattern — valueless/boolean attributes, digits/colons in attribute names,
+// and unquoted values. See slots.ts's doc comment on `ATTR`/`GENERIC_ATTR` for the HTML
+// syntax being widened to, and CLAUDE.md's "The slot-placeholder scan" note for why this
+// stopped being nearly-dead code the moment placeholders were allowed to carry attributes
+// (S13, 2026-09-07) — PlanError rose from 10% to 26% specifically because of this gap.
+// ---------------------------------------------------------------------------------------
+
+test("A5.2m — valueless/boolean attribute (hidden) is matched and preserved", () => {
+  const out = renderSkeletons('<div data-slot="a" hidden></div>', [{ id: "a", height: 50, spec: "x" }]);
+  // Boolean attributes are re-emitted with an explicit empty value — `hidden=""` is valid HTML
+  // and semantically identical to bare `hidden`; renderSkeletonElement always quotes.
+  assert.equal(
+    out,
+    '<div id="slot-a" data-slot="a" hidden="" class="anyapp-skeleton" style="min-height:50px"></div>',
+  );
+  assert.deepEqual(slotIdsInShell('<div data-slot="a" hidden></div>'), ["a"]);
+});
+
+test("A5.2n — class attribute plus a trailing boolean attribute are both matched and both preserved", () => {
+  const shell = '<div data-slot="a" class="x" hidden></div>';
+  const out = renderSkeletons(shell, [{ id: "a", height: 50, spec: "x" }]);
+  assert.equal(
+    out,
+    '<div id="slot-a" data-slot="a" hidden="" class="x anyapp-skeleton" style="min-height:50px"></div>',
+  );
+});
+
+test("A5.2o — a digit in an attribute name (data-col2) is matched and the attribute preserved", () => {
+  const shell = '<div data-slot="a" data-col2="x"></div>';
+  const out = renderSkeletons(shell, [{ id: "a", height: 50, spec: "x" }]);
+  assert.equal(
+    out,
+    '<div id="slot-a" data-slot="a" data-col2="x" class="anyapp-skeleton" style="min-height:50px"></div>',
+  );
+});
+
+test("A5.2o2 — a colon in an attribute name (xml:lang) is matched and the attribute preserved", () => {
+  const shell = '<div data-slot="a" xml:lang="en"></div>';
+  const out = renderSkeletons(shell, [{ id: "a", height: 50, spec: "x" }]);
+  assert.equal(
+    out,
+    '<div id="slot-a" data-slot="a" xml:lang="en" class="anyapp-skeleton" style="min-height:50px"></div>',
+  );
+});
+
+test("A5.2p — unquoted attribute value (class=x) is matched, and the skeleton merge emits VALID quoted markup", () => {
+  // The regression this guards against: naively concatenating an unquoted value into the
+  // merged class string must not produce `class=x anyapp-skeleton` (unquoted and broken —
+  // the space would end the attribute early, leaving `anyapp-skeleton` as a bogus bare
+  // attribute). renderSkeletonElement always re-quotes class/style regardless of how the
+  // source value was written, so the output here must be properly double-quoted.
+  const shell = "<div data-slot=\"a\" class=x></div>";
+  const out = renderSkeletons(shell, [{ id: "a", height: 50, spec: "x" }]);
+  assert.equal(
+    out,
+    '<div id="slot-a" data-slot="a" class="x anyapp-skeleton" style="min-height:50px"></div>',
+  );
+  // Sanity: no unquoted `class=` survives anywhere in the output.
+  assert.equal(/class=[^"]/.test(out), false);
+});
+
+test("A5.2q — unquoted style value merges min-height as valid quoted markup", () => {
+  const shell = "<div data-slot=\"a\" style=color:red></div>";
+  const out = renderSkeletons(shell, [{ id: "a", height: 50, spec: "x" }]);
+  assert.equal(
+    out,
+    '<div id="slot-a" data-slot="a" class="anyapp-skeleton" style="color:red; min-height:50px"></div>',
+  );
+});
+
 test("A5.2i — real (non-whitespace) content inside the element is NOT matched — genuinely ambiguous", () => {
   const shell = '<div data-slot="chart"><p>placeholder</p></div>';
   const out = renderSkeletons(shell, [{ id: "chart", height: 100, spec: "x" }]);
@@ -124,6 +195,10 @@ test("A5.2l — idempotency: slotIdsInShell(renderSkeletons(shell, slots)) is al
     '<span data-slot="last-updated"></span>',
     "<div data-slot='single'></div>",
     '<div data-slot="selfclose"/>',
+    '<div data-slot="hasboolean" hidden></div>',
+    '<div data-slot="hasunquoted" class=x></div>',
+    '<div data-slot="hasdigit" data-col2="x"></div>',
+    '<div data-slot="mixed" class="x" hidden data-col2=y></div>',
   ];
   const slots = [
     { id: "foo", height: 300, spec: "x" },
@@ -131,6 +206,10 @@ test("A5.2l — idempotency: slotIdsInShell(renderSkeletons(shell, slots)) is al
     { id: "last-updated", height: 20, spec: "x" },
     { id: "single", height: 100, spec: "x" },
     { id: "selfclose", height: 100, spec: "x" },
+    { id: "hasboolean", height: 100, spec: "x" },
+    { id: "hasunquoted", height: 100, spec: "x" },
+    { id: "hasdigit", height: 100, spec: "x" },
+    { id: "mixed", height: 100, spec: "x" },
   ];
   for (let i = 0; i < shells.length; i++) {
     const rendered = renderSkeletons(shells[i]!, [slots[i]!]);
@@ -171,6 +250,56 @@ test("A5.6 — duplicate slot id in shell: parsePlan throws PlanError naming the
     "===TITLE===\nMy App\n===CSS===\nbody{}\n" +
     '===SHELL===\n<div data-slot="a"></div><div data-slot="a"></div>\n===SLOTS===\na|200|A\n';
   assert.throws(() => parsePlan(raw), (err: unknown) => err instanceof PlanError && /a/.test(err.message));
+});
+
+// ---------------------------------------------------------------------------------------
+// End-to-end via parsePlan: each of these shells is exactly the shape from the defect
+// report — a real attribute list on a placeholder, now that S13 (2026-09-07) tells the
+// planner the placeholder IS the region and should carry its class. Before this fix, every
+// one of these threw PlanError via unmatchedSlotAttributes ("shell has data-slot
+// attribute(s) that didn't form a valid placeholder"); now they must all parse cleanly.
+// ---------------------------------------------------------------------------------------
+
+test("A5.8 — bare boolean attribute (hidden) on a placeholder no longer throws PlanError", () => {
+  const raw =
+    "===TITLE===\nMy App\n===CSS===\nbody{}\n" +
+    '===SHELL===\n<div data-slot="a" hidden></div>\n===SLOTS===\na|200|A\n';
+  const plan = parsePlan(raw);
+  assert.deepEqual(plan.slots.map((s) => s.id), ["a"]);
+});
+
+test("A5.9 — class plus a trailing boolean attribute on a placeholder no longer throws PlanError", () => {
+  const raw =
+    "===TITLE===\nMy App\n===CSS===\nbody{}\n" +
+    '===SHELL===\n<div data-slot="a" class="x" hidden></div>\n===SLOTS===\na|200|A\n';
+  const plan = parsePlan(raw);
+  assert.deepEqual(plan.slots.map((s) => s.id), ["a"]);
+});
+
+test("A5.10 — a digit in an attribute name (data-col2) on a placeholder no longer throws PlanError", () => {
+  const raw =
+    "===TITLE===\nMy App\n===CSS===\nbody{}\n" +
+    '===SHELL===\n<div data-slot="a" data-col2="x"></div>\n===SLOTS===\na|200|A\n';
+  const plan = parsePlan(raw);
+  assert.deepEqual(plan.slots.map((s) => s.id), ["a"]);
+});
+
+test("A5.11 — an unquoted attribute value (class=x) on a placeholder no longer throws PlanError", () => {
+  const raw =
+    "===TITLE===\nMy App\n===CSS===\nbody{}\n" +
+    '===SHELL===\n<div data-slot="a" class=x></div>\n===SLOTS===\na|200|A\n';
+  const plan = parsePlan(raw);
+  assert.deepEqual(plan.slots.map((s) => s.id), ["a"]);
+});
+
+test("A5.12 — real content inside a data-slot element still throws PlanError (guard #3 must survive)", () => {
+  // This one is NOT in the "fixed" table — a regex genuinely cannot tell an intentional
+  // placeholder from real content the model forgot to strip, so this must keep failing
+  // loudly via unmatchedSlotAttributes rather than silently dropping the region.
+  const raw =
+    "===TITLE===\nMy App\n===CSS===\nbody{}\n" +
+    '===SHELL===\n<div data-slot="a">actual content</div>\n===SLOTS===\na|200|A\n';
+  assert.throws(() => parsePlan(raw), (err: unknown) => err instanceof PlanError);
 });
 
 // ---------------------------------------------------------------------------------------

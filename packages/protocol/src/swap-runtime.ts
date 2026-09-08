@@ -16,7 +16,14 @@
  *    content is allowed to carry its own script, so each one is re-created as a fresh
  *    element, which resets that flag and lets it run.
  *  - Slot content lands long after the shell script ran, so the shell cannot bind to it
- *    directly. Every fill fires a `slot:ready` event the shell can listen for.
+ *    directly. Every fill fires a `slot:ready` event the shell can listen for. The detail
+ *    carries both `id` and `element`; `element` looks redundant next to an id that already
+ *    identifies the slot, but generated shell scripts demonstrably reach for it directly
+ *    (`e.detail.element.querySelector(...)`) — two apps in the 2026-09-07 sweep threw
+ *    "Cannot read properties of undefined" and lost their whole shell script when it was
+ *    missing. Handing over the element the runtime already has is cheaper than making every
+ *    shell re-resolve an id itself. Regression guard: testing-review.md S15, D10 in
+ *    tests/frontend/swap-runtime.spec.ts.
  *  - The generation response closes when generation ends, so later edits arrive by
  *    postMessage from the studio page instead.
  *
@@ -48,8 +55,9 @@ export function swapRuntime(studioOrigin: string): string {
     slot.classList.remove("anyapp-skeleton");
     slot.style.minHeight = "";
     rerunScripts(slot);
+    // \`element\` is not redundant with \`id\` — see the doc comment above (S15/D10).
     document.dispatchEvent(
-      new CustomEvent("slot:ready", { detail: { id: slot.id.slice(5) } })
+      new CustomEvent("slot:ready", { detail: { id: slot.id.slice(5), element: slot } })
     );
   }
 

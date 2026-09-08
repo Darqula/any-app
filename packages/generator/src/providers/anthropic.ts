@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { Provider, ProviderCredential, ProviderRequest } from "./types";
-import { RefusalError } from "./types";
+import { RefusalError, TruncationError } from "./types";
 import { logUsage } from "./usage";
 import type { UsageInfo } from "./usage";
 // Applied here too, not just in openai.ts: `ANTHROPIC_BASE_URL` is confirmed able to point
@@ -90,7 +90,15 @@ export function createAnthropicProvider(credential: ProviderCredential): Provide
       if (final.stop_reason === "refusal") {
         throw new RefusalError(final.stop_details?.category ?? "refusal");
       }
-      if (!sawContent) throw new RefusalError("empty response");
+      // testing-review.md S14: `stop_reason: "max_tokens"` means the response was cut off by
+      // the budget, not declined — a distinct error from RefusalError, because only this one
+      // is worth retrying with more tokens. Checked before `sawContent` for the same reason
+      // as openai.ts: a cutoff with no visible text yet must read as "we cut it off", not "the
+      // model declined".
+      if (final.stop_reason === "max_tokens") {
+        throw new TruncationError(req.maxTokens);
+      }
+      if (!sawContent) throw new RefusalError("empty response", "empty");
     },
 
     async completeText(model, req) {
@@ -108,11 +116,15 @@ export function createAnthropicProvider(credential: ProviderCredential): Provide
       if (message.stop_reason === "refusal") {
         throw new RefusalError(message.stop_details?.category ?? "refusal");
       }
+      // See the matching streamText check above (testing-review.md S14).
+      if (message.stop_reason === "max_tokens") {
+        throw new TruncationError(req.maxTokens);
+      }
       const text = message.content
         .filter((block) => block.type === "text")
         .map((block) => block.text)
         .join("");
-      if (!text) throw new RefusalError("empty response");
+      if (!text) throw new RefusalError("empty response", "empty");
       return text;
     },
 

@@ -13,7 +13,7 @@
  *
  * ANYAPP_QUALITY_RUN=1 in the environment is equivalent to --yes.
  */
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
@@ -25,6 +25,7 @@ import type { Browser } from "playwright";
 import { INTERNAL_SECRET_HEADER } from "@any-app/protocol";
 import { createScratchDatabase, readSuperuserDatabaseUrl, REPO_ROOT } from "../harness/db";
 import { startServers } from "../harness/servers";
+import type { RunningServers } from "../harness/servers";
 import { findFreePorts } from "../harness/ports";
 import { QUALITY_PROMPTS } from "./prompts";
 import type { QualityPrompt } from "./prompts";
@@ -201,6 +202,49 @@ async function loadGenerationRow(databaseUrl: string, id: string): Promise<Gener
   }
 }
 
+/**
+ * Reads back the raw-planner-failure capture `internal.ts`'s `capturePlannerFailure` writes
+ * under `ANYAPP_PLANNER_RAW_DIR` (this run's own `runOutDir` — see `runMode`) when a
+ * `PlanError` fired for this generation. Absent for the common case (planning succeeded), so
+ * this is a plain best-effort read, not an assertion — a missing file just means no PlanError
+ * happened, which is most generations.
+ */
+async function readPlannerFailure(
+  runOutDir: string,
+  id: string,
+): Promise<{ reason: string; rawPath: string } | null> {
+  const rawPath = path.join(runOutDir, `planner-fail-${id}.json`);
+  try {
+    const text = await readFile(rawPath, "utf8");
+    const parsed = JSON.parse(text) as { reason?: string };
+    return { reason: parsed.reason ?? "(planner-fail capture had no reason field)", rawPath };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Writes the studio/sandbox children's captured stdout+stderr to `<runOutDir>/studio-<mode>.log`
+ * / `sandbox-<mode>.log` — previously this went nowhere useful once the process exited, which
+ * is exactly why a moved `PlanError`, a usage line, or a stack trace could only be recovered by
+ * spending on a second run. `servers.logs()` is a rolling buffer capped at 1000 chunks
+ * (`tests/harness/proc.ts`) — a very chatty run can lose its oldest lines, same limitation the
+ * existing C15/H5 backend tests already live with; still far more than "nowhere" for the
+ * common case of a handful of prompts per mode. Best-effort: a write failure here must not
+ * abort the sweep.
+ */
+async function writeServerLogs(mode: FillMode, servers: RunningServers, runOutDir: string): Promise<void> {
+  try {
+    await mkdir(runOutDir, { recursive: true });
+    await Promise.all([
+      writeFile(path.join(runOutDir, `studio-${mode}.log`), servers.logs("studio"), "utf8"),
+      writeFile(path.join(runOutDir, `sandbox-${mode}.log`), servers.logs("sandbox"), "utf8"),
+    ]);
+  } catch (error) {
+    console.warn(`[${mode}] failed to write server logs: ${String(error)}`);
+  }
+}
+
 // --- One mode's worth of the sweep ------------------------------------------------------------
 
 async function runMode(
@@ -216,16 +260,27 @@ async function runMode(
   try {
     const [studioPort, sandboxPort] = await findFreePorts(2);
     const internalSecret = randomBytes(16).toString("hex");
+    await mkdir(runOutDir, { recursive: true });
     const servers = await startServers({
       databaseUrl: scratch.databaseUrl,
       sandboxDatabaseUrl: scratch.sandboxDatabaseUrl,
       ports: { studio: studioPort!, sandbox: sandboxPort! },
-      env: { ...providerEnv, LLM_FILL_MODE: mode, INTERNAL_SECRET: internalSecret },
+      env: {
+        ...providerEnv,
+        LLM_FILL_MODE: mode,
+        INTERNAL_SECRET: internalSecret,
+        // Makes internal.ts's capturePlannerFailure write every PlanError's raw response
+        // (plus its reason) into this run's own artifact directory — see that function's
+        // doc comment for why this is opt-in via env var rather than unconditional logging.
+        // Only this sweep sets it; a plain `npm run dev` never does.
+        ANYAPP_PLANNER_RAW_DIR: runOutDir,
+      },
     });
     try {
       for (const [i, prompt] of prompts.entries()) {
         console.log(`[${mode}] (${i + 1}/${prompts.length}) generating "${prompt.id}"...`);
         const record: GenerationRecord = {
+          id: null,
           promptId: prompt.id,
           mode,
           generationMs: null,
@@ -233,6 +288,7 @@ async function runMode(
           docChecks: [],
           renderedChecks: [],
           artifacts: null,
+          plannerFailure: null,
         };
         try {
           const { id, rawStreamBody, generationMs } = await driveGeneration(
@@ -240,11 +296,13 @@ async function runMode(
             internalSecret,
             prompt,
           );
+          record.id = id;
           record.generationMs = generationMs;
           console.log(`[${mode}] (${i + 1}/${prompts.length}) "${prompt.id}" generated in ${(generationMs / 1000).toFixed(0)}s, checking...`);
 
           const row = await loadGenerationRow(scratch.databaseUrl, id);
-          record.docChecks = runDocChecks(row, rawStreamBody, mode);
+          record.plannerFailure = await readPlannerFailure(runOutDir, id);
+          record.docChecks = runDocChecks(row, rawStreamBody, mode, record.plannerFailure?.reason);
 
           if (row.status === "complete" && row.document) {
             const page = await browser.newPage();
@@ -283,6 +341,13 @@ async function runMode(
         await onRecord(record);
       }
     } finally {
+      // Studio/sandbox stdout+stderr, captured by `startServers` in-memory the whole run
+      // (see servers.ts's `logs()` doc comment) — written out here so a run's server logs
+      // sit beside its report.json and screenshots instead of vanishing with the process.
+      // Written before `stop()` (though `logs()` would still work after — it's just an
+      // in-memory array on an object this closure still holds) so a failure in `stop()`
+      // itself can't skip it.
+      await writeServerLogs(mode, servers, runOutDir);
       await servers.stop();
     }
   } finally {

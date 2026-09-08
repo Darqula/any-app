@@ -9,7 +9,7 @@ import type { ProviderCredential } from "./providers/types";
 import type { Provider } from "./providers/types";
 import { isAbortError } from "./client";
 import { safeMessage } from "./scrub";
-import { RefusalError } from "./providers/types";
+import { RefusalError, TruncationError } from "./providers/types";
 
 export interface SlotResult {
   slot: SlotSpec;
@@ -39,18 +39,23 @@ export interface SlotResult {
  *
  * The sleep runs even when the call above threw — deliberately, not an oversight. On this
  * project's reasoning-heavy model, that throw is normally `RefusalError("empty response")`
- * (a `maxTokens: 1` budget leaves no room for visible text once reasoning has run) — every
- * real pre-warm attempt during Phase 4 testing hit exactly this. Confirmed directly against
- * the gateway that this still writes to cache: a `max_tokens: 1` call that returned empty
- * content was immediately followed by a real cache hit on the next call. Skipping the sleep
- * on this — the normal case here, not an edge case — would undo pre-warm's whole point for
- * the model this project actually runs. It only skips on abort, where there is nothing left
- * to wait for.
+ * or (since the S14 fix below made this detectable) `TruncationError` — a `maxTokens: 1`
+ * budget leaves no room for visible text once reasoning has run, and now that finish reason
+ * is surfaced honestly, `max_tokens: 1` reads as "cut off at the budget" at least as often as
+ * it reads as "came back empty". Every real pre-warm attempt during Phase 4 testing hit one
+ * of these two. Confirmed directly against the gateway that this still writes to cache: a
+ * `max_tokens: 1` call that returned empty content was immediately followed by a real cache
+ * hit on the next call. Skipping the sleep on this — the normal case here, not an edge case —
+ * would undo pre-warm's whole point for the model this project actually runs. It only skips
+ * on abort, where there is nothing left to wait for.
  *
- * That normal-case `RefusalError` is logged separately from a genuine failure, not folded
- * into one "pre-warm failed" line — an empty response is the *expected* outcome here and
- * still warms the cache, so a line that says "failed" on the success path is exactly the
- * wrong thing to read while debugging a real cache miss.
+ * Both of those normal-case errors are logged separately from a genuine failure, not folded
+ * into one "pre-warm failed" line — a `maxTokens: 1` cutoff (however it's shaped) is the
+ * *expected* outcome here and still warms the cache, so a line that says "failed" on the
+ * success path is exactly the wrong thing to read while debugging a real cache miss. Were
+ * `TruncationError` folded into the generic branch instead, every parallel-fill generation of
+ * 3+ slots would print a spurious "cache pre-warm failed" warning on its most common path —
+ * exactly the false alarm this split exists to avoid.
  */
 async function prewarm(
   provider: Provider,
@@ -72,7 +77,7 @@ async function prewarm(
     });
   } catch (error) {
     if (isAbortError(error)) throw error;
-    if (error instanceof RefusalError) {
+    if (error instanceof RefusalError || error instanceof TruncationError) {
       console.log(`cache pre-warm: ${safeMessage(error, secrets)} (expected on a reasoning model — the cache write still happens)`);
     } else {
       console.warn("cache pre-warm failed, continuing uncached:", safeMessage(error, secrets));

@@ -57,10 +57,52 @@ export interface Provider {
   validate(model: string, signal?: AbortSignal): Promise<void>;
 }
 
-/** Thrown when a provider declines the request rather than failing the request. */
+/**
+ * Thrown when a provider declines the request rather than failing the request.
+ *
+ * `kind` is the discriminator callers must use to tell an *explicit* decline
+ * (`content_filter`, Anthropic's `stop_reason: "refusal"`) apart from an *empty* response —
+ * no content and no explicit refusal signal from the API, reachable when a heavily-reasoning
+ * model spends its whole budget on hidden reasoning and writes no visible output (see
+ * `.docs/open-problems.md`). `reason` alone cannot serve this purpose: it is free-form
+ * diagnostic text (`"content_filter"`, an Anthropic `stop_details.category`, or the literal
+ * "empty response"), and matching on it is exactly the kind of string comparison that quietly
+ * stops working after a reword. A real refusal must never be disguised as "we got nothing" —
+ * routeEdit's RefusalError handling (testing-review.md S14 follow-up) relies on `kind`, not on
+ * parsing `reason`.
+ */
 export class RefusalError extends Error {
-  constructor(public readonly reason: string | null) {
+  constructor(
+    public readonly reason: string | null,
+    public readonly kind: "declined" | "empty" = "declined",
+  ) {
+    // Message text is unchanged by `kind` deliberately — existing callers/tests match on
+    // `reason`/message text ("empty response") for logging and display; `kind` is additive,
+    // for callers that need a reliable programmatic discriminator instead of parsing text.
     super(`The model declined this request (${reason ?? "unknown reason"}).`);
     this.name = "RefusalError";
+  }
+}
+
+/**
+ * Thrown when a response was cut off at the token budget before the model finished —
+ * `finish_reason: "length"` (OpenAI) or `stop_reason: "max_tokens"` (Anthropic) — rather than
+ * being returned to the caller as if it were complete (testing-review.md S14).
+ *
+ * This exists because both adapters used to do exactly that: return a budget-truncated
+ * response as if it were done. Live, a real planner call came back at `completion=11968` of a
+ * `12,000` budget, stopped mid-section, and `parsePlan` accepted it — silently dropping the
+ * app's data collections with no error anywhere.
+ *
+ * Deliberately a distinct class from `RefusalError`, not a shared "the call didn't produce a
+ * usable result" error: a refusal means the model declined and retrying with more budget
+ * cannot help, while a truncation means the model was still writing and a bigger `maxTokens`
+ * might let it finish. Callers that want to tell those apart (and decide whether a retry is
+ * worth it) need `instanceof` to actually distinguish them.
+ */
+export class TruncationError extends Error {
+  constructor(public readonly maxTokens: number) {
+    super(`The model's response was cut off at the token budget (max_tokens=${maxTokens}) before it finished.`);
+    this.name = "TruncationError";
   }
 }

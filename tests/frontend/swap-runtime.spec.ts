@@ -245,7 +245,7 @@ test.describe("D — the swap() runtime", () => {
     }
   });
 
-  test("D5 — slot:ready fires once with the correct detail.id", async ({ page }) => {
+  test("D5 — slot:ready fires once with the correct detail.id and detail.element", async ({ page }) => {
     const server = await startServer((getOrigin) => (req, res) => {
       res.setHeader("Content-Type", "text/html; charset=utf-8");
       res.end(
@@ -259,15 +259,20 @@ test.describe("D — the swap() runtime", () => {
     try {
       await page.goto(server.origin + "/");
       await page.evaluate(() => {
-        (window as unknown as { __events: string[] }).__events = [];
+        (window as unknown as { __events: Array<{ id: string; isSlotElement: boolean }> }).__events = [];
         document.addEventListener("slot:ready", (event) => {
-          const detail = (event as CustomEvent<{ id: string }>).detail;
-          (window as unknown as { __events: string[] }).__events.push(detail.id);
+          const detail = (event as CustomEvent<{ id: string; element: HTMLElement }>).detail;
+          (window as unknown as { __events: Array<{ id: string; isSlotElement: boolean }> }).__events.push({
+            id: detail.id,
+            isSlotElement: detail.element === document.getElementById("slot-x"),
+          });
         });
       });
       await page.evaluate(() => (window as unknown as { swap(id: string): void }).swap("x"));
-      const events = await page.evaluate(() => (window as unknown as { __events: string[] }).__events);
-      expect(events).toEqual(["x"]);
+      const events = await page.evaluate(
+        () => (window as unknown as { __events: Array<{ id: string; isSlotElement: boolean }> }).__events,
+      );
+      expect(events).toEqual([{ id: "x", isSlotElement: true }]);
     } finally {
       await server.close();
     }
@@ -371,6 +376,65 @@ test.describe("D — the swap() runtime", () => {
       await page.evaluate(() => (window as unknown as { swap(id: string): void }).swap("x"));
       const order = await page.evaluate(() => (window as unknown as { __order?: string }).__order);
       expect(order).toBe("ok");
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("D10 — slot:ready's detail.element is a live reference the shell can query into (S15)", async ({ page }) => {
+    // Regression guard for S15 (testing-review.md): the model's natural instinct is
+    // `e.detail.element.querySelector(...)`, not resolving `e.detail.id` back into an
+    // element itself. This drives that exact pattern end to end in a real browser, on both
+    // dispatch paths that go through `fill()` — the initial swap() from a <template> AND the
+    // postMessage "slot-content" edit path — and asserts the queried content is real, not
+    // just that `detail.element` is truthy.
+    const server = await startServer((getOrigin) => (req, res) => {
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.end(
+        pageHtml(
+          getOrigin(),
+          `<div id="slot-x" class="anyapp-skeleton" style="min-height:40px"></div>
+           <template id="c-x"><form><input name="email"></form></template>`,
+        ),
+      );
+    });
+    try {
+      await page.goto(server.origin + "/");
+      await page.evaluate(() => {
+        (window as unknown as { __found: (string | null)[] }).__found = [];
+        document.addEventListener("slot:ready", (event) => {
+          const detail = (event as CustomEvent<{ id: string; element: HTMLElement }>).detail;
+          // The exact shape the model wrote in the wild — reach for the form through the
+          // element handed over, immediately, with no separate id-to-element lookup.
+          const form = detail.element.querySelector("form");
+          (window as unknown as { __found: (string | null)[] }).__found.push(
+            form ? form.querySelector("input")?.getAttribute("name") ?? null : null,
+          );
+        });
+      });
+
+      // Sub-case 1: initial fill via swap().
+      await page.evaluate(() => (window as unknown as { swap(id: string): void }).swap("x"));
+
+      // Sub-case 2: the edit path — a postMessage "slot-content" payload replacing the slot's
+      // content with different markup, so a stale/cached element reference would fail this.
+      await page.evaluate((appOrigin) => {
+        window.postMessage(
+          {
+            channel: "anyapp",
+            type: "slot-content",
+            id: "x",
+            html: '<form><input name="phone"></form>',
+          },
+          appOrigin,
+        );
+      }, server.origin);
+
+      await expect
+        .poll(() => page.evaluate(() => (window as unknown as { __found: (string | null)[] }).__found.length))
+        .toBe(2);
+      const found = await page.evaluate(() => (window as unknown as { __found: (string | null)[] }).__found);
+      expect(found).toEqual(["email", "phone"]);
     } finally {
       await server.close();
     }

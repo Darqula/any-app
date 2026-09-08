@@ -242,11 +242,19 @@ function checkF3(plan: FilledApp, rawStreamBody: string, fillMode: string): Chec
 /** F4: plan output parses without a `PlanError`. Approximated as "a structured `FilledApp`
  * plan is present at all" — if `parsePlan` threw, `internal.ts` falls back to the Phase 1
  * linear path (`markComplete`, no `plan` column), so the *absence* of a valid plan on a
- * `complete` row is the only externally-observable trace of a `PlanError` this sweep has
- * access to (it does not import `packages/generator` to call `parsePlan` directly — that
- * would test parsing against text this sweep already has, not against what actually shipped). */
-function checkF4(planRaw: unknown): CheckResult {
-  return ok("F4", "Plan output parses without a PlanError", isFilledApp(planRaw));
+ * `complete` row is the only externally-observable trace of a `PlanError` this sweep gets
+ * from the database row itself (it does not import `packages/generator` to call `parsePlan`
+ * directly — that would test parsing against text this sweep already has, not against what
+ * actually shipped).
+ *
+ * `plannerFailureReason`, when present, is `PlanError.message` as `internal.ts` itself
+ * observed it live (via `capturePlannerFailure`'s on-disk capture, read back by
+ * `runner.ts` — see `ANYAPP_PLANNER_RAW_DIR`), NOT recomputed here — this still never calls
+ * `parsePlan`, it only surfaces the reason the real call already produced, as this failing
+ * check's `detail`. */
+function checkF4(planRaw: unknown, plannerFailureReason?: string): CheckResult {
+  const pass = isFilledApp(planRaw);
+  return ok("F4", "Plan output parses without a PlanError", pass, pass ? undefined : plannerFailureReason);
 }
 
 /** F5: slot count between 2 and 6 (inclusive), per `PLANNER_PROMPT`'s "use between 2 and 6
@@ -758,8 +766,16 @@ function checkDoubledClassDiagnostic(plan: FilledApp, roots: SlotRootInfo[]): Ch
  * Runs the whole of section F over one generation. `rawStreamBody` is the literal bytes this
  * sweep received while driving the generation (see `runner.ts`) — used only by F3's order
  * half. `fillMode` is the `LLM_FILL_MODE` the server that produced this row was started with.
+ * `plannerFailureReason`, when the row went through the linear fallback, is the live
+ * `PlanError` message `runner.ts` read back from the on-disk capture `internal.ts` wrote
+ * (see `ANYAPP_PLANNER_RAW_DIR`) — surfaced as F4's `detail` on failure, see `checkF4`.
  */
-export function runDocChecks(row: GenerationRow, rawStreamBody: string, fillMode: string): CheckResult[] {
+export function runDocChecks(
+  row: GenerationRow,
+  rawStreamBody: string,
+  fillMode: string,
+  plannerFailureReason?: string,
+): CheckResult[] {
   const results: CheckResult[] = [];
 
   if (row.status !== "complete" || !row.document) {
@@ -777,7 +793,7 @@ export function runDocChecks(row: GenerationRow, rawStreamBody: string, fillMode
     return results;
   }
 
-  results.push(checkF4(row.plan));
+  results.push(checkF4(row.plan, plannerFailureReason));
   results.push(checkF7(row.document));
 
   if (!isFilledApp(row.plan)) {

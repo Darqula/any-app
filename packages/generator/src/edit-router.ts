@@ -1,6 +1,8 @@
 import type { AppPlan } from "@any-app/protocol";
 import { resolve } from "./resolve";
+import { RefusalError, TruncationError } from "./providers/types";
 import type { ProviderCredential } from "./providers/types";
+import { safeMessage } from "./scrub";
 
 export type EditTarget = { kind: "css" } | { kind: "slot"; id: string };
 
@@ -38,10 +40,11 @@ export async function routeEdit(
   // calls, identical system+context, cache_read_input_tokens stayed 0 — because context
   // wasn't wired up yet; see open-problems.md). Only `instruction` is genuinely volatile.
   const regions = plan.slots.map((s) => `slot ${s.id} — ${s.spec}`).join("\n");
-  const { provider, model, maxTokens } = resolve("router", credential);
+  const { provider, model, maxTokens, secrets } = resolve("router", credential);
 
-  const raw = (
-    await provider.completeText(model, {
+  let response: string;
+  try {
+    response = await provider.completeText(model, {
       system: ROUTER_PROMPT,
       context: `Regions:\n${regions}`,
       user: `Request: ${instruction}`,
@@ -49,10 +52,36 @@ export async function routeEdit(
       signal,
       label: "router",
       conversationId,
-    })
-  )
-    .trim()
-    .toLowerCase();
+    });
+  } catch (error) {
+    // A truncated router reply is not a provider failure the caller should see as a raw
+    // 500 — it genuinely means "we could not determine the target," exactly what
+    // RoutingError means, and edits.ts already turns that into the friendly retry prompt.
+    // Only this call is treated this way (testing-review.md S14's regression); nothing
+    // upstream of routeEdit gets a blanket TruncationError catch.
+    if (error instanceof TruncationError) {
+      console.warn(
+        `router: reply truncated at max_tokens=${maxTokens} before it produced a usable answer —`,
+        safeMessage(error, secrets),
+      );
+      throw new RoutingError(`router reply truncated at max_tokens=${maxTokens} (not an unparseable answer)`);
+    }
+    // Same reasoning as the TruncationError case above, for the sibling failure mode: on
+    // this project's configured (heavily-reasoning) model, hidden reasoning consuming the
+    // whole budget before any visible output is *more* likely than a mid-answer cutoff, and
+    // it also means "we could not determine the target." Discriminate on RefusalError's
+    // typed `kind`, not on `reason` text — `kind: "empty"` is the "no content, no explicit
+    // refusal signal" case; `kind: "declined"` (content_filter, Anthropic's stop_reason:
+    // "refusal") is a real decline and must propagate untouched, not be disguised as "I
+    // couldn't tell which part to change."
+    if (error instanceof RefusalError && error.kind === "empty") {
+      console.warn(`router: reply was empty (no content, no explicit refusal) —`, safeMessage(error, secrets));
+      throw new RoutingError(`router reply was empty at max_tokens=${maxTokens} (not an unparseable answer)`);
+    }
+    throw error;
+  }
+
+  const raw = response.trim().toLowerCase();
 
   if (raw === "css") return { kind: "css" };
 

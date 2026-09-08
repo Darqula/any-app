@@ -59,12 +59,23 @@ export const COLLECTION_PATTERN = /^[a-z][a-z0-9_]{0,30}$/;
  * only some placeholders in a shell matched. See `.docs/open-problems.md`'s "Phase 6
  * pre-flight" section.
  *
- * Any tag name, any attributes in any order (in either quote style), self-closing or
- * open/close with only whitespace between — but never non-whitespace content, which is
- * genuinely ambiguous and not something a regex can safely treat as an empty placeholder.
+ * Any tag name, any attributes in any order (in either quote style, unquoted, or valueless/
+ * boolean — `hidden`, `disabled`, `required` — since ordinary HTML permits all three; a
+ * digit or colon is also allowed in an attribute name after its first character, so
+ * `data-col2`/`aria-x1` match), self-closing or open/close with only whitespace between —
+ * but never non-whitespace content, which is genuinely ambiguous and not something a regex
+ * can safely treat as an empty placeholder.
  * Groups: 1 = tag, 2 = attribute blob, 3 = id (double-quoted), 4 = id (single-quoted).
+ *
+ * An unquoted value cannot legally contain whitespace, `>`, `"`, `'`, `=`, or a backtick —
+ * excluding exactly those from the unquoted branch's character class is what stops the match
+ * from running past the end of the tag (e.g. treating the next attribute, or the closing
+ * `>`, as part of the value). `data-slot` itself (`DS`, below) deliberately still requires a
+ * quoted value — only ordinary attributes were widened, since an unquoted or boolean
+ * `data-slot` would leave no id worth capturing.
  */
-const ATTR = '[a-z-]+\\s*=\\s*(?:"[^"]*"|\'[^\']*\')';
+const ATTR =
+  '[a-z][a-z0-9:-]*(?:\\s*=\\s*(?:"[^"]*"|\'[^\']*\'|[^\\s"\'=<>`]+))?';
 const DS = 'data-slot\\s*=\\s*(?:"([a-z][a-z0-9-]{0,30})"|\'([a-z][a-z0-9-]{0,30})\')';
 const OPEN = "<([a-z][a-z0-9]*)((?:\\s+" + ATTR + ")*?\\s+" + DS + "(?:\\s+" + ATTR + ")*)\\s*";
 const PLACEHOLDER_PATTERN = OPEN + "(?:\\/>|>\\s*<\\/\\1\\s*>)";
@@ -72,8 +83,15 @@ const PLACEHOLDER_PATTERN = OPEN + "(?:\\/>|>\\s*<\\/\\1\\s*>)";
 /** One `data-slot="id"` attribute occurrence, in the form the generic attribute scan finds it. */
 const DATA_SLOT_ATTR = /data-slot\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
 
-/** A generic `name="value"`/`name='value'` attribute, used to pull attributes out of a match's blob. */
-const GENERIC_ATTR = /([a-zA-Z-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+/**
+ * A generic attribute — `name="value"`, `name='value'`, `name=value` (unquoted), or a bare
+ * valueless/boolean `name` — used to pull attributes out of a match's blob. Mirrors `ATTR`
+ * above (see its comment for why each form is legal HTML); kept as a separate regex, rather
+ * than derived from the `ATTR` string, because this one is applied with `exec` in a loop and
+ * needs its own capture groups. Groups: 1 = name, 2 = double-quoted value, 3 = single-quoted
+ * value, 4 = unquoted value; a boolean attribute leaves 2-4 all undefined.
+ */
+const GENERIC_ATTR = /([a-zA-Z][a-zA-Z0-9:-]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
 
 /**
  * Blanks out `<script>...</script>` bodies (replacing with equal-length spaces, so every
@@ -119,7 +137,10 @@ function parseAttrs(blob: string): Array<{ name: string; value: string }> {
   GENERIC_ATTR.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = GENERIC_ATTR.exec(blob))) {
-    attrs.push({ name: m[1]!, value: m[2] ?? m[3] ?? "" });
+    // A boolean attribute (no `=` at all) leaves groups 2-4 undefined; treated as value ""
+    // rather than e.g. the attribute's own name, so `renderSkeletonElement` re-emits it as
+    // `hidden=""` — valid HTML, equivalent to bare `hidden` — rather than dropping it.
+    attrs.push({ name: m[1]!, value: m[2] ?? m[3] ?? m[4] ?? "" });
   }
   return attrs;
 }

@@ -22,6 +22,18 @@
  * invitation is exactly where the model drifted. The class guidance's substance (may carry the
  * region's own class, targeted the same way as any other element) did not change. This
  * reordering is unverified against a live provider as of this writing.
+ *
+ * A 10-prompt probe (2026-09-08) found the reordering held for real content but not for a
+ * loading state shaped like content: `analytics-dashboard` reproduced twice with
+ * `<div class="loading-spinner">Loading chart...</div>` inside two placeholders — same
+ * `PlanError`, same tolerant-scan rejection, new shape. The gap wasn't wording order; it was
+ * that nothing told the model a loading state already exists. `renderSkeletons` (`slots.ts`)
+ * replaces every placeholder with a sized `anyapp-skeleton` element (shimmer, `min-height`
+ * from the slot's declared height) before the model's own markup ever runs, and `swap()`
+ * strips that class the moment real content lands — writing a `Loading...` div is the model
+ * filling a gap that isn't there. The "must stay empty" sentence now names the skeleton as
+ * the reason for the rule, rather than adding a fourth sentence to the paragraph. Also
+ * unverified against a live provider as of this writing.
  */
 export const PLANNER_PROMPT = `You plan a single-page web app. You do NOT write its content — another pass does that. You produce the frame it drops into.
 
@@ -38,7 +50,7 @@ The body markup. Write the fixed parts (headers, navigation, footers, layout con
 
 <div data-slot="some-id"></div>
 
-It must stay empty — no text, not even a starting value like "0". The content pass writes what goes inside it; content of your own here is not recognized as a placeholder, and the plan is rejected.
+It must stay empty — no text, no loading state, not even a starting value like "0". A sized loading skeleton already renders here automatically (sized from the height you set in SLOTS) and swaps out once content lands — writing your own here is not recognized as a placeholder, and the plan is rejected.
 
 This element IS the region, not a wrapper around it. Give it whatever class(es) the region needs (e.g. <div data-slot="confirmation-panel" class="confirmation-panel hidden"></div>, still empty) and style/target it the same way you would any other element: your CSS should select its class, your shell script should reach it via [data-slot="id"]. Slot ids are lowercase, may contain digits and hyphens, and must start with a letter.
 
@@ -47,7 +59,7 @@ Use between 2 and 6 slots. A slot is a meaningful region — a list, a panel, a 
 ===SCRIPT===
 JavaScript that sets up shared state and event handling. It runs BEFORE any slot content exists, so it must not query slot contents at load time. Use delegated listeners on document, or listen for the slot:ready event, which fires as each slot lands:
 
-document.addEventListener("slot:ready", function (e) { /* e.detail.id */ });
+document.addEventListener("slot:ready", function (e) { /* e.detail.id, e.detail.element */ });
 
 If the app needs no shared behaviour, leave this section empty.
 

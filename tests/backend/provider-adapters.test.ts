@@ -17,7 +17,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { startFakeProvider } from "../harness/fake-provider";
 import type { FakeProvider } from "../harness/fake-provider";
-import { RefusalError, isAbortError, resolve, roleConfig, NoCredentialError } from "@any-app/generator";
+import { RefusalError, TruncationError, isAbortError, resolve, roleConfig, NoCredentialError } from "@any-app/generator";
 import type { ProviderCredential } from "@any-app/generator";
 // Not part of @any-app/generator's public `exports` (only "." -> src/index.ts is declared).
 // Imported by relative filesystem path — Node's ESM resolver does not consult a package's
@@ -447,6 +447,116 @@ test("G14 — the same plan prompt through both adapters produces output parsePl
   const anthropicPlan = parsePlan(anthropicText);
 
   assert.deepEqual(openaiPlan, anthropicPlan, "the adapter changes transport, not semantics — parsed plans must be identical");
+});
+
+// -----------------------------------------------------------------------------------------
+// S14 — a response cut off at the token budget must surface as TruncationError, distinct
+// from RefusalError: only a truncation is worth retrying with a bigger budget. Covers both
+// wire formats (finish_reason: "length" / stop_reason: "max_tokens") on both call paths.
+// See .docs/testing-review.md's S14 entry.
+// -----------------------------------------------------------------------------------------
+
+test("S14 — OpenAI, finish_reason length surfaces as TruncationError (not RefusalError) on streamText", async (t) => {
+  const fake = await startFakeProvider();
+  t.after(() => fake.close());
+  const provider = createOpenAIProvider(openaiCred(fake));
+
+  fake.queueStream({ chunks: ["partial content"], finish: "length" });
+  await assert.rejects(
+    () => collect(provider.streamText("fake-model", req({ maxTokens: 777 }))),
+    (error: unknown) =>
+      error instanceof TruncationError &&
+      !(error instanceof RefusalError) &&
+      error.maxTokens === 777,
+  );
+});
+
+test("S14 — OpenAI, finish_reason length surfaces as TruncationError (not RefusalError) on completeText", async (t) => {
+  const fake = await startFakeProvider();
+  t.after(() => fake.close());
+  const provider = createOpenAIProvider(openaiCred(fake));
+
+  fake.queueComplete({ text: "partial content", finish: "length" });
+  await assert.rejects(
+    () => provider.completeText("fake-model", req({ maxTokens: 555 })),
+    (error: unknown) =>
+      error instanceof TruncationError &&
+      !(error instanceof RefusalError) &&
+      error.maxTokens === 555,
+  );
+});
+
+test("S14 — Anthropic, stop_reason max_tokens surfaces as TruncationError (not RefusalError) on streamText", async (t) => {
+  const fake = await startFakeProvider();
+  t.after(() => fake.close());
+  const provider = createAnthropicProvider(anthropicCred(fake));
+
+  fake.queueStream({ chunks: ["partial content"], finish: "length" });
+  await assert.rejects(
+    () => collect(provider.streamText("fake-model", req({ maxTokens: 333 }))),
+    (error: unknown) =>
+      error instanceof TruncationError &&
+      !(error instanceof RefusalError) &&
+      error.maxTokens === 333,
+  );
+});
+
+test("S14 — Anthropic, stop_reason max_tokens surfaces as TruncationError (not RefusalError) on completeText", async (t) => {
+  const fake = await startFakeProvider();
+  t.after(() => fake.close());
+  const provider = createAnthropicProvider(anthropicCred(fake));
+
+  fake.queueComplete({ text: "partial content", finish: "length" });
+  await assert.rejects(
+    () => provider.completeText("fake-model", req({ maxTokens: 222 })),
+    (error: unknown) =>
+      error instanceof TruncationError &&
+      !(error instanceof RefusalError) &&
+      error.maxTokens === 222,
+  );
+});
+
+test("S14 — both adapters, a truncated response WITH NO visible text yet is TruncationError, not RefusalError('empty response')", async (t) => {
+  // The two checks (truncated vs. empty) could collide when the cutoff lands before the
+  // first delta — this pins the order: truncation must win, since "cut off" is the more
+  // actionable diagnosis and the caller still needs to know a bigger budget might help.
+  const openaiFake = await startFakeProvider();
+  t.after(() => openaiFake.close());
+  const anthropicFake = await startFakeProvider();
+  t.after(() => anthropicFake.close());
+
+  openaiFake.queueStream({ chunks: [], finish: "length" });
+  await assert.rejects(
+    () => collect(createOpenAIProvider(openaiCred(openaiFake)).streamText("fake-model", req())),
+    (error: unknown) => error instanceof TruncationError,
+  );
+
+  anthropicFake.queueComplete({ finish: "length" }); // text omitted
+  await assert.rejects(
+    () => createAnthropicProvider(anthropicCred(anthropicFake)).completeText("fake-model", req()),
+    (error: unknown) => error instanceof TruncationError,
+  );
+});
+
+test("S14 — both adapters, both paths: a normal (stop / end_turn) response is unaffected", async (t) => {
+  const openaiFake = await startFakeProvider();
+  t.after(() => openaiFake.close());
+  const anthropicFake = await startFakeProvider();
+  t.after(() => anthropicFake.close());
+
+  openaiFake.queueStream({ chunks: ["all good"], finish: "stop" });
+  const streamed = await collect(createOpenAIProvider(openaiCred(openaiFake)).streamText("fake-model", req()));
+  assert.deepEqual(streamed, ["all good"]);
+
+  openaiFake.queueComplete({ text: "all good", finish: "stop" });
+  assert.equal(await createOpenAIProvider(openaiCred(openaiFake)).completeText("fake-model", req()), "all good");
+
+  anthropicFake.queueStream({ chunks: ["all good"], finish: "stop" });
+  const anthropicStreamed = await collect(createAnthropicProvider(anthropicCred(anthropicFake)).streamText("fake-model", req()));
+  assert.deepEqual(anthropicStreamed, ["all good"]);
+
+  anthropicFake.queueComplete({ text: "all good", finish: "stop" });
+  assert.equal(await createAnthropicProvider(anthropicCred(anthropicFake)).completeText("fake-model", req()), "all good");
 });
 
 // -----------------------------------------------------------------------------------------

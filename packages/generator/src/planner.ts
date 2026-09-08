@@ -111,6 +111,12 @@ export async function planApp(
   // conversation with every fill/edit call belonging to the same app — see
   // ProviderRequest.conversationId's doc comment.
   conversationId?: string,
+  // Fired with the exact text the provider returned, BEFORE `parsePlan` is attempted — same
+  // ordering `tests/quality/probe.ts` already uses ("write the raw response to disk FIRST").
+  // Optional and synchronous-call-only (never awaited): a caller that doesn't care about the
+  // raw text on a `PlanError` (i.e. everyone but `internal.ts`'s diagnostic capture) simply
+  // omits it, and this function's behavior for them is unchanged byte-for-byte.
+  onRawResponse?: (raw: string) => void,
 ): Promise<AppPlan> {
   const { provider, model, maxTokens } = resolve("planner", credential);
 
@@ -122,6 +128,7 @@ export async function planApp(
     label: "planner",
     conversationId,
   });
+  onRawResponse?.(raw);
 
   return parsePlan(raw);
 }

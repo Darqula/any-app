@@ -13,6 +13,11 @@ import { FORM_SUBMIT_DIAGNOSTIC_ID } from "./checks-rendered";
 export type FillMode = "sequential" | "parallel";
 
 export interface GenerationRecord {
+  /** The generation's database id, when the drive got far enough to obtain one — lets a
+   * reader correlate this record with the `planner-fail-<id>.json` capture (see
+   * `plannerFailure` below) and with server log lines. `null` only when `attemptError` fired
+   * before an id was ever minted. */
+  id: string | null;
   promptId: string;
   mode: FillMode;
   /** Wall-clock ms for the generation call itself (POST + drive-to-completion). */
@@ -25,6 +30,12 @@ export interface GenerationRecord {
   docChecks: CheckResult[];
   renderedChecks: CheckResult[];
   artifacts: { screenshot: string | null; html: string | null } | null;
+  /** Set when this generation's planner call threw a `PlanError` — read back from the file
+   * `internal.ts`'s `capturePlannerFailure` wrote under `ANYAPP_PLANNER_RAW_DIR` (which
+   * `runner.ts` points at this run's own artifact directory). `reason` is also folded into
+   * F4's `detail` in `docChecks`; `rawPath` is kept separate (not inlined) so the raw model
+   * response doesn't bloat `report.json` — read it directly when diagnosing. */
+  plannerFailure: { reason: string; rawPath: string } | null;
 }
 
 export interface SweepReport {
@@ -221,7 +232,16 @@ export function renderStdoutReport(report: SweepReport): string {
       const failedRenderedDiagnostics = g.renderedChecks
         .filter((c) => c.status === "fail" && RENDERED_DIAGNOSTIC_CASE_IDS.includes(c.id))
         .map((c) => c.id);
-      if (failedDoc.length) lines.push(`      doc fails: ${failedDoc.join(", ")}`);
+      if (failedDoc.length) {
+        lines.push(`      doc fails: ${failedDoc.join(", ")}`);
+        // F4's detail (when present) is the live PlanError reason — surfaced inline rather
+        // than making a reader open report.json to see why planning fell back to linear.
+        for (const c of g.docChecks) {
+          if (c.status === "fail" && DOC_CASE_IDS.includes(c.id) && c.detail) {
+            lines.push(`        ${c.id}: ${c.detail}`);
+          }
+        }
+      }
       if (failedDiagnostics.length) {
         lines.push(`      doc diagnostics (informational, NOT a spec fail): ${failedDiagnostics.join(", ")}`);
       }
@@ -231,6 +251,7 @@ export function renderStdoutReport(report: SweepReport): string {
       }
       if (!failedDoc.length && !failedRendered.length) lines.push("      all scored checks passed");
     }
+    if (g.plannerFailure) lines.push(`      planner raw response saved: ${g.plannerFailure.rawPath}`);
     if (g.artifacts?.screenshot) lines.push(`      screenshot: ${g.artifacts.screenshot}`);
   }
 

@@ -1,4 +1,4 @@
-export { streamApp, RefusalError } from "./generate";
+export { streamApp, RefusalError, TruncationError } from "./generate";
 export { isAbortError } from "./client";
 export { planApp, PlanError } from "./planner";
 export { streamFill } from "./fill";

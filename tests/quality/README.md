@@ -122,7 +122,29 @@ After every mode requested has run, it prints the stdout table (per-case pass ra
 - `report.ts` — turns accumulated `CheckResult`s into the stdout table and the JSON file.
   Never runs anything itself.
 - `artifacts/` — gitignored. One subdirectory per run (`<ISO timestamp>/`), holding
-  `report.json`, one screenshot, and one HTML file per generation attempted.
+  `report.json`, one screenshot, and one HTML file per generation attempted, plus (new):
+  - `studio-<mode>.log` / `sandbox-<mode>.log` — the studio/sandbox child processes' full
+    captured stdout+stderr for that mode's server pair, written from `servers.logs()`
+    (`tests/harness/servers.ts`) right before that mode's servers are torn down. Usage lines,
+    fallback warnings, and stack traces that used to vanish with the process now live here.
+    That buffer is a rolling cap of 1000 chunks (`tests/harness/proc.ts`) — a very chatty run
+    can lose its oldest lines, the same limitation the existing C15/H5 backend tests already
+    accept, but this is still far more than "nowhere" for a handful of prompts per mode.
+  - `planner-fail-<generation id>.json` — written by `apps/studio/src/internal.ts`'s
+    `capturePlannerFailure` whenever a real `PlanError` fires during this run (the row then
+    falls back to Phase 1 linear generation). Contains `{ generationId, at, reason, raw }`:
+    `reason` is the scrubbed `PlanError.message`, `raw` is the exact (scrubbed) text the
+    planner returned, captured **before** `parsePlan` was even attempted — closing the gap
+    that cost two paid sweeps (`.docs/open-problems.md`): a `PlanError`'s raw response used
+    to be discarded entirely, and "why did this fail" needed a separate paid probe run to
+    answer. `runner.ts` reads this file back per generation and folds `reason` into F4's
+    `detail` in `report.json` (`checks-doc.ts`'s `checkF4`) and into the stdout table; the
+    file's path (not its content, to keep `report.json` small) is recorded on that
+    generation's `plannerFailure.rawPath`. This only happens because `runner.ts` sets
+    `ANYAPP_PLANNER_RAW_DIR` (to this run's own artifact directory) when it spawns the
+    servers — `capturePlannerFailure` is a silent no-op with that var unset, which is its
+    state under a plain `npm run dev`. See the doc comment on `capturePlannerFailure` in
+    `internal.ts` for why an env var was chosen over unconditional logging or a DB column.
 
 ## S13 probe (`probe.ts`) — not the sweep
 

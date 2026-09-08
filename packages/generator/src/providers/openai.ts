@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import type { Provider, ProviderCredential, ProviderRequest } from "./types";
-import { RefusalError } from "./types";
+import { RefusalError, TruncationError } from "./types";
 import { logUsage } from "./usage";
 import type { UsageInfo } from "./usage";
 import { conversationHeaders } from "./session";
@@ -62,6 +62,15 @@ export function createOpenAIProvider(credential: ProviderCredential): Provider {
       );
 
       let sawContent = false;
+      // Set, not thrown, the moment we see it (testing-review.md S14) — thrown only after
+      // the loop, alongside the abort check below. Throwing the instant `finish_reason:
+      // "length"` is seen would skip the usage chunk that (per the comment just above this
+      // loop) arrives afterward with an empty `choices` array, losing `logUsage` for exactly
+      // the responses whose token accounting matters most for diagnosing this. It would also
+      // race the abort check below in the wrong direction: an aborted call whose last visible
+      // chunk happens to carry `finish_reason: "length"` must still surface as the abort (see
+      // that comment), not as a truncation.
+      let truncated = false;
       let usage: OpenAI.CompletionUsage | null | undefined;
       for await (const event of stream) {
         // The usage-bearing chunk has an empty `choices` array, so this has to be checked
@@ -72,6 +81,9 @@ export function createOpenAIProvider(credential: ProviderCredential): Provider {
         if (!choice) continue;
         if (choice.finish_reason === "content_filter") {
           throw new RefusalError("content_filter");
+        }
+        if (choice.finish_reason === "length") {
+          truncated = true;
         }
         const delta = choice.delta?.content;
         if (delta) {
@@ -89,12 +101,20 @@ export function createOpenAIProvider(credential: ProviderCredential): Provider {
       // here makes the streaming path match the non-streaming one, so `isAbortError`
       // (client.ts) recognises it and every existing guard works as already documented.
       //
-      // Must come BEFORE the `sawContent` check: an abort landing before the first delta
-      // would otherwise surface as `RefusalError("empty response")`, which the studio
-      // reports to the user as the model having declined the request.
+      // Must come BEFORE the `sawContent`/`truncated` checks: an abort landing before the
+      // first delta would otherwise surface as `RefusalError("empty response")`, which the
+      // studio reports to the user as the model having declined the request — an abort must
+      // win over both of the other post-loop checks, not just the sawContent one.
       if (req.signal?.aborted) throw new OpenAI.APIUserAbortError();
+      // Logged before either the truncation or the empty-content check below can throw, so
+      // usage is recorded for both of those outcomes too, not only a clean completion — the
+      // check order here is abort, then usage, then truncation, then empty-content (S14).
       logUsage(req.label, "openai", usageFrom(usage));
-      if (!sawContent) throw new RefusalError("empty response");
+      // Checked before `sawContent`: a response truncated right at the start (no visible
+      // text at all yet) must surface as "we cut it off", not "the model declined" — those
+      // call for different follow-ups (retry with a bigger budget vs. don't retry at all).
+      if (truncated) throw new TruncationError(req.maxTokens);
+      if (!sawContent) throw new RefusalError("empty response", "empty");
     },
 
     async completeText(model, req) {
@@ -111,8 +131,15 @@ export function createOpenAIProvider(credential: ProviderCredential): Provider {
       if (choice?.finish_reason === "content_filter") {
         throw new RefusalError("content_filter");
       }
+      // See the matching streamText check (testing-review.md S14): a budget cutoff is worth
+      // retrying with more tokens, a refusal is not, so this must not collapse into
+      // `RefusalError("empty response")` below when the truncation also happened to leave no
+      // usable text.
+      if (choice?.finish_reason === "length") {
+        throw new TruncationError(req.maxTokens);
+      }
       const text = choice?.message?.content;
-      if (!text) throw new RefusalError("empty response");
+      if (!text) throw new RefusalError("empty response", "empty");
       return text;
     },
 

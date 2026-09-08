@@ -3,7 +3,7 @@ import { createFenceStripper } from "./fence-stripper";
 import { resolve } from "./resolve";
 import type { ProviderCredential } from "./providers/types";
 
-export { RefusalError } from "./providers/types";
+export { RefusalError, TruncationError } from "./providers/types";
 
 /**
  * Streams the HTML body of a generated app, chunk by chunk.

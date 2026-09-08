@@ -1,11 +1,14 @@
 import { Router } from "express";
 import type { Response } from "express";
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { INTERNAL_SECRET_HEADER, errorBanner, renderDocument, slotOpen, slotClose, mintAppToken } from "@any-app/protocol";
 import type { FilledApp } from "@any-app/protocol";
 import {
   streamApp,
   createTrailingFenceGuard,
   planApp,
+  PlanError,
   streamFill,
   createSlotStream,
   fillAllSlots,
@@ -13,6 +16,7 @@ import {
   resolve,
   NoCredentialError,
   safeMessage,
+  scrub,
 } from "@any-app/generator";
 import type { ProviderCredential } from "@any-app/generator";
 import {
@@ -107,8 +111,14 @@ export function internalRouter(studioOrigin: string): Router {
       const heartbeat = setInterval(() => res.write("<!-- planning -->\n"), 15_000);
 
       let plan;
+      let rawPlannerResponse: string | undefined;
       try {
-        plan = await planApp(generation.prompt, plannerCred, ac.signal, id);
+        // `onRawResponse` fires with the exact provider text before `parsePlan` is even
+        // attempted (planner.ts), so it is populated here whenever the call reached a
+        // response at all — including the case below where `parsePlan` then throws.
+        plan = await planApp(generation.prompt, plannerCred, ac.signal, id, (raw) => {
+          rawPlannerResponse = raw;
+        });
       } catch (error) {
         if (isAbortError(error)) throw error;
         // Scrubbed even though this is a console line, not a stored or rendered one — a
@@ -116,6 +126,7 @@ export function internalRouter(studioOrigin: string): Router {
         // scrub.ts), and `secrets` is already in hand here regardless of which provider
         // actually threw.
         console.warn(`generation ${id}: planning failed, falling back to linear:`, safeMessage(error, secrets));
+        await capturePlannerFailure(id, error, rawPlannerResponse, secrets);
         await runLinearFallback(id, generation.prompt, fillCred, res, ac.signal);
         return;
       } finally {
@@ -222,6 +233,55 @@ export function internalRouter(studioOrigin: string): Router {
   });
 
   return router;
+}
+
+/**
+ * Diagnostic-only capture of a failed planner call, so a `PlanError` can be read back after
+ * the fact instead of only surviving as one scrubbed line in the server's console output
+ * (the gap this closes — see `.docs/open-problems.md`'s sweep history: `PlanError` moved
+ * between the last two sweeps and answering "why" needed a separate paid probe run because
+ * the sweep itself threw the raw response away).
+ *
+ * Gated behind `ANYAPP_PLANNER_RAW_DIR`, unset by default. This is a deliberate choice among
+ * three considered: (1) logging the raw response unconditionally is simplest but dumps whole
+ * model responses into normal server output on every failure — too noisy for `npm run dev`;
+ * (2) persisting it on the `generations` row makes it permanently reachable but conflates
+ * diagnostic data with product data and grows a row for a case the row does not otherwise
+ * need to describe (the row already correctly reflects the *linear* result that was actually
+ * served); (3) an env var that only a diagnostic run sets — chosen — keeps production
+ * silent (this whole function is a no-op unless the var is set, so `npm run dev` behavior is
+ * byte-for-byte unchanged) while making the exact failing text recoverable from disk right
+ * next to the run that produced it. `tests/quality/runner.ts` sets this var to the current
+ * run's artifact directory; see `tests/quality/README.md`.
+ *
+ * Never throws — a failure to write this diagnostic file must not turn a recoverable
+ * planning failure (which still has a working linear-fallback path) into a hard failure.
+ */
+async function capturePlannerFailure(
+  id: string,
+  error: unknown,
+  raw: string | undefined,
+  secrets: string[],
+): Promise<void> {
+  const dir = process.env.ANYAPP_PLANNER_RAW_DIR;
+  // `raw` is only populated when the provider call actually returned text that `parsePlan`
+  // then rejected (planner.ts's `onRawResponse` fires before `parsePlan` is attempted) — so
+  // this also naturally skips network/abort failures that never reached a response, not just
+  // errors of the wrong type. The `PlanError` check documents that intent explicitly rather
+  // than relying on `raw`'s absence alone.
+  if (!dir || raw === undefined || !(error instanceof PlanError)) return;
+  try {
+    await mkdir(dir, { recursive: true });
+    const payload = {
+      generationId: id,
+      at: new Date().toISOString(),
+      reason: safeMessage(error, secrets),
+      raw: scrub(raw, secrets),
+    };
+    await writeFile(path.join(dir, `planner-fail-${id}.json`), JSON.stringify(payload, null, 2), "utf8");
+  } catch (writeError) {
+    console.warn(`generation ${id}: failed to write planner raw-response capture:`, String(writeError));
+  }
 }
 
 /**

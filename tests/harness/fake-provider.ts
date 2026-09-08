@@ -44,8 +44,10 @@ export type WireFormat = "openai" | "anthropic";
 
 /** What ends a scripted response. Not every value is legal on every format — see the
  * per-format serialisers below, which throw a clear error rather than emit a wire shape
- * that does not exist on that provider (an OpenAI `finish_reason` of `"refusal"`, say). */
-export type FinishKind = "stop" | "content_filter" | "refusal";
+ * that does not exist on that provider (an OpenAI `finish_reason` of `"refusal"`, say).
+ * `"length"` is the generic (OpenAI-spelled) name for a token-budget cutoff — the Anthropic
+ * serialiser maps it to that format's own `"max_tokens"` stop reason (testing-review.md S14). */
+export type FinishKind = "stop" | "content_filter" | "refusal" | "length";
 
 export interface StopDetailsSpec {
   type: string;
@@ -289,7 +291,7 @@ function sseFrame(event: string | null, data: unknown): string {
   return (event ? `event: ${event}\n` : "") + `data: ${json}\n\n`;
 }
 
-function openaiFinishReason(finish: FinishKind): "stop" | "content_filter" {
+function openaiFinishReason(finish: FinishKind): "stop" | "content_filter" | "length" {
   if (finish === "refusal") {
     throw new Error(
       'fake-provider: finish "refusal" is not a valid OpenAI finish_reason — use "content_filter" ' +
@@ -368,13 +370,14 @@ function openaiErrorBody(status: number, body: unknown) {
 // Anthropic serialiser
 // -----------------------------------------------------------------------------------------
 
-function anthropicStopReason(finish: FinishKind): "end_turn" | "refusal" {
+function anthropicStopReason(finish: FinishKind): "end_turn" | "refusal" | "max_tokens" {
   if (finish === "content_filter") {
     throw new Error(
       'fake-provider: finish "content_filter" is not a valid Anthropic stop_reason — use ' +
         '"refusal", or queue this response on the OpenAI format.',
     );
   }
+  if (finish === "length") return "max_tokens";
   return finish === "stop" ? "end_turn" : "refusal";
 }
 
