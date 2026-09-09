@@ -9,12 +9,17 @@
  *    "already started" flag set at parse time and will never auto-execute once moved into
  *    the document — that is standard HTML behaviour. (A <script> the *document* parser put
  *    inside a <template> — the initial-fill path's `swap()` — does NOT have that flag set,
- *    and would in fact run on its own the moment its content is moved into the live
- *    document; testing-review.md's S6 has the measurements. `rerunScripts` below runs
- *    unconditionally on both paths regardless, since re-creating an already-working script
- *    element is harmless and keeping one path special-cased is not worth the risk.) Slot
- *    content is allowed to carry its own script, so each one is re-created as a fresh
- *    element, which resets that flag and lets it run.
+ *    and DOES run on its own the moment its content is moved into the live document.) The
+ *    two paths are genuinely different, and `fill()` is told which one it has via its third
+ *    argument: re-running an *already-executed* script is not harmless, it is a second
+ *    execution — chart libraries throw ("Canvas is already in use"), and the silent cases
+ *    (listeners bound twice, data writes issued twice, timers started twice) are worse.
+ *    Measured in testing-review.md's S16 (S6 first established the two paths' HTML mechanics;
+ *    S16 found the previous "run rerunScripts unconditionally, it's harmless" call wrong).
+ *    So: `swap()` passes `needsRerun: false` (insertion alone already ran it) and the
+ *    postMessage handler passes `needsRerun: true` (the fragment's scripts are marked
+ *    already-started and need the recreate-to-reset-the-flag trick). Regression guard: D11
+ *    in tests/frontend/swap-runtime.spec.ts asserts exactly-once on both paths.
  *  - Slot content lands long after the shell script ran, so the shell cannot bind to it
  *    directly. Every fill fires a `slot:ready` event the shell can listen for. The detail
  *    carries both `id` and `element`; `element` looks redundant next to an id that already
@@ -50,11 +55,16 @@ export function swapRuntime(studioOrigin: string): string {
     }
   }
 
-  function fill(slot, fragment) {
+  function fill(slot, fragment, needsRerun) {
     slot.replaceChildren(fragment);
     slot.classList.remove("anyapp-skeleton");
     slot.style.minHeight = "";
-    rerunScripts(slot);
+    // needsRerun is false for swap()'s <template>-sourced fragment: the document parser
+    // never marked its scripts "already started", so the replaceChildren() above already
+    // ran them once. It is true for the postMessage path below, whose fragment came from
+    // innerHTML and genuinely needs the recreate-to-reset-the-flag trick. See the doc
+    // comment above (S16) — calling rerunScripts on both, unconditionally, was the bug.
+    if (needsRerun) rerunScripts(slot);
     // \`element\` is not redundant with \`id\` — see the doc comment above (S15/D10).
     document.dispatchEvent(
       new CustomEvent("slot:ready", { detail: { id: slot.id.slice(5), element: slot } })
@@ -67,7 +77,7 @@ export function swapRuntime(studioOrigin: string): string {
     if (!tpl || !slot) return;
     var fragment = tpl.content;
     tpl.remove();
-    fill(slot, fragment);
+    fill(slot, fragment, false);
   }
   window.swap = swap;
 
@@ -92,7 +102,7 @@ export function swapRuntime(studioOrigin: string): string {
       if (!slot) return;
       var holder = document.createElement("template");
       holder.innerHTML = msg.html;
-      fill(slot, holder.content);
+      fill(slot, holder.content, true);
       return;
     }
 

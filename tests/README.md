@@ -399,7 +399,7 @@ function returns, rather than deferring it, and the ordering question never come
   shared top-level `before`/`after` unless a whole file's cases genuinely share one scratch
   database on purpose).
 - Follow `frontend/smoke.spec.ts` / `global-setup.ts`'s shape for anything needing seeded rows
-  or the real origins. A spec that only needs `D1`–`D10` (the `swap()` runtime, unit-tested
+  or the real origins. A spec that only needs `D1`–`D11` (the `swap()` runtime, unit-tested
   against a static page) needs neither — see `tests-frontend.md`'s suggested order.
 - `npm run typecheck` at the repo root must stay green — `tests/**/*.ts` is included in the
   root `tsconfig.json`.

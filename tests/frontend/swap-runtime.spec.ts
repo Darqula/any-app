@@ -35,6 +35,17 @@
  * names first — a version of D3 that only exercised `swap()` on a `<template>` would go
  * green even with the loop deleted, and would not be the regression guard the docs describe
  * it as. The edit-path assertion is the one that actually depends on `rerunScripts`.
+ *
+ * ## S16 — the gap D3 left open, closed by D11
+ *
+ * D3/D4 only ever asserted that a slot script's effect *happened*, never how many times.
+ * Both facts above are true simultaneously — `swap()`'s fragment already runs its scripts on
+ * insertion, AND (until S16 was fixed) `fill()` called `rerunScripts` unconditionally
+ * afterwards on that same path — so every `swap()`-filled slot script actually ran twice, and
+ * D3 stayed green through it. `fill()` now takes an explicit `needsRerun` flag so `swap()` can
+ * say "don't, insertion already ran it" while the postMessage path still says "do, my fragment
+ * came from innerHTML and needs the flag reset". D11 below is the regression guard: exactly
+ * one execution, asserted on both paths.
  */
 import http from "node:http";
 import { test, expect } from "@playwright/test";
@@ -180,7 +191,7 @@ test.describe("D — the swap() runtime", () => {
     }
   });
 
-  test("D4 — a slot script with a src attribute: attributes are copied onto the re-created element, and the external script loads (initial fill AND postMessage edits)", async ({ page }) => {
+  test("D4 — a slot script with a src attribute loads on both paths; only the postMessage path actually re-creates the element (S16)", async ({ page }) => {
     const server = await startServer((getOrigin) => (req, res) => {
       if (req.url === "/ext.js") {
         res.setHeader("Content-Type", "application/javascript");
@@ -205,9 +216,12 @@ test.describe("D — the swap() runtime", () => {
       await page.goto(server.origin + "/");
 
       // Sub-case 1: the literal case named in the spec — swap() pulling a src-script straight
-      // out of a <template>. Per S6 (testing-review.md) this alone would still pass even with
-      // the recreation loop deleted, so it is not sufficient on its own — same reasoning as
-      // D3's sub-case 1.
+      // out of a <template>. Per S6/S16 (testing-review.md), `fill()` now passes
+      // `needsRerun: false` on this path, so this script is never re-created — it is the
+      // SAME element the document parser produced, moved into the slot as-is by
+      // `replaceChildren`, and it fetches/executes on that insertion alone. The attribute
+      // survives trivially (nothing ever touched the element), which is a different claim
+      // than sub-case 2's.
       await page.evaluate(() => (window as unknown as { swap(id: string): void }).swap("x"));
       await expect
         .poll(() => page.evaluate(() => (window as unknown as { __extRan?: boolean }).__extRan))
@@ -219,8 +233,10 @@ test.describe("D — the swap() runtime", () => {
       expect(marker).toBe("carried-over");
 
       // Sub-case 2: the edit path — a postMessage "slot-content" payload carrying a src-script,
-      // landing via `holder.innerHTML = msg.html`. This is the sub-case that actually depends
-      // on rerunScripts for an external script, mirroring D3's sub-case 2.
+      // landing via `holder.innerHTML = msg.html`. `fill()` passes `needsRerun: true` here, so
+      // `rerunScripts` genuinely re-creates the element (a fresh <script> with the same
+      // attributes copied over) to reset the "already started" flag innerHTML set — this is
+      // the sub-case that actually proves attribute-copying happens, mirroring D3's sub-case 2.
       await page.evaluate((appOrigin) => {
         window.postMessage(
           {
@@ -435,6 +451,60 @@ test.describe("D — the swap() runtime", () => {
         .toBe(2);
       const found = await page.evaluate(() => (window as unknown as { __found: (string | null)[] }).__found);
       expect(found).toEqual(["email", "phone"]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("D11 — a slot script executes exactly once, not twice (S16), on both swap() and a postMessage edit", async ({ page }) => {
+    // Regression guard for S16 (testing-review.md): D3 only ever asserted a script's effect
+    // *happened*, never how many times, and that gap is exactly how a slot script running
+    // twice on every swap()-filled slot shipped undetected (Chart.js's "Canvas is already in
+    // use" was the only case load-bearing enough to surface as an error; everything else —
+    // listeners bound twice, data writes issued twice, timers started twice — stayed silent).
+    const server = await startServer((getOrigin) => (req, res) => {
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.end(
+        pageHtml(
+          getOrigin(),
+          `<div id="slot-x" class="anyapp-skeleton" style="min-height:40px"></div>
+           <template id="c-x"><script>window.__swapRuns = (window.__swapRuns || 0) + 1;</script><p>hi</p></template>`,
+        ),
+      );
+    });
+    try {
+      await page.goto(server.origin + "/");
+
+      // Sub-case 1: initial fill via swap() — the path S16 found broken. `fill()` must pass
+      // `needsRerun: false` here: the document-parsed template's script already executed on
+      // `replaceChildren`, and calling `rerunScripts` anyway is the second execution.
+      await page.evaluate(() => (window as unknown as { swap(id: string): void }).swap("x"));
+      // No timers or network are involved on this path, but wait a beat anyway so a
+      // regression that reintroduces an async double-run would not slip past a synchronous
+      // read.
+      await page.waitForTimeout(200);
+      expect(await page.evaluate(() => (window as unknown as { __swapRuns?: number }).__swapRuns)).toBe(1);
+
+      // Sub-case 2: the edit path — a postMessage "slot-content" payload. `fill()` must pass
+      // `needsRerun: true` here: innerHTML's fragment-parsing algorithm marks the script
+      // "already started", so without rerunScripts it would never run at all; asserting
+      // exactly 1 (not >=1) also catches a regression that made this path double-run too.
+      await page.evaluate((appOrigin) => {
+        window.postMessage(
+          {
+            channel: "anyapp",
+            type: "slot-content",
+            id: "x",
+            html: '<script>window.__editRuns = (window.__editRuns || 0) + 1;</script><p>edited</p>',
+          },
+          appOrigin,
+        );
+      }, server.origin);
+      await expect
+        .poll(() => page.evaluate(() => (window as unknown as { __editRuns?: number }).__editRuns))
+        .toBe(1);
+      await page.waitForTimeout(200);
+      expect(await page.evaluate(() => (window as unknown as { __editRuns?: number }).__editRuns)).toBe(1);
     } finally {
       await server.close();
     }

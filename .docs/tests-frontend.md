@@ -196,12 +196,13 @@ covers the fiddliest code in the phase.
 | D1 | `swap("x")` with a matching template | Template content lands inside `#slot-x`; the template element is removed |
 | D2 | After swap | `anyapp-skeleton` class removed and inline `min-height` cleared |
 | D3 | Slot content containing `<script>`, both via initial `swap()` **and** a postMessage edit | **The script executes on both paths** |
-| D4 | Slot script with a `src` attribute, both via initial `swap()` **and** a postMessage edit | Attributes copied onto the re-created element; the external script loads on both paths |
+| D4 | Slot script with a `src` attribute, both via initial `swap()` **and** a postMessage edit | The external script loads on both paths; only the postMessage path re-creates the element |
 | D5 | `slot:ready` event | Fires once per swap with the correct `detail.id` |
 | D6 | Two slots swapped in **reverse** document order | Both land in the right place |
 | D7 | `swap("nope")` — no such template or slot | No-op, no exception |
 | D8 | `swap("x")` called twice | Second call is a no-op; content is not duplicated |
 | D9 | Shell script vs. slot script ordering | The shell script has already run when a slot script executes |
+| D11 | A slot script's execution count, both via initial `swap()` **and** a postMessage edit | **Executes exactly once — not twice — on either path (S16)** |
 
 D3 is the single most important case in this document — but only its postMessage sub-case
 actually pins the reason the re-creation loop (`rerunScripts` in `SWAP_RUNTIME`) exists.
@@ -218,6 +219,21 @@ alone, every *edited* interactive region goes dead, and it looks exactly like a
 model-quality problem rather than a bug. D4 has the identical shape (an external `src`
 script also loads without the loop via `swap()` alone) and needs the same two-sub-case
 treatment to actually guard anything; it uses it now for that reason.
+
+**D3/D4 proved execution happens, not how many times — that gap is S16.** Both facts above
+are true at once: `swap()`'s fragment already runs its script on insertion, *and* (until
+S16 was fixed) `fill()` called `rerunScripts` unconditionally on that same path regardless —
+so every `swap()`-filled slot script ran twice, silently, and D3/D4 stayed green through it
+because neither asserts a count. `fill()` now takes an explicit `needsRerun` argument: `false`
+from `swap()` (insertion already ran it — calling `rerunScripts` too would be the second
+execution), `true` from the postMessage handler (its fragment's scripts are marked "already
+started" and need the recreate-to-reset-the-flag trick, same as before). One consequence for
+D4: only the postMessage sub-case still re-creates the element now — `swap()`'s external
+script is the original element, fetched/executed by the insertion itself, so D4's swap()
+sub-case no longer demonstrates attribute-copying, only that the load still happens. D11 is
+the regression guard for the count itself, next to D10 for the same reason D10 sits there —
+S15 and S16 are both cases where this file's own tests proved the bug wasn't visible without
+asserting the *right* property, not just *a* property.
 
 D6 was written as forward-compatibility for Phase 4, and the bet paid off — Phase 4 was an
 orchestration change with no format move, exactly as planned. It stays as a regression guard,
@@ -340,7 +356,7 @@ Steps 1–4 need **no fake provider**, so this suite can start immediately and i
 the backend one — it does not wait on the fixture, and by the time step 5 arrives the fixture
 exists.
 
-1. **D1–D10.** No generation, no servers, no database — a static page and Playwright. Fast,
+1. **D1–D11.** No generation, no servers, no database — a static page and Playwright. Fast,
    deterministic, and they cover the trickiest code in the project. **D3 first** — still the
    single most important case here.
 2. **B1–B10**, on seeded rows. Cheap, and they guard the architecture's central claim. B1 and
