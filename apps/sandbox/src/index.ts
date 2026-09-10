@@ -56,8 +56,14 @@ app.get("/preview/:id", async (req, res) => {
   const ac = new AbortController();
   req.on("close", () => ac.abort());
 
+  // The Phase 6 view grant (packages/protocol/src/view-grant.ts). Forwarded blind — this
+  // process never inspects or verifies it, only studio's internal route does (see
+  // architecture.md decision #10 and internal.ts). Sandbox learns nothing new about the
+  // viewer beyond "pass this opaque string along."
+  const grant = typeof req.query.g === "string" ? req.query.g : "";
   const upstream = await fetch(
-    `${studioUrl}/internal/generations/${encodeURIComponent(req.params.id)}/stream`,
+    `${studioUrl}/internal/generations/${encodeURIComponent(req.params.id)}/stream` +
+      (grant ? `?g=${encodeURIComponent(grant)}` : ""),
     {
       headers: { [INTERNAL_SECRET_HEADER]: internalSecret },
       signal: AbortSignal.any([ac.signal, AbortSignal.timeout(previewTimeoutMs)]),
@@ -72,6 +78,10 @@ app.get("/preview/:id", async (req, res) => {
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("X-Content-Type-Options", "nosniff");
+  // The grant travels in this URL. Generated apps load libraries from a CDN, and without
+  // this the browser would send `Referer: http://<id>.apps.localhost:3001/preview/<id>?g=...`
+  // to a third party on every one of those requests (Phase 6 step 4).
+  res.setHeader("Referrer-Policy", "no-referrer");
   res.flushHeaders();
 
   // Node's fetch gives a web ReadableStream; Readable.fromWeb bridges it to a Node stream.

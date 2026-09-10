@@ -26,9 +26,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createScratchDatabase } from "../harness/db";
 import type { ScratchDatabase } from "../harness/db";
+import type { Owner } from "@any-app/store";
 
 let scratch: ScratchDatabase;
 let store: typeof import("@any-app/store");
+
+/** Every case in this file except B12 only cares that a row exists, not who owns it — one
+ *  shared anonymous owner keeps them from having to think about it. */
+const OWNER: Owner = { kind: "anon", sessionId: "store-db-test-owner" };
 
 before(async () => {
   scratch = await createScratchDatabase();
@@ -122,7 +127,7 @@ test("B2 — a failing migration rolls back and is not recorded, while earlier f
 });
 
 test("B3 — claimForGeneration on a pending row: returns true, status becomes streaming", async () => {
-  const gen = await store.createGeneration("b3 test");
+  const gen = await store.createGeneration("b3 test", OWNER);
   const claimed = await store.claimForGeneration(gen.id);
   assert.equal(claimed, true);
   const row = await store.getGeneration(gen.id);
@@ -137,7 +142,7 @@ test("B3 — claimForGeneration on a pending row: returns true, status becomes s
  * the old non-atomic (select-then-update) code, which is exactly the trap this avoids.
  */
 test("B4 — two claimForGeneration calls in parallel on one row: exactly one returns true", async () => {
-  const gen = await store.createGeneration("b4 test");
+  const gen = await store.createGeneration("b4 test", OWNER);
   const [a, b] = await Promise.all([store.claimForGeneration(gen.id), store.claimForGeneration(gen.id)]);
   const winners = [a, b].filter(Boolean).length;
   assert.equal(winners, 1, `exactly one of two truly concurrent claims must win, got ${winners}`);
@@ -154,7 +159,7 @@ test("B4 — two claimForGeneration calls in parallel on one row: exactly one re
  * B4 passing would tell us nothing. It does catch it: both calls win the race below.
  */
 test("B4 verification — the same race methodology catches a deliberately non-atomic twin", async () => {
-  const gen = await store.createGeneration("b4 buggy twin");
+  const gen = await store.createGeneration("b4 buggy twin", OWNER);
 
   async function buggyReadThenWriteClaim(id: string): Promise<boolean> {
     const { rows } = await store.pool.query<{ status: string }>("select status from generations where id = $1", [id]);
@@ -173,19 +178,19 @@ test("B4 verification — the same race methodology catches a deliberately non-a
 });
 
 test("B5 — claimForGeneration on a streaming row: returns false", async () => {
-  const gen = await store.createGeneration("b5 test");
+  const gen = await store.createGeneration("b5 test", OWNER);
   assert.equal(await store.claimForGeneration(gen.id), true);
   assert.equal(await store.claimForGeneration(gen.id), false);
 });
 
 test("B6 — claimForGeneration on a complete row: returns false", async () => {
-  const gen = await store.createGeneration("b6 test");
+  const gen = await store.createGeneration("b6 test", OWNER);
   await store.markComplete(gen.id, "<html>done</html>");
   assert.equal(await store.claimForGeneration(gen.id), false);
 });
 
 test("B7 — claimForGeneration on a failed row: returns true — retry after failure is intended", async () => {
-  const gen = await store.createGeneration("b7 test");
+  const gen = await store.createGeneration("b7 test", OWNER);
   await store.markFailed(gen.id, "boom");
   assert.equal(await store.claimForGeneration(gen.id), true);
   const row = await store.getGeneration(gen.id);
@@ -193,7 +198,7 @@ test("B7 — claimForGeneration on a failed row: returns true — retry after fa
 });
 
 test("B8 — resetForRetry: status back to pending, claimable again", async () => {
-  const gen = await store.createGeneration("b8 test");
+  const gen = await store.createGeneration("b8 test", OWNER);
   assert.equal(await store.claimForGeneration(gen.id), true);
   await store.resetForRetry(gen.id);
   const row = await store.getGeneration(gen.id);
@@ -202,7 +207,7 @@ test("B8 — resetForRetry: status back to pending, claimable again", async () =
 });
 
 test("B9 — markComplete: sets document, clears error", async () => {
-  const gen = await store.createGeneration("b9 test");
+  const gen = await store.createGeneration("b9 test", OWNER);
   await store.markFailed(gen.id, "an earlier error");
   await store.markComplete(gen.id, "<html>b9 done</html>");
   const row = await store.getGeneration(gen.id);
@@ -212,7 +217,7 @@ test("B9 — markComplete: sets document, clears error", async () => {
 });
 
 test("B10 — markFailed: sets error, leaves any earlier document alone", async () => {
-  const gen = await store.createGeneration("b10 test");
+  const gen = await store.createGeneration("b10 test", OWNER);
   await store.markComplete(gen.id, "<html>keep me</html>");
   await store.markFailed(gen.id, "b10 boom");
   const row = await store.getGeneration(gen.id);
@@ -222,7 +227,7 @@ test("B10 — markFailed: sets error, leaves any earlier document alone", async 
 });
 
 test("B11 — markCompleteWithPlan: stores document and plan; plan round-trips through JSONB unchanged", async () => {
-  const gen = await store.createGeneration("b11 test");
+  const gen = await store.createGeneration("b11 test", OWNER);
   const plan = {
     title: "B11 App",
     css: ".card{padding:8px}",
@@ -239,22 +244,48 @@ test("B11 — markCompleteWithPlan: stores document and plan; plan round-trips t
   assert.deepEqual(row?.plan, plan);
 });
 
-test("B12 — listRecentGenerations: newest first, respects the limit", async () => {
-  // Runs last in the file on purpose (node:test runs top-level tests in one file
-  // sequentially, in declaration order, by default — no other test is inserting rows
-  // concurrently) so the three newest rows in the whole shared scratch database are
-  // deterministically our own last three inserts.
+/**
+ * B12 — owner-scoped from Phase 6 (impl-phase-6.md's known casualty table): the case now
+ * asserts newest-first WITHIN one owner, and that a second owner's rows never leak into the
+ * first owner's list — the exact leak step 2 exists to close (`listRecentGenerations` used to
+ * be global).
+ */
+test("B12 — listRecentGenerations: newest first within one owner, respects the limit, and never returns another owner's rows", async () => {
+  const b12Owner: Owner = { kind: "anon", sessionId: "b12-owner-a" };
+  const otherOwner: Owner = { kind: "anon", sessionId: "b12-owner-b" };
+
+  // One row for a different owner, interleaved first, so its presence (or absence) in the
+  // results below is a real assertion, not an accident of insertion order.
+  await store.createGeneration("b12-other-owner", otherOwner);
+  await new Promise((r) => setTimeout(r, 15));
+
   const ids: string[] = [];
   for (let i = 0; i < 5; i++) {
-    const gen = await store.createGeneration(`b12-${i}`);
+    const gen = await store.createGeneration(`b12-${i}`, b12Owner);
     ids.push(gen.id);
     await new Promise((r) => setTimeout(r, 15)); // created_at has ~1ms resolution; keep inserts distinct
   }
 
-  const recent = await store.listRecentGenerations(3);
+  const recent = await store.listRecentGenerations(b12Owner, 3);
   assert.equal(recent.length, 3);
   assert.deepEqual(
     recent.map((r) => r.id),
     [ids[4], ids[3], ids[2]],
+    "newest first, within this owner only",
+  );
+
+  const allForOwner = await store.listRecentGenerations(b12Owner, 20);
+  assert.equal(allForOwner.length, 5, "exactly this owner's five rows, no more");
+  assert.ok(
+    allForOwner.every((r) => r.session_id === "b12-owner-a"),
+    "every returned row must belong to this owner",
+  );
+
+  const otherList = await store.listRecentGenerations(otherOwner, 20);
+  assert.equal(otherList.length, 1, "the other owner's list must contain only their own row");
+  assert.equal(
+    ids.includes(otherList[0]!.id),
+    false,
+    "none of b12Owner's rows may appear in another owner's list",
   );
 });

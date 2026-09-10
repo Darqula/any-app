@@ -40,6 +40,7 @@ import { HANDOFF_PATH } from "./global-setup";
 import {
   seedFilledApp,
   submitPrompt,
+  establishAnonSession,
   planText,
   slotMarker,
   SHELL_2_SLOTS,
@@ -72,10 +73,11 @@ test.describe("G — provider settings and BYOK", () => {
     const fake = await startFakeProvider();
     try {
       const prompt = `G1-${Date.now()}`;
+      const sessionId = await establishAnonSession(page);
       await seedFilledApp(databaseUrl, appTokenSecret, STUDIO_ORIGIN, prompt, {
         slots: [{ id: "alpha", height: 100, spec: "x" }],
         content: { alpha: "<p>original</p>" },
-      });
+      }, sessionId);
 
       await saveCredential(page, fake, "test-key-g1");
 
@@ -224,10 +226,11 @@ test.describe("G — provider settings and BYOK", () => {
     try {
       const apiKey = "sk-g7-should-not-leak-anywhere-999";
       const prompt = `G7-${Date.now()}`;
+      const sessionId = await establishAnonSession(page);
       await seedFilledApp(databaseUrl, appTokenSecret, STUDIO_ORIGIN, prompt, {
         slots: [{ id: "alpha", height: 100, spec: "x" }],
         content: { alpha: "<p>original</p>" },
-      });
+      }, sessionId);
 
       await saveCredential(page, fake, apiKey);
 

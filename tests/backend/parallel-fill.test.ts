@@ -271,10 +271,20 @@ test("J14 — a whole parallel run makes exactly slots.length + 1 provider calls
 // level and code path are independent knobs.
 // -----------------------------------------------------------------------------------------
 
+// `visibility: 'unlisted'`, not the column's own `'private'` default (Phase 6) — J10/J11 hit
+// `/internal/generations/:id/stream` directly with only the internal secret, no view grant,
+// and the internal route now 404s a private app without one (see internal.ts). This helper
+// never goes through the real ownership-tracking POST /generations route, so there is no
+// real owner to mint a grant for in the first place; marking the row unlisted sidesteps the
+// grant requirement entirely, which is correct here since these cases are about the fan-out
+// fill path, not the sharing/visibility model.
 async function insertPendingGeneration(databaseUrl: string, prompt: string): Promise<string> {
   const pool = new Pool({ connectionString: databaseUrl });
   try {
-    const { rows } = await pool.query<{ id: string }>(`insert into generations (prompt) values ($1) returning id`, [prompt]);
+    const { rows } = await pool.query<{ id: string }>(
+      `insert into generations (prompt, visibility) values ($1, 'unlisted') returning id`,
+      [prompt],
+    );
     return rows[0]!.id;
   } finally {
     await pool.end();

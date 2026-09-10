@@ -19,6 +19,7 @@ import { findFreePorts } from "../harness/ports";
 import { startFakeProvider } from "../harness/fake-provider";
 import type { FakeProvider } from "../harness/fake-provider";
 import { seedGeneration } from "../harness/seed";
+import { extractPreview, grantQuery } from "../harness/preview";
 
 const { Pool } = pg;
 
@@ -121,20 +122,26 @@ async function setup(t: TestContext, envOverrides: Record<string, string> = {}):
   return { scratch, fake, servers };
 }
 
-async function createGeneration(servers: Stack["servers"], prompt = "Test app prompt."): Promise<string> {
+/**
+ * Returns the id AND the view grant `previewFrame` minted for it — every case below that
+ * hits `/internal/generations/:id/stream` directly needs the grant, because a real
+ * generation defaults to `visibility: "private"` and the internal route now 404s a private
+ * app with no valid grant for its exact id (see internal.ts, view-grant.ts).
+ */
+async function createGeneration(
+  servers: Stack["servers"],
+  prompt = "Test app prompt.",
+): Promise<{ id: string; grant: string }> {
   const res = await fetch(`${servers.studioOrigin}/generations`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ prompt }).toString(),
   });
-  const body = await res.text();
-  const idMatch = body.match(/\/preview\/([0-9a-f-]{36})"/);
-  assert.ok(idMatch, `expected an iframe src containing /preview/<uuid> in: ${body}`);
-  return idMatch![1]!;
+  return extractPreview(await res.text());
 }
 
-function streamUrl(servers: Stack["servers"], id: string): string {
-  return `${servers.studioOrigin}/internal/generations/${id}/stream`;
+function streamUrl(servers: Stack["servers"], id: string, grant: string): string {
+  return `${servers.studioOrigin}/internal/generations/${id}/stream${grantQuery(grant)}`;
 }
 
 function authHeaders(): Record<string, string> {
@@ -160,9 +167,8 @@ test("C2 — POST /generations with a prompt: row created pending, response cont
   assert.equal(res.status, 200);
   const body = await res.text();
   assert.match(body, /<iframe\b[^>]*class="preview"/);
-  const idMatch = body.match(/\/preview\/([0-9a-f-]{36})"/);
-  assert.ok(idMatch, `expected iframe src with /preview/<uuid> in: ${body}`);
-  const row = await queryGeneration(scratch.databaseUrl, idMatch![1]!);
+  const { id } = extractPreview(body);
+  const row = await queryGeneration(scratch.databaseUrl, id);
   assert.equal(row?.status, "pending");
 });
 
@@ -183,15 +189,15 @@ test("C4/C5/C6 — internal route auth: no secret (403), wrong secret (403), rig
   const { servers } = await setup(t);
   const unknownId = "00000000-0000-0000-0000-000000000000";
 
-  const noHeader = await fetch(streamUrl(servers, unknownId));
+  const noHeader = await fetch(streamUrl(servers, unknownId, ""));
   assert.equal(noHeader.status, 403, "C4: no secret header at all");
 
-  const wrongSecret = await fetch(streamUrl(servers, unknownId), {
+  const wrongSecret = await fetch(streamUrl(servers, unknownId, ""), {
     headers: { [INTERNAL_SECRET_HEADER]: "not-the-real-secret" },
   });
   assert.equal(wrongSecret.status, 403, "C5: the wrong secret");
 
-  const rightSecretUnknownId = await fetch(streamUrl(servers, unknownId), { headers: authHeaders() });
+  const rightSecretUnknownId = await fetch(streamUrl(servers, unknownId, ""), { headers: authHeaders() });
   assert.equal(rightSecretUnknownId.status, 404, "C6: right secret, id does not exist");
 });
 
@@ -202,7 +208,7 @@ test("C8 — replay of a complete row makes no provider call", async (t) => {
 
   // Deliberately nothing queued — a call reaching the fake at all would get its own clear
   // "queue empty" 500, which would surface as a body mismatch below too.
-  const res = await fetch(streamUrl(servers, seeded.id), { headers: authHeaders() });
+  const res = await fetch(streamUrl(servers, seeded.id, ""), { headers: authHeaders() });
   assert.equal(res.status, 200);
   const body = await res.text();
   assert.equal(body, document, "a replay must return the stored document unchanged");
@@ -211,7 +217,7 @@ test("C8 — replay of a complete row makes no provider call", async (t) => {
 
 test("C9 — two concurrent stream requests for one id: one provider round trip, the loser gets 'Already generating…'", async (t) => {
   const { servers, scratch, fake } = await setup(t);
-  const id = await createGeneration(servers, "Race test app.");
+  const { id, grant } = await createGeneration(servers, "Race test app.");
 
   // Exactly one full script queued (planner, then fill). If claimForGeneration's atomicity
   // regressed and both concurrent requests started generating, the second attempt would
@@ -221,7 +227,7 @@ test("C9 — two concurrent stream requests for one id: one provider round trip,
   fake.queueComplete({ text: PLAN_TEXT });
   fake.queueStream({ chunks: FILL_CHUNKS, finish: "stop" });
 
-  const url = streamUrl(servers, id);
+  const url = streamUrl(servers, id, grant);
   const headers = authHeaders();
   // No await between the two fetch() calls — genuinely concurrent, not a race dressed up as
   // two sequential awaits (which would pass even with the old non-atomic claim).
@@ -270,7 +276,7 @@ test("C9 — two concurrent stream requests for one id: one provider round trip,
  */
 test("C10 — client disconnect mid-stream: row back to pending, no document saved", async (t) => {
   const { servers, scratch, fake } = await setup(t);
-  const id = await createGeneration(servers, "Disconnect test app.");
+  const { id, grant } = await createGeneration(servers, "Disconnect test app.");
 
   fake.queueComplete({ text: PLAN_TEXT });
   // Manual mode (chunks omitted) — lets this test choose exactly when content has started
@@ -278,7 +284,7 @@ test("C10 — client disconnect mid-stream: row back to pending, no document sav
   const fillHandle = fake.queueStream();
 
   const controller = new AbortController();
-  const res = await fetch(streamUrl(servers, id), { headers: authHeaders(), signal: controller.signal });
+  const res = await fetch(streamUrl(servers, id, grant), { headers: authHeaders(), signal: controller.signal });
   assert.equal(res.status, 200);
   const reader = res.body!.getReader();
   await reader.read(); // the doctype/shell, already flushed
@@ -312,12 +318,12 @@ test("C10 — client disconnect mid-stream: row back to pending, no document sav
 
 test("C11 — provider returns finish_reason content_filter: row failed, error banner in the body", async (t) => {
   const { servers, scratch, fake } = await setup(t);
-  const id = await createGeneration(servers, "Content filter test app.");
+  const { id, grant } = await createGeneration(servers, "Content filter test app.");
 
   fake.queueComplete({ text: PLAN_TEXT });
   fake.queueStream({ chunks: ["partial "], finish: "content_filter" });
 
-  const res = await fetch(streamUrl(servers, id), { headers: authHeaders() });
+  const res = await fetch(streamUrl(servers, id, grant), { headers: authHeaders() });
   assert.equal(res.status, 200);
   const body = await res.text();
   assert.match(body, /Generation failed:/);
@@ -330,12 +336,12 @@ test("C11 — provider returns finish_reason content_filter: row failed, error b
 
 test("C12 — provider returns an empty stream: row failed with 'empty response'", async (t) => {
   const { servers, scratch, fake } = await setup(t);
-  const id = await createGeneration(servers, "Empty response test app.");
+  const { id, grant } = await createGeneration(servers, "Empty response test app.");
 
   fake.queueComplete({ text: PLAN_TEXT });
   fake.queueStream({ chunks: [] }); // gotcha per README: [] auto-plays zero chunks and finishes itself
 
-  const res = await fetch(streamUrl(servers, id), { headers: authHeaders() });
+  const res = await fetch(streamUrl(servers, id, grant), { headers: authHeaders() });
   assert.equal(res.status, 200);
   const body = await res.text();
   assert.match(body, /Generation failed:/);
@@ -348,12 +354,12 @@ test("C12 — provider returns an empty stream: row failed with 'empty response'
 
 test("C13 — provider returns HTTP 500: row failed, server stays up", async (t) => {
   const { servers, scratch, fake } = await setup(t);
-  const id = await createGeneration(servers, "Provider 500 test app.");
+  const { id, grant } = await createGeneration(servers, "Provider 500 test app.");
 
   fake.queueComplete({ text: PLAN_TEXT });
   fake.queueError({ status: 500 }); // retryable defaults to false — one call, not up to three
 
-  const res = await fetch(streamUrl(servers, id), { headers: authHeaders() });
+  const res = await fetch(streamUrl(servers, id, grant), { headers: authHeaders() });
   assert.equal(res.status, 200);
   const body = await res.text();
   assert.match(body, /Generation failed:/);
@@ -367,12 +373,12 @@ test("C13 — provider returns HTTP 500: row failed, server stays up", async (t)
 
 test("C14 — planner returns unparseable output: falls back to linear, app still renders, row complete", async (t) => {
   const { servers, scratch, fake } = await setup(t);
-  const id = await createGeneration(servers, "Unparseable plan test app.");
+  const { id, grant } = await createGeneration(servers, "Unparseable plan test app.");
 
   fake.queueComplete({ text: "This is not a plan at all, just some prose the model wrote instead." });
   fake.queueStream({ chunks: ["<h1>Linear fallback app</h1>\n<p>Body content.</p>\n"], finish: "stop" });
 
-  const res = await fetch(streamUrl(servers, id), { headers: authHeaders() });
+  const res = await fetch(streamUrl(servers, id, grant), { headers: authHeaders() });
   assert.equal(res.status, 200);
   const body = await res.text();
   assert.ok(body.startsWith("<!doctype html>"));
@@ -405,7 +411,7 @@ test("C14 — planner returns unparseable output: falls back to linear, app stil
  */
 test("C15 — planner call aborted: does NOT fall back to linear, row goes back to pending", async (t) => {
   const { servers, scratch, fake } = await setup(t);
-  const id = await createGeneration(servers, "Abort during planning test app.");
+  const { id, grant } = await createGeneration(servers, "Abort during planning test app.");
 
   // Only ONE response is ever queued. See the comment above for why this does not, on its
   // own, distinguish "correctly skipped the fallback" from "wrongly attempted it, which then
@@ -415,7 +421,7 @@ test("C15 — planner call aborted: does NOT fall back to linear, row goes back 
   const plannerHandle = fake.queueComplete({ text: PLAN_TEXT, delayMs: 4000 });
 
   const controller = new AbortController();
-  const res = await fetch(streamUrl(servers, id), { headers: authHeaders(), signal: controller.signal });
+  const res = await fetch(streamUrl(servers, id, grant), { headers: authHeaders(), signal: controller.signal });
   assert.equal(res.status, 200);
   const reader = res.body!.getReader();
   await reader.read(); // the doctype/padding, already flushed before planning even starts
@@ -454,7 +460,7 @@ test("C15 — planner call aborted: does NOT fall back to linear, row goes back 
 
 test("C16 — fill call fails after the shell was written: error banner appended, not replacing, prior output; row failed", async (t) => {
   const { servers, scratch, fake } = await setup(t);
-  const id = await createGeneration(servers, "Partial fill failure test app.");
+  const { id, grant } = await createGeneration(servers, "Partial fill failure test app.");
 
   fake.queueComplete({ text: PLAN_TEXT });
   // The header slot completes and swaps successfully; the body slot is left mid-write when
@@ -465,7 +471,7 @@ test("C16 — fill call fails after the shell was written: error banner appended
     finish: "content_filter",
   });
 
-  const res = await fetch(streamUrl(servers, id), { headers: authHeaders() });
+  const res = await fetch(streamUrl(servers, id, grant), { headers: authHeaders() });
   assert.equal(res.status, 200);
   const body = await res.text();
 

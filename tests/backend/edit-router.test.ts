@@ -235,7 +235,18 @@ test("a normal, complete router response is unaffected", async (t) => {
 // Route-level: the real HTTP endpoint must return the friendly html, not a raw 500
 // -----------------------------------------------------------------------------------------
 
-async function insertCompleteGeneration(databaseUrl: string, prompt: string): Promise<string> {
+/**
+ * `sessionId` (Phase 6): the row's `session_id` must match the anonymous session that will
+ * later POST to `/generations/:id/edits`, since that route is owner-scoped
+ * (`getFilledApp(id, owner)`) — an editor whose session doesn't match the row's owner gets
+ * the same 404 a nonexistent row would. Null keeps the row ownerless for cases that don't
+ * exercise the real HTTP route at all.
+ */
+async function insertCompleteGeneration(
+  databaseUrl: string,
+  prompt: string,
+  sessionId: string | null = null,
+): Promise<string> {
   const pool = new Pool({ connectionString: databaseUrl });
   try {
     const plan = {
@@ -249,8 +260,8 @@ async function insertCompleteGeneration(databaseUrl: string, prompt: string): Pr
     };
     const document = `<!doctype html><html><body><p>hi</p></body></html>`;
     const { rows } = await pool.query<{ id: string }>(
-      `insert into generations (prompt, status, document, plan) values ($1, 'complete', $2, $3) returning id`,
-      [prompt, document, JSON.stringify(plan)],
+      `insert into generations (prompt, status, document, plan, session_id) values ($1, 'complete', $2, $3, $4) returning id`,
+      [prompt, document, JSON.stringify(plan), sessionId],
     );
     return rows[0]!.id;
   } finally {
@@ -278,12 +289,21 @@ test("route: a truncated router call ends in the friendly routing-failure html, 
   });
   t.after(() => servers.stop());
 
-  const id = await insertCompleteGeneration(scratch.databaseUrl, "an app with a hero banner");
+  // Establish the anonymous session that will make the edit request FIRST, so the row can be
+  // seeded as that same session's own — editing is owner-scoped (getFilledApp), and this
+  // route's session cookie doubles as the session id (session.ts's `COOKIE=id` format).
+  const homeRes = await fetch(`${servers.studioOrigin}/`);
+  const setCookie = homeRes.headers.get("set-cookie");
+  assert.ok(setCookie, "expected the home page to set an anonymous session cookie");
+  const cookie = setCookie!.split(";")[0]!;
+  const sessionId = cookie.split("=")[1]!;
+
+  const id = await insertCompleteGeneration(scratch.databaseUrl, "an app with a hero banner", sessionId);
   fake.queueComplete({ text: "sl", finish: "length" }); // the router call, cut off
 
   const res = await fetch(`${servers.studioOrigin}/generations/${id}/edits`, {
     method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
+    headers: { "content-type": "application/x-www-form-urlencoded", cookie },
     body: new URLSearchParams({ instruction: "make the banner bigger" }).toString(),
   });
   const body = await res.text();

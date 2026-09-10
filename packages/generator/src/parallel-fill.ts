@@ -10,6 +10,7 @@ import type { Provider } from "./providers/types";
 import { isAbortError } from "./client";
 import { safeMessage } from "./scrub";
 import { RefusalError, TruncationError } from "./providers/types";
+import type { UsageInfo } from "./providers/usage";
 
 export interface SlotResult {
   slot: SlotSpec;
@@ -103,10 +104,11 @@ async function fillSlotWithRetry(
   secrets: string[],
   signal?: AbortSignal,
   conversationId?: string,
+  onUsage?: (usage: UsageInfo) => void,
 ): Promise<SlotResult> {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const html = await fillSlot(provider, model, maxTokens, prompt, plan, slot, signal, conversationId);
+      const html = await fillSlot(provider, model, maxTokens, prompt, plan, slot, signal, conversationId, onUsage);
       if (html) return { slot, html, failed: false };
     } catch (error) {
       if (isAbortError(error)) throw error; // an abort is not a retryable failure
@@ -139,11 +141,13 @@ export async function* fillAllSlots(
   // pre-warm call and every fan-out slot call below, which is the entire point: they all
   // need to land in the same gateway conversation to share one cache entry.
   conversationId?: string,
+  // Phase 6 step 8 — see planApp's matching parameter. Fired once per slot call.
+  onUsage?: (usage: UsageInfo) => void,
 ): AsyncGenerator<SlotResult> {
   const { provider, model, secrets } = resolve("fill", credential);
   // Deliberately not `resolve()`'s own maxTokens: LLM_FILL_MAX_TOKENS is the sequential
   // (whole-document) budget. Reusing it here for a per-region budget is the single-variable
-  // problem review-phase-4.md's F3 flagged — it made a controlled sequential-vs-parallel
+  // problem Phase 4's review flagged — it made a controlled sequential-vs-parallel
   // comparison impossible, because the one variable that has to be held constant is the one
   // that silently changes meaning between the two arms. A separate variable, defaulting to
   // the plan's own non-reasoning-model suggestion, keeps both modes independently correct.
@@ -160,7 +164,7 @@ export async function* fillAllSlots(
   const limit = limitConcurrency(concurrency);
   const tasks = plan.slots.map((slot) =>
     limit(() =>
-      fillSlotWithRetry(provider, model, maxTokens, prompt, plan, slot, secrets, signal, conversationId),
+      fillSlotWithRetry(provider, model, maxTokens, prompt, plan, slot, secrets, signal, conversationId, onUsage),
     ),
   );
 

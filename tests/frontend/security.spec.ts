@@ -22,6 +22,7 @@ import {
   seedFilledApp,
   openSidebarApp,
   waitForFrameBySrc,
+  establishAnonSession,
   appOriginFor,
   STUDIO_ORIGIN,
 } from "./doc-builder";
@@ -38,7 +39,8 @@ test.describe("B — security invariants", () => {
   // because the origin is per-app, and either half alone looks perfectly reasonable.
   test("B1 — preview iframe src host is the per-app origin, never studio's own (paired with B2)", async ({ page }) => {
     const prompt = `B1-${Date.now()}`;
-    await seedGeneration(databaseUrl, { prompt, document: buildStaticDoc("b1") });
+    const sessionId = await establishAnonSession(page);
+    await seedGeneration(databaseUrl, { prompt, document: buildStaticDoc("b1"), sessionId });
     await page.goto("/");
     await page.locator("#generation-list li", { hasText: prompt }).locator("button").click();
     const iframe = page.locator("#stage iframe");
@@ -57,7 +59,8 @@ test.describe("B — security invariants", () => {
 
   test("B2 — sandbox attribute carries allow-same-origin, safe only because B1's origin is per-app", async ({ page }) => {
     const prompt = `B2-${Date.now()}`;
-    await seedGeneration(databaseUrl, { prompt, document: buildStaticDoc("b2") });
+    const sessionId = await establishAnonSession(page);
+    await seedGeneration(databaseUrl, { prompt, document: buildStaticDoc("b2"), sessionId });
     await page.goto("/");
     await page.locator("#generation-list li", { hasText: prompt }).locator("button").click();
     const iframe = page.locator("#stage iframe");
@@ -76,10 +79,11 @@ test.describe("B — security invariants", () => {
   test("B3 — a generated app reads document.cookie: empty, even after a studio session cookie exists", async ({ page }) => {
     await page.goto("/"); // sets anyapp_session on localhost:3000
     const cookies = await page.context().cookies("http://localhost:3000");
-    expect(cookies.some((c) => c.name === "anyapp_session")).toBe(true);
+    const sessionCookie = cookies.find((c) => c.name === "anyapp_session");
+    expect(sessionCookie).toBeTruthy();
 
     const prompt = `B3-${Date.now()}`;
-    await seedGeneration(databaseUrl, { prompt, document: buildStaticDoc("b3") });
+    await seedGeneration(databaseUrl, { prompt, document: buildStaticDoc("b3"), sessionId: sessionCookie!.value });
     const { frame } = await openSidebarApp(page, prompt);
     const cookie = await frame.evaluate(() => document.cookie);
     expect(cookie).toBe("");
@@ -87,7 +91,8 @@ test.describe("B — security invariants", () => {
 
   test("B4 — window.parent.document throws a cross-origin SecurityError", async ({ page }) => {
     const prompt = `B4-${Date.now()}`;
-    await seedGeneration(databaseUrl, { prompt, document: buildStaticDoc("b4") });
+    const sessionId = await establishAnonSession(page);
+    await seedGeneration(databaseUrl, { prompt, document: buildStaticDoc("b4"), sessionId });
     const { frame } = await openSidebarApp(page, prompt);
     const result = await frame.evaluate(() => {
       try {
@@ -105,7 +110,8 @@ test.describe("B — security invariants", () => {
 
   test("B5 — a localStorage write succeeds and persists; a second app on a different origin sees nothing", async ({ page }) => {
     const promptA = `B5-A-${Date.now()}`;
-    await seedGeneration(databaseUrl, { prompt: promptA, document: buildStaticDoc("b5-a") });
+    const sessionId = await establishAnonSession(page);
+    await seedGeneration(databaseUrl, { prompt: promptA, document: buildStaticDoc("b5-a"), sessionId });
     const { frame, src } = await openSidebarApp(page, promptA);
 
     const before = await frame.evaluate(() => localStorage.getItem("b5-key"));
@@ -115,14 +121,14 @@ test.describe("B — security invariants", () => {
     // Reload the SAME app — clicking the sidebar entry again swaps in a fresh iframe with
     // the same src, forcing a real re-navigation — and confirm the write persisted.
     await page.locator("#generation-list li", { hasText: promptA }).locator("button").click();
-    const frame2 = await waitForFrameBySrc(page, src);
+    const frame2 = await waitForFrameBySrc(page, src, { excludeFrame: frame });
     const after = await frame2.evaluate(() => localStorage.getItem("b5-key"));
     expect(after).toBe("secret-value");
 
     // A second, different app — a different per-app origin — never sees it. Per-app
     // origins, not per-app nothing.
     const promptB = `B5-B-${Date.now()}`;
-    await seedGeneration(databaseUrl, { prompt: promptB, document: buildStaticDoc("b5-b") });
+    await seedGeneration(databaseUrl, { prompt: promptB, document: buildStaticDoc("b5-b"), sessionId });
     const { frame: frameB } = await openSidebarApp(page, promptB);
     const seenByB = await frameB.evaluate(() => localStorage.getItem("b5-key"));
     expect(seenByB).toBeNull();
@@ -130,7 +136,8 @@ test.describe("B — security invariants", () => {
 
   test("B6 — a generated app's fetch to a studio endpoint is blocked by CORS", async ({ page }) => {
     const prompt = `B6-${Date.now()}`;
-    await seedGeneration(databaseUrl, { prompt, document: buildStaticDoc("b6") });
+    const sessionId = await establishAnonSession(page);
+    await seedGeneration(databaseUrl, { prompt, document: buildStaticDoc("b6"), sessionId });
     const { frame } = await openSidebarApp(page, prompt);
     const result = await frame.evaluate(async () => {
       try {
@@ -145,9 +152,10 @@ test.describe("B — security invariants", () => {
 
   test("B7 — App A cannot fetch App B's preview HTML (blocked by CORS, so it cannot read B's token out of it)", async ({ page }) => {
     const promptB = `B7-B-${Date.now()}`;
-    const seededB = await seedGeneration(databaseUrl, { prompt: promptB, document: buildStaticDoc("b7-target") });
+    const sessionId = await establishAnonSession(page);
+    const seededB = await seedGeneration(databaseUrl, { prompt: promptB, document: buildStaticDoc("b7-target"), sessionId });
     const promptA = `B7-A-${Date.now()}`;
-    await seedGeneration(databaseUrl, { prompt: promptA, document: buildStaticDoc("b7-attacker") });
+    await seedGeneration(databaseUrl, { prompt: promptA, document: buildStaticDoc("b7-attacker"), sessionId });
 
     const { frame } = await openSidebarApp(page, promptA);
     const targetUrl = `${appOriginFor(seededB.id)}/preview/${seededB.id}`;
@@ -190,9 +198,10 @@ test.describe("B — security invariants", () => {
 
   test("B9 — a same-origin fetch to this app's own /data/... from inside the frame succeeds (no CORS involved)", async ({ page }) => {
     const prompt = `B9-${Date.now()}`;
+    const sessionId = await establishAnonSession(page);
     await seedFilledApp(databaseUrl, appTokenSecret, STUDIO_ORIGIN, prompt, {
       collections: [{ name: "things", description: "test" }],
-    });
+    }, sessionId);
     const { frame } = await openSidebarApp(page, prompt);
     const result = await frame.evaluate(async () => {
       try {
@@ -222,10 +231,11 @@ test.describe("B — security invariants", () => {
     try {
       const prompt = `B10-${Date.now()}`;
       const slotId = "alpha";
+      const sessionId = await establishAnonSession(page);
       const { id } = await seedFilledApp(databaseUrl, appTokenSecret, STUDIO_ORIGIN, prompt, {
         slots: [{ id: slotId, height: 100, spec: "test region" }],
         content: { [slotId]: "<p>original</p>" },
-      });
+      }, sessionId);
 
       // Instrumented on the STUDIO (parent) side, not inside the frame. The property under
       // test is the `targetOrigin` argument the parent passes, and that call goes through a

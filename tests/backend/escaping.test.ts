@@ -31,7 +31,7 @@ test("A7.1 — errorBanner with <script> in the message: escaped, cannot break o
 
 test('A7.2 — escapeHtml (views.ts, via previewFrame) escapes a " in an attribute context', () => {
   const malicious = 'http://evil"><script>alert(1)</script>';
-  const out = previewFrame("abc", malicious);
+  const out = previewFrame("abc", malicious, "harmless-grant");
 
   // The raw quote must never survive into the attribute — that would let the value break
   // out of `src="..."` and inject a sibling attribute or element.
@@ -46,6 +46,6 @@ test('A7.2 — escapeHtml (views.ts, via previewFrame) escapes a " in an attribu
   const srcStart = out.indexOf('src="') + 'src="'.length;
   const srcEnd = out.indexOf('"', srcStart);
   const srcValue = out.slice(srcStart, srcEnd);
-  assert.ok(srcValue.endsWith("/preview/abc"));
+  assert.ok(srcValue.endsWith("/preview/abc?g=harmless-grant"));
   assert.equal(srcValue.includes('"'), false);
 });

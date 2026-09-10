@@ -23,7 +23,7 @@ import { findFreePorts } from "../harness/ports";
 import { startFakeProvider } from "../harness/fake-provider";
 import type { FakeProvider } from "../harness/fake-provider";
 import { HANDOFF_PATH } from "./global-setup";
-import { buildFilledDocument, submitPrompt, planText, slotMarker, SHELL_2_SLOTS, SLOTS_2, openSidebarApp } from "./doc-builder";
+import { buildFilledDocument, submitPrompt, planText, slotMarker, SHELL_2_SLOTS, SLOTS_2, openSidebarApp, establishAnonSession } from "./doc-builder";
 
 const { databaseUrl } = JSON.parse(await readFile(HANDOFF_PATH, "utf8")) as { databaseUrl: string };
 
@@ -33,7 +33,8 @@ test.describe("C — progressive rendering", () => {
     const { document: html } = buildFilledDocument("c1-app", "unused-secret", "http://localhost:3000", {
       slots: [{ id: "alpha", height: 100, spec: "x" }],
     });
-    await seedGeneration(databaseUrl, { prompt, document: html });
+    const sessionId = await establishAnonSession(page);
+    await seedGeneration(databaseUrl, { prompt, document: html, sessionId });
     const { frame } = await openSidebarApp(page, prompt);
     const compatMode = await frame.evaluate(() => document.compatMode);
     expect(compatMode).toBe("CSS1Compat");

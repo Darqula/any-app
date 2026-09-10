@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { renderDocument, isSlotErrorPlaceholder, mintAppToken } from "@any-app/protocol";
+import { renderDocument, isSlotErrorPlaceholder } from "@any-app/protocol";
 import type { FilledApp } from "@any-app/protocol";
 import {
   routeEdit,
@@ -12,10 +12,19 @@ import {
   NoCredentialError,
   safeMessage,
 } from "@any-app/generator";
-import { getFilledApp, saveEditedApp, getGeneration, requireEnv } from "@any-app/store";
+import type { Resolved, UsageInfo } from "@any-app/generator";
+import {
+  getFilledApp,
+  saveEditedApp,
+  getGeneration,
+  recordUsage,
+  monthlyLimitFor,
+  billableTokensThisMonth,
+} from "@any-app/store";
+import type { UsageEvent } from "@any-app/store";
 import { renderFullHead, SHELL_TAIL } from "./shell";
 import { editApplied, editProblem } from "./views";
-import { sessionId } from "./session";
+import { currentOwner } from "./session";
 import { credentialForRole } from "./credential-resolve";
 
 /**
@@ -45,7 +54,26 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
       return;
     }
 
-    const loaded = await getFilledApp(id);
+    const owner = await currentOwner(req, res);
+
+    // internal.ts checks this before a fresh generation, but an edit
+    // costs one or two model calls too (plus a whole fillSlot on the placeholder-recovery
+    // branch) and was previously not checked here at all — an account over its cap could not
+    // start a new generation but could still issue unlimited edits. Scoped to the EDITOR, not
+    // the app's owner: the person spending the tokens is the one whose allowance it is, and
+    // this route is only ever reachable by the owner anyway (see the getFilledApp check below).
+    if (owner.kind === "user") {
+      const limit = await monthlyLimitFor(owner.userId);
+      if (limit !== null && (await billableTokensThisMonth(owner.userId)) >= limit) {
+        res.status(503).type("html").send(editProblem("Monthly token limit reached."));
+        return;
+      }
+    }
+
+    // Owner-scoped — editing an app you don't own is the same class of bug as listing it in
+    // your sidebar (see .docs/impl-phase-6.md step 2). A non-owner (including a shared
+    // unlisted/public viewer) gets the same 404 a nonexistent app would.
+    const loaded = await getFilledApp(id, owner);
     if (!loaded) {
       res.status(404).type("html").send(editProblem("This app cannot be edited yet."));
       return;
@@ -58,22 +86,45 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
     // Same reasoning as internal.ts: resolve every role this request might touch up front,
     // both to fail fast on a missing credential and to have the secrets ready for scrubbing
     // if a later provider error needs to be shown or stored.
-    const sid = sessionId(req, res);
-    const routerCred = await credentialForRole("router", sid);
-    const editCred = await credentialForRole("edit", sid);
+    const routerCred = await credentialForRole("router", owner);
+    const editCred = await credentialForRole("edit", owner);
     // Deliberately NOT resolving "fill" here too, even though the placeholder-recovery
     // branch below needs it: doing so eagerly would make every edit — including a plain CSS
     // edit that never touches a placeholder — fail if the fill role alone is misconfigured.
     // It's resolved (and its secrets folded in) only where it's actually used.
+    let routerResolved: Resolved;
+    let editResolved: Resolved;
     let secrets: string[];
     try {
-      secrets = [...resolve("router", routerCred).secrets, ...resolve("edit", editCred).secrets];
+      routerResolved = resolve("router", routerCred);
+      editResolved = resolve("edit", editCred);
+      secrets = [...routerResolved.secrets, ...editResolved.secrets];
     } catch (error) {
       if (error instanceof NoCredentialError) {
         res.status(503).type("html").send(editProblem(error.message));
         return;
       }
       throw error;
+    }
+
+    // Same "generator emits, studio persists" split as internal.ts — see usage.ts's ordering
+    // invariant. `owner.userId` is null for an anonymous editor, which `recordUsage` accepts
+    // (it just never counts toward any account's cap).
+    const usageEvents: UsageEvent[] = [];
+    function collector(role: string, resolved: Resolved): (usage: UsageInfo) => void {
+      return (usage) => {
+        usageEvents.push({
+          ownerId: owner.kind === "user" ? owner.userId : null,
+          generationId: id,
+          role,
+          provider: resolved.provider.id,
+          model: resolved.model,
+          promptTokens: usage.promptTokens,
+          completionTokens: usage.completionTokens,
+          cachedTokens: usage.cacheReadTokens ?? 0,
+          billable: resolved.usedPlatformCredential,
+        });
+      };
     }
 
     try {
@@ -93,13 +144,13 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
         }
         target = { kind: "slot" as const, id: chosen };
       } else {
-        target = await routeEdit(instruction, filled, routerCred, ac.signal, id);
+        target = await routeEdit(instruction, filled, routerCred, ac.signal, id, collector("router", routerResolved));
       }
 
       const next: FilledApp = { ...filled, content: { ...filled.content } };
       if (target.kind === "css") {
         const before = filled.css;
-        const after = await regenerateCss(instruction, filled, editCred, ac.signal, id);
+        const after = await regenerateCss(instruction, filled, editCred, ac.signal, id, collector("edit-css", editResolved));
         // A truncated CSS edit is the riskier half of this guard, not an afterthought: a
         // short stylesheet does not damage one region like a short slot does, it unstyles
         // the whole app — and it would be saved before anyone sees it.
@@ -125,13 +176,23 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
           ? await (async () => {
               const [generation, fillCred] = await Promise.all([
                 getGeneration(id),
-                credentialForRole("fill", sid),
+                credentialForRole("fill", owner),
               ]);
-              const { provider, model, maxTokens, secrets: fillSecrets } = resolve("fill", fillCred);
-              secrets = [...secrets, ...fillSecrets];
-              return fillSlot(provider, model, maxTokens, generation?.prompt ?? "", filled, slot, ac.signal, id);
+              const fillResolved = resolve("fill", fillCred);
+              secrets = [...secrets, ...fillResolved.secrets];
+              return fillSlot(
+                fillResolved.provider,
+                fillResolved.model,
+                fillResolved.maxTokens,
+                generation?.prompt ?? "",
+                filled,
+                slot,
+                ac.signal,
+                id,
+                collector("fill", fillResolved),
+              );
             })()
-          : await regenerateSlot(instruction, filled, target.id, before, editCred, ac.signal, id);
+          : await regenerateSlot(instruction, filled, target.id, before, editCred, ac.signal, id, collector("edit-slot", editResolved));
         if (looksTruncated(before, after)) {
           console.warn(
             `edit ${id}: slot "${target.id}" came back as ${after.length} chars against ${before.length} before — looks like a fragment, not a full region. Discarding.`,
@@ -145,13 +206,11 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
         next.content[target.id] = after;
       }
 
-      // Minted from the id, not read back off the old document — reproduces the exact same
-      // token an unedited app would carry (mintAppToken is a pure function of the id), so an
-      // app edited fifty times keeps working with its data intact.
-      const appToken = mintAppToken(id, requireEnv("APP_TOKEN_SECRET"));
-      const document = renderDocument(next, (p) => renderFullHead(p, studioOrigin, appToken), SHELL_TAIL);
+      // Always the placeholder token, never a live one — see shell.ts's renderShellHead doc
+      // comment. Substitution happens per-viewer, at send time, in internal.ts.
+      const document = renderDocument(next, (p) => renderFullHead(p, studioOrigin), SHELL_TAIL);
 
-      if (!(await saveEditedApp(id, next, document, version))) {
+      if (!(await saveEditedApp(id, owner, next, document, version))) {
         res
           .status(409)
           .type("html")
@@ -172,6 +231,12 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
       const message = safeMessage(error, secrets);
       console.error(`edit ${id} failed:`, message);
       res.status(500).type("html").send(editProblem(message));
+    } finally {
+      try {
+        await recordUsage(usageEvents);
+      } catch (error) {
+        console.warn(`edit ${id}: failed to record usage:`, error);
+      }
     }
   });
 

@@ -2,6 +2,7 @@ import type { AppPlan } from "@any-app/protocol";
 import { resolve } from "./resolve";
 import { RefusalError, TruncationError } from "./providers/types";
 import type { ProviderCredential } from "./providers/types";
+import type { UsageInfo } from "./providers/usage";
 import { safeMessage } from "./scrub";
 
 export type EditTarget = { kind: "css" } | { kind: "slot"; id: string };
@@ -34,6 +35,8 @@ export async function routeEdit(
   // The generation id — see planApp's matching parameter. Edits reuse the same conversation
   // the app's own generation used, so a routed edit can still hit the cached prefix.
   conversationId?: string,
+  // Phase 6 step 8 — see planApp's matching parameter.
+  onUsage?: (usage: UsageInfo) => void,
 ): Promise<EditTarget> {
   // `regions` is stable across every routed edit against this app in one session — this is
   // exactly the repeated-prefix shape confirmed live during Phase 3.5 testing (two router
@@ -52,6 +55,7 @@ export async function routeEdit(
       signal,
       label: "router",
       conversationId,
+      onUsage,
     });
   } catch (error) {
     // A truncated router reply is not a provider failure the caller should see as a raw

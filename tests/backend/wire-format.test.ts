@@ -13,6 +13,7 @@ import { startServers } from "../harness/servers";
 import { findFreePorts } from "../harness/ports";
 import { startFakeProvider } from "../harness/fake-provider";
 import type { FakeProvider } from "../harness/fake-provider";
+import { extractPreview, grantQuery } from "../harness/preview";
 
 const INTERNAL_SECRET = "wire-format-internal-secret";
 
@@ -62,20 +63,20 @@ async function setup(t: TestContext): Promise<Stack> {
   return { scratch, fake, servers };
 }
 
-async function createGeneration(servers: Stack["servers"], prompt = "Wire format test app."): Promise<string> {
+async function createGeneration(
+  servers: Stack["servers"],
+  prompt = "Wire format test app.",
+): Promise<{ id: string; grant: string }> {
   const res = await fetch(`${servers.studioOrigin}/generations`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ prompt }).toString(),
   });
-  const body = await res.text();
-  const idMatch = body.match(/\/preview\/([0-9a-f-]{36})"/);
-  assert.ok(idMatch, `expected an iframe src containing /preview/<uuid> in: ${body}`);
-  return idMatch![1]!;
+  return extractPreview(await res.text());
 }
 
-function streamUrl(servers: Stack["servers"], id: string): string {
-  return `${servers.studioOrigin}/internal/generations/${id}/stream`;
+function streamUrl(servers: Stack["servers"], id: string, grant: string): string {
+  return `${servers.studioOrigin}/internal/generations/${id}/stream${grantQuery(grant)}`;
 }
 
 function authHeaders(): Record<string, string> {
@@ -93,30 +94,30 @@ async function queueHappyPath(fake: FakeProvider): Promise<void> {
 
 test("E1 — first bytes of any generated response: <!doctype html>, nothing before it", async (t) => {
   const { servers, fake } = await setup(t);
-  const id = await createGeneration(servers);
+  const { id, grant } = await createGeneration(servers);
   await queueHappyPath(fake);
 
-  const res = await fetch(streamUrl(servers, id), { headers: authHeaders() });
+  const res = await fetch(streamUrl(servers, id, grant), { headers: authHeaders() });
   const body = await res.text();
   assert.ok(body.startsWith("<!doctype html>"), `body must start with the doctype, got: ${body.slice(0, 40)}`);
 });
 
 test("E2 — response headers carry no Content-Encoding (compression must never be added)", async (t) => {
   const { servers, fake } = await setup(t);
-  const id = await createGeneration(servers);
+  const { id, grant } = await createGeneration(servers);
   await queueHappyPath(fake);
 
-  const res = await fetch(streamUrl(servers, id), { headers: authHeaders() });
+  const res = await fetch(streamUrl(servers, id, grant), { headers: authHeaders() });
   await res.text();
   assert.equal(res.headers.get("content-encoding"), null);
 });
 
 test("E3 — response headers: Transfer-Encoding chunked, no Content-Length", async (t) => {
   const { servers, fake } = await setup(t);
-  const id = await createGeneration(servers);
+  const { id, grant } = await createGeneration(servers);
   await queueHappyPath(fake);
 
-  const res = await fetch(streamUrl(servers, id), { headers: authHeaders() });
+  const res = await fetch(streamUrl(servers, id, grant), { headers: authHeaders() });
   assert.equal(res.headers.get("transfer-encoding"), "chunked");
   assert.equal(res.headers.get("content-length"), null);
   await res.text();
@@ -146,12 +147,12 @@ test("E3 — response headers: Transfer-Encoding chunked, no Content-Length", as
  */
 test("E4 — headers and the shell arrive well before a fake that delays its first fill chunk ~2s (flushHeaders() regression guard)", async (t) => {
   const { servers, fake } = await setup(t);
-  const id = await createGeneration(servers);
+  const { id, grant } = await createGeneration(servers);
   fake.queueComplete({ text: PLAN_TEXT });
   fake.queueStream({ chunks: [{ text: FILL_TEXT, delayMs: 2000 }], finish: "stop" });
 
   const start = Date.now();
-  const res = await fetch(streamUrl(servers, id), { headers: authHeaders() });
+  const res = await fetch(streamUrl(servers, id, grant), { headers: authHeaders() });
   const headersAt = Date.now() - start;
   assert.equal(res.status, 200);
 
@@ -181,10 +182,10 @@ test("E4 — headers and the shell arrive well before a fake that delays its fir
 
 test("E5 — at least 1KB is sent before the first content chunk, so the browser starts parsing immediately", async (t) => {
   const { servers, fake } = await setup(t);
-  const id = await createGeneration(servers);
+  const { id, grant } = await createGeneration(servers);
   await queueHappyPath(fake);
 
-  const res = await fetch(streamUrl(servers, id), { headers: authHeaders() });
+  const res = await fetch(streamUrl(servers, id, grant), { headers: authHeaders() });
   const reader = res.body!.getReader();
   const received: Buffer[] = [];
   for (;;) {
@@ -206,10 +207,10 @@ test("E5 — at least 1KB is sent before the first content chunk, so the browser
 
 test("E6 — the shell arrives before the fill call starts (checked against the fake provider's own request timestamps)", async (t) => {
   const { servers, fake } = await setup(t);
-  const id = await createGeneration(servers);
+  const { id, grant } = await createGeneration(servers);
   await queueHappyPath(fake);
 
-  const res = await fetch(streamUrl(servers, id), { headers: authHeaders() });
+  const res = await fetch(streamUrl(servers, id, grant), { headers: authHeaders() });
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -242,10 +243,10 @@ test("E6 — the shell arrives before the fill call starts (checked against the 
 
 test("E7 — slot templates appear after the shell script (swap() must be defined before anything calls it)", async (t) => {
   const { servers, fake } = await setup(t);
-  const id = await createGeneration(servers);
+  const { id, grant } = await createGeneration(servers);
   await queueHappyPath(fake);
 
-  const res = await fetch(streamUrl(servers, id), { headers: authHeaders() });
+  const res = await fetch(streamUrl(servers, id, grant), { headers: authHeaders() });
   const body = await res.text();
 
   // A stable token from inside swapRuntime()'s own source (packages/protocol/src/swap-runtime.ts)

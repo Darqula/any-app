@@ -1,4 +1,11 @@
-import { SKELETON_CSS, swapRuntime, renderSkeletons, dataRuntime, utilityCss } from "@any-app/protocol";
+import {
+  SKELETON_CSS,
+  swapRuntime,
+  renderSkeletons,
+  dataRuntime,
+  utilityCss,
+  APP_TOKEN_PLACEHOLDER,
+} from "@any-app/protocol";
 import type { AppPlan } from "@any-app/protocol";
 
 function escapeHtml(value: string): string {
@@ -25,13 +32,16 @@ export const DOCTYPE_AND_PADDING = `<!doctype html>\n<!--${" ".repeat(1024)}-->\
  * see `swapRuntime`'s doc comment. The stylesheet gets an id so an edit's `css` message can
  * find and replace it.
  *
- * `appToken` is only ever emitted when the app has collections — a static app should not
- * carry a data-API token it never uses. Both call sites (internal.ts, edits.ts) mint it from
- * the generation id, so it is deliberately the same string every time this app is rendered;
- * see `mintAppToken`'s doc comment for why that matters.
+ * The data runtime is only ever emitted when the app has collections — a static app should
+ * not carry a data-API token it never uses. It ALWAYS carries `APP_TOKEN_PLACEHOLDER`, never
+ * a live token: this function produces the bytes that get PERSISTED (`generations.document`)
+ * as well as streamed live, and the same stored row is served to every viewer under a
+ * different per-viewer token — see `withAppToken`'s doc comment. Every call site that sends
+ * these bytes to a browser (internal.ts, live and replay) substitutes the real token with
+ * `withAppToken` immediately before writing; nothing here knows or needs to know the mode.
  */
-export function renderShellHead(plan: AppPlan, studioOrigin: string, appToken: string): string {
-  const data = plan.collections.length > 0 ? `<script>${dataRuntime(appToken)}</script>\n` : "";
+export function renderShellHead(plan: AppPlan, studioOrigin: string): string {
+  const data = plan.collections.length > 0 ? `<script>${dataRuntime(APP_TOKEN_PLACEHOLDER)}</script>\n` : "";
   // Emitted AFTER `<style id="anyapp-css">`, and only when the planner didn't already define
   // `.hidden` itself — see `utilityCss`'s doc comment for why both of those are load-bearing,
   // not stylistic (source order is what lets a `!important`-free rule still win).
@@ -58,8 +68,8 @@ ${renderSkeletons(plan.shell, plan.slots)}
  * than *streamed live* (internal.ts writes the two pieces separately there, with the
  * heartbeat in between).
  */
-export function renderFullHead(plan: AppPlan, studioOrigin: string, appToken: string): string {
-  return DOCTYPE_AND_PADDING + renderShellHead(plan, studioOrigin, appToken);
+export function renderFullHead(plan: AppPlan, studioOrigin: string): string {
+  return DOCTYPE_AND_PADDING + renderShellHead(plan, studioOrigin);
 }
 
 export const SHELL_TAIL = `</body>\n</html>\n`;

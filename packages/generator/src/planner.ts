@@ -8,6 +8,7 @@ import {
 import type { AppPlan, SlotSpec, CollectionSpec } from "@any-app/protocol";
 import { resolve } from "./resolve";
 import type { ProviderCredential } from "./providers/types";
+import type { UsageInfo } from "./providers/usage";
 import { PLANNER_PROMPT } from "./planner-prompt";
 import { parseSections } from "./section-parser";
 import { stripTrailingFence } from "./fence-stripper";
@@ -146,6 +147,9 @@ export async function planApp(
   // Threaded straight through to parsePlan — see PlanDiagnostic's doc comment. Optional and
   // synchronous, same contract as onRawResponse; omitting it changes nothing.
   onDiagnostic?: (d: PlanDiagnostic) => void,
+  // Phase 6 step 8: forwarded to the provider's ProviderRequest.onUsage — see that field's
+  // doc comment for the ordering invariant (fired even when this call ultimately throws).
+  onUsage?: (usage: UsageInfo) => void,
 ): Promise<AppPlan> {
   const { provider, model, maxTokens } = resolve("planner", credential);
 
@@ -156,6 +160,7 @@ export async function planApp(
     signal,
     label: "planner",
     conversationId,
+    onUsage,
   });
   onRawResponse?.(raw);
 

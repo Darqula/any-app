@@ -127,7 +127,7 @@ export function buildFilledDocument(
     collections: doc.collections ?? [],
     content: doc.content ?? Object.fromEntries(slots.map((s) => [s.id, `<p>${s.id}</p>`])),
   };
-  const appToken = mintAppToken(appId, appTokenSecret);
+  const appToken = mintAppToken(appId, "rw", appTokenSecret);
   const document = DOCTYPE + renderDocument(plan, (p) => renderHead(p, studioOrigin, appToken), SHELL_TAIL);
   return { document, plan, appToken };
 }
@@ -148,12 +148,21 @@ export async function seedFilledApp(
   studioOrigin: string,
   prompt: string,
   doc: HandDoc,
+  /**
+   * The anonymous session this row should belong to (Phase 6) — get it from
+   * `establishAnonSession` below FIRST, before seeding, and reuse the same `page` afterward
+   * so `openSidebarApp`/`submitPrompt`'s own navigation carries the matching cookie. Without
+   * it the row belongs to nobody and never shows up in an owner-scoped sidebar listing.
+   * `visibility: 'unlisted'`, not the column's own `'private'` default, either way — a
+   * direct `/preview/:id` navigation (not through the sidebar at all) still needs no grant.
+   */
+  sessionId: string | null = null,
 ): Promise<{ id: string; document: string; plan: FilledApp; appToken: string }> {
   const pool = new Pool({ connectionString: databaseUrl });
   try {
     const insert = await pool.query<{ id: string }>(
-      `insert into generations (prompt, status, document) values ($1, 'complete', '') returning id`,
-      [prompt],
+      `insert into generations (prompt, status, document, visibility, session_id) values ($1, 'complete', '', 'unlisted', $2) returning id`,
+      [prompt, sessionId],
     );
     const id = insert.rows[0]!.id;
     const { document, plan, appToken } = buildFilledDocument(id, appTokenSecret, studioOrigin, doc);
@@ -168,31 +177,68 @@ export async function seedFilledApp(
   }
 }
 
+/**
+ * Navigates `page` to the studio home page once (establishing its real anonymous session —
+ * the cookie value IS the session id, per session.ts's `COOKIE=id` format) and returns that
+ * id, so a caller can seed a row as that same session's own BEFORE the sidebar-dependent
+ * navigation that needs to find it (`openSidebarApp`/`submitPrompt`'s own `page.goto`s reuse
+ * the same cookie automatically). See impl-phase-6.md step 2: the sidebar is owner-scoped.
+ */
+export async function establishAnonSession(page: Page, origin?: string): Promise<string> {
+  await page.goto(origin ? `${origin}/` : "/");
+  const cookies = await page.context().cookies();
+  const cookie = cookies.find((c) => c.name === "anyapp_session");
+  if (!cookie) throw new Error("expected the home page to set an anyapp_session cookie");
+  return cookie.value;
+}
+
 // ---- Playwright navigation helpers -------------------------------------------------------
 
-/** Finds the live (non-detached) frame whose URL matches `src`, waiting for it to appear.
+/** Finds the live (non-detached) frame whose URL matches `src` — same origin and path, Phase
+ * 6 onward IGNORING the query string. `previewFrame` (views.ts) mints a fresh view grant
+ * (`?g=...`, view-grant.ts) on every single render of the frame route, including a re-click
+ * on the SAME sidebar entry for the SAME app id — so the src captured before a reload is
+ * guaranteed to differ from the reloaded iframe's src in its `g` value alone. Matching on
+ * origin+path (not the full string) is what makes "wait for the SAME app to reappear after a
+ * reload" (B5/H3/H5's pattern) still findable.
  * `page.frames()` is the only way in — the preview iframe is genuinely cross-origin from the
  * studio page, so `frameLocator`/raw `Frame` objects are how this suite reaches inside it
  * (see tests-frontend.md's Harness section). Picking the LAST matching, non-detached frame
  * guards against grabbing a stale reference right after a re-click swaps in a fresh iframe
- * with the same `src` (B5/H3/H5's "reload the same app" pattern). */
+ * for the same app.
+ *
+ * `opts.excludeFrame`: pass the PREVIOUS `Frame` object when reloading the same app (the
+ * "click the sidebar entry again" pattern). Confirmed live as a genuine, not merely
+ * theoretical, race: right after the click, `page.frames()` can still return the OLD frame —
+ * same origin+path, `isDetached()` not yet flipped, and (since it is momentarily still fully
+ * alive) it PASSES the liveness check below too. Returning it looks correct and is not: the
+ * browser is mid-navigation, and that exact object detaches a moment later, throwing "Frame
+ * was detached" out of whatever the caller does with it next (B5, H3 — this reproduced
+ * reliably under full-suite load, rarely in isolation, which is this race's signature).
+ * Excluding the known-stale object by identity is what actually closes the window rather
+ * than narrowing it: the loop keeps polling until a genuinely NEW frame object exists and
+ * independently passes its own liveness check.
+ */
 export async function waitForFrameBySrc(
   page: Page,
   src: string,
-  opts: { waitForLoad?: boolean } = {},
+  opts: { waitForLoad?: boolean; excludeFrame?: Frame } = {},
 ): Promise<Frame> {
-  // Retries the whole find-and-verify cycle, not just the find: right after a re-click
-  // swaps in a fresh iframe with the same `src` (B5/H3/H5s reload-the-same-app pattern),
-  // there is a real window where page.frames() still returns the OLD frame object
-  // (matching src, isDetached() not yet flipped) a tick before it actually detaches —
-  // grabbing it there and using it a moment later throws "Frame was detached". A single
-  // poll-then-grab (the previous shape here) is exactly what raced; verifying the
-  // candidate is genuinely alive with a trivial evaluate before returning it, and
-  // retrying from scratch if that throws, closes the window instead of narrowing it.
+  const target = new URL(src);
+  const targetKey = target.origin + target.pathname;
   const deadline = Date.now() + 10_000;
   let lastError: unknown;
   while (Date.now() < deadline) {
-    const matches = page.frames().filter((f) => f.url() === src && !f.isDetached());
+    const matches = page.frames().filter((f) => {
+      if (f.isDetached()) return false;
+      if (opts.excludeFrame && f === opts.excludeFrame) return false;
+      try {
+        const u = new URL(f.url());
+        return u.origin + u.pathname === targetKey;
+      } catch {
+        return false; // e.g. "about:blank" on a frame that hasn't navigated yet
+      }
+    });
     const candidate = matches[matches.length - 1];
     if (candidate) {
       try {

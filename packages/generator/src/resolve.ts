@@ -10,6 +10,9 @@ export interface Resolved {
   maxTokens: number;
   /** Everything that must never appear in an error message. */
   secrets: string[];
+  /** True when the platform's own key was used — i.e. this call costs us money. A BYOK call
+   *  is recorded too (Phase 6 step 8), but never counts against the account's monthly cap. */
+  usedPlatformCredential: boolean;
 }
 
 export class NoCredentialError extends Error {
@@ -41,8 +44,8 @@ export function build(credential: ProviderCredential): Provider {
  */
 export function resolve(role: Role, userCredential: ProviderCredential | null): Resolved {
   const config = roleConfig(role);
-  const credential =
-    userCredential?.provider === config.provider ? userCredential : platformCredential(config.provider);
+  const usesUserCredential = userCredential?.provider === config.provider;
+  const credential = usesUserCredential ? userCredential : platformCredential(config.provider);
 
   if (!credential) throw new NoCredentialError(config.provider);
 
@@ -55,5 +58,6 @@ export function resolve(role: Role, userCredential: ProviderCredential | null): 
       process.env.OPENAI_API_KEY ?? "",
       process.env.ANTHROPIC_API_KEY ?? "",
     ],
+    usedPlatformCredential: !usesUserCredential,
   };
 }

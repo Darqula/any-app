@@ -374,3 +374,30 @@ exists.
 Step 7 originally said "with Phase 3.5, before the thing that can leak exists." Phase 3.5 has
 shipped, so that timing is gone — but G4 and G7 keep their priority within G for the same
 reason it was given.
+
+---
+
+## Phase 6 — the sidebar became owner-scoped
+
+`listRecentGenerations`/`getFilledApp`/`saveEditedApp` are all owner-scoped now
+(impl-phase-6.md step 2), and `previewFrame` mints a fresh, single-use-looking view grant
+(`?g=...`) on every render of the frame route, including a re-click on the SAME sidebar entry.
+Two structural consequences for every existing seeded-row case, not just new ones:
+
+- **Every seeded row a test expects to see in the sidebar needs a matching `session_id`.**
+  `establishAnonSession(page)` (doc-builder.ts) navigates once to learn the real anonymous
+  session id (the cookie value) BEFORE seeding, so the seeded row can be created as that
+  session's own; `seedGeneration`/`seedFilledApp` both default `visibility` to `'unlisted'`
+  (not the column's own `'private'`) so a DIRECT `/preview/:id` navigation — no sidebar, no
+  grant — still needs no ownership at all.
+- **`waitForFrameBySrc` matches on origin+path, not the full `src` string.** A reload of the
+  same app now has a different `src` every time (the grant's expiry timestamp differs), even
+  though the app id does not — B5/H3/H5's "reload the same app, same iframe" pattern needed
+  this loosened precisely because of that.
+
+No dedicated frontend accounts/sharing section (`I`) exists yet — impl-phase-6.md step 9's
+"Frontend I — accounts and sharing" (sign-in flow, an unlisted link opened in a second browser
+context, remix from a shared link, a non-owner's write getting 403, `Referrer-Policy`) is
+covered at the backend/route level (`accounts.test.ts`'s M-series, `data-api.test.ts`'s
+K26/K27) but not yet end-to-end through a real browser. Worth writing before this phase is
+considered fully closed out.

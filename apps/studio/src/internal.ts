@@ -2,8 +2,17 @@ import { Router } from "express";
 import type { Response } from "express";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { INTERNAL_SECRET_HEADER, errorBanner, renderDocument, slotOpen, slotClose, mintAppToken } from "@any-app/protocol";
-import type { FilledApp } from "@any-app/protocol";
+import {
+  INTERNAL_SECRET_HEADER,
+  errorBanner,
+  renderDocument,
+  slotOpen,
+  slotClose,
+  mintAppToken,
+  withAppToken,
+  verifyViewGrant,
+} from "@any-app/protocol";
+import type { FilledApp, TokenMode } from "@any-app/protocol";
 import {
   streamApp,
   createTrailingFenceGuard,
@@ -18,7 +27,7 @@ import {
   safeMessage,
   scrub,
 } from "@any-app/generator";
-import type { ProviderCredential } from "@any-app/generator";
+import type { ProviderCredential, Resolved, UsageInfo } from "@any-app/generator";
 import {
   getGeneration,
   claimForGeneration,
@@ -27,9 +36,12 @@ import {
   markFailed,
   resetForRetry,
   requireEnv,
+  recordUsage,
+  billableTokensThisMonth,
+  monthlyLimitFor,
 } from "@any-app/store";
+import type { UsageEvent, Owner } from "@any-app/store";
 import { renderShellHead, renderFullHead, DOCTYPE_AND_PADDING, SHELL_TAIL } from "./shell";
-import { sessionId } from "./session";
 import { credentialForRole } from "./credential-resolve";
 
 export function internalRouter(studioOrigin: string): Router {
@@ -52,13 +64,73 @@ export function internalRouter(studioOrigin: string): Router {
       return;
     }
 
+    // No cookie reaches this route — it is a server-to-server call from the sandbox, never
+    // the browser directly (see architecture.md decision #10). The view grant is the only
+    // signal about who is looking and what they may do: `mode: "rw"` only when studio's
+    // frame route (which DOES know the viewer) decided this viewer is the app's owner; every
+    // other case — a shared visitor, a missing/invalid grant — is treated as `"ro"`.
+    // Private apps additionally 404 outright without a valid grant for this exact id.
+    const grantParam = typeof req.query.g === "string" ? req.query.g : "";
+    const grantResult = grantParam
+      ? verifyViewGrant(grantParam, requireEnv("APP_TOKEN_SECRET"))
+      : ({ status: "invalid" } as const);
+    // A grant's appId must match THIS app's id — a grant that verified fine for a DIFFERENT
+    // app (see view-grant.test.ts / M6) is exactly as useless here as no grant at all.
+    const forThisApp = grantResult.status !== "invalid" && grantResult.appId === id;
+    const granted = forThisApp && grantResult.status === "valid";
+    if (generation.visibility === "private" && !granted) {
+      res.status(404).send("not found");
+      return;
+    }
+
+    // An expired-but-well-signed grant for THIS app is a different
+    // situation from no grant at all — it used to fall through to the same `mode: "ro"`
+    // default, so an owner's tab left open past VIEW_GRANT_TTL_MS with the page never
+    // reloaded would silently start answering read-only to its own writes on an unlisted/
+    // public app, with nothing on screen to explain why. (A private app can't reach this
+    // branch — it already 404'd above, which is visible and reads as an error.) Surface it
+    // instead of guessing.
+    if (forThisApp && grantResult.status === "expired") {
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.setHeader("Cache-Control", "no-store");
+      // Set here too, not only after this early return —
+      // this used to be the one HTML response the studio sent without it.
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.send(
+        DOCTYPE_AND_PADDING +
+          // Owner-shaped advice ("open this app again") is wrong for a shared visitor, who
+          // has no any-app of their own to go back to — their only route back is the link
+          // they were sent. Phrased to work for both.
+          `<p style="font:15px system-ui;padding:24px">This preview link has expired. ` +
+          `Reload the page you got this link from, or ask its owner for a new one.</p>`,
+      );
+      return;
+    }
+
+    const mode: TokenMode = granted && grantResult.status === "valid" && grantResult.mode === "rw" ? "rw" : "ro";
+    const appToken = mintAppToken(id, mode, requireEnv("APP_TOKEN_SECRET"));
+
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "no-store");
     res.setHeader("X-Content-Type-Options", "nosniff");
 
     if (generation.status === "complete" && generation.document) {
-      res.send(generation.document);
+      // The stored document carries APP_TOKEN_PLACEHOLDER, never a live token (Phase 6 step
+      // 7) — the same row is replayed to every viewer, and viewers get different modes.
+      res.send(withAppToken(generation.document, appToken));
       return;
+    }
+
+    // Enforced before claimForGeneration: no point locking the row for a generation attempt
+    // that is about to be refused, and a reload must not be able to slip past the cap by
+    // retrying before the row is claimed.
+    if (generation.owner_id) {
+      const limit = await monthlyLimitFor(generation.owner_id);
+      if (limit !== null && (await billableTokensThisMonth(generation.owner_id)) >= limit) {
+        await markFailed(id, "Monthly token limit reached.");
+        res.send(DOCTYPE_AND_PADDING + errorBanner("Monthly token limit reached."));
+        return;
+      }
     }
 
     // Claim the row before generating. Without this, a reload mid-generation — which is
@@ -78,18 +150,32 @@ export function internalRouter(studioOrigin: string): Router {
     const ac = new AbortController();
     req.on("close", () => ac.abort());
 
-    // Session-scoped credentials, resolved once up front. `resolve()` throws before any
-    // HTTP call if a role's configured provider has no credential anywhere (session or
-    // platform) — catching that here, before a byte is written, is what "an unconfigured
-    // role fails before any HTTP call" (Phase 3.5 acceptance) actually means. It also
-    // gathers every secret that could appear in a later error, for the scrub in the catch
-    // block below — planner and fill can be different providers with different keys.
-    const sid = sessionId(req, res);
-    const plannerCred = await credentialForRole("planner", sid);
-    const fillCred = await credentialForRole("fill", sid);
+    // Credentials resolved once up front — `resolve()` throws before any HTTP call if a
+    // role's configured provider has no credential anywhere.
+    //
+    // No cookie reaches this route — it is a server-to-server call from
+    // the sandbox, never the browser directly — so there is no session to read. An earlier
+    // version of this line called `currentOwner(req, res)` anyway, which (on a cookie-less
+    // request) always took the create-a-session branch: one throwaway `insert into sessions`
+    // row per generation attempt, never read again, plus a `Set-Cookie` on an internal
+    // response (harmless only because the sandbox never forwards upstream headers). Worse
+    // than the wasted row: it meant a signed-in user's own BYOK credential could never be
+    // found here even though `generation.owner_id` names exactly whose key to look for — so
+    // a real generation on a user's own key was billed to them as if the platform paid for
+    // it. The row already knows who owns it; derive Owner from THAT, not from a request that
+    // structurally cannot carry one.
+    const owner: Owner = generation.owner_id
+      ? { kind: "user", userId: generation.owner_id, sessionId: "" }
+      : { kind: "anon", sessionId: generation.session_id ?? "" };
+    const plannerCred = await credentialForRole("planner", owner);
+    const fillCred = await credentialForRole("fill", owner);
+    let plannerResolved: Resolved;
+    let fillResolved: Resolved;
     let secrets: string[];
     try {
-      secrets = [...resolve("planner", plannerCred).secrets, ...resolve("fill", fillCred).secrets];
+      plannerResolved = resolve("planner", plannerCred);
+      fillResolved = resolve("fill", fillCred);
+      secrets = [...plannerResolved.secrets, ...fillResolved.secrets];
     } catch (error) {
       if (error instanceof NoCredentialError) {
         await resetForRetry(id);
@@ -99,136 +185,182 @@ export function internalRouter(studioOrigin: string): Router {
       throw error;
     }
 
-    try {
-      // --- Plan -------------------------------------------------------------------
-      // The doctype goes out immediately, before planning even starts — undici's ~300s
-      // inactivity timeout does not care that we have a good reason to be quiet, and a
-      // reasoning-heavy planner model can take that long. The heartbeat comment is
-      // live-only noise: it is never folded into `flat` below, because a replay of a
-      // *finished* generation has no planning wait to fill.
-      res.flushHeaders();
-      res.write(DOCTYPE_AND_PADDING);
-      const heartbeat = setInterval(() => res.write("<!-- planning -->\n"), 15_000);
-
-      let plan;
-      let rawPlannerResponse: string | undefined;
-      try {
-        // `onRawResponse` fires with the exact provider text before `parsePlan` is even
-        // attempted (planner.ts), so it is populated here whenever the call reached a
-        // response at all — including the case below where `parsePlan` then throws.
-        plan = await planApp(generation.prompt, plannerCred, ac.signal, id, (raw) => {
-          rawPlannerResponse = raw;
+    // Collected across the whole generation (planner, then fill — sequential or parallel)
+    // and written once at the end, win or lose — packages/generator must not write to the
+    // database, so it only emits via onUsage; this route persists. See usage.ts's ordering
+    // invariant: a call that throws (e.g. TruncationError) still reaches onUsage before the
+    // throw in both adapters, so it is captured here regardless of how the generation ends.
+    const usageEvents: UsageEvent[] = [];
+    // Captured into a plain local, not read as `generation.owner_id` inside the closure
+    // below — `generation`'s null-check narrowing does not survive into a nested function
+    // body, since TS can't prove the closure only runs after the check above.
+    const generationOwnerId = generation.owner_id;
+    function collector(role: string, resolved: Resolved): (usage: UsageInfo) => void {
+      return (usage) => {
+        usageEvents.push({
+          ownerId: generationOwnerId,
+          generationId: id,
+          role,
+          provider: resolved.provider.id,
+          model: resolved.model,
+          promptTokens: usage.promptTokens,
+          completionTokens: usage.completionTokens,
+          cachedTokens: usage.cacheReadTokens ?? 0,
+          billable: resolved.usedPlatformCredential,
         });
+      };
+    }
+    async function flushUsage(): Promise<void> {
+      try {
+        await recordUsage(usageEvents);
       } catch (error) {
-        if (isAbortError(error)) throw error;
-        // Scrubbed even though this is a console line, not a stored or rendered one — a
-        // raw provider error can quote a credential back (confirmed historically; see
-        // scrub.ts), and `secrets` is already in hand here regardless of which provider
-        // actually threw.
-        console.warn(`generation ${id}: planning failed, falling back to linear:`, safeMessage(error, secrets));
-        await capturePlannerFailure(id, error, rawPlannerResponse, secrets);
-        await runLinearFallback(id, generation.prompt, fillCred, res, ac.signal);
-        return;
-      } finally {
-        clearInterval(heartbeat);
+        console.warn(`generation ${id}: failed to record usage:`, error);
       }
+    }
 
-      // --- Shell ---------------------------------------------------------------------
-      // Derived, not looked up — see mintAppToken's doc comment. Minting it here and again
-      // in the persist step below (rather than caching it once) still reproduces the exact
-      // same string, because it is a pure function of `id`.
-      const appToken = mintAppToken(id, requireEnv("APP_TOKEN_SECRET"));
-      res.write(renderShellHead(plan, studioOrigin, appToken));
+    try {
+      try {
+        // --- Plan -------------------------------------------------------------------
+        // The doctype goes out immediately, before planning even starts — undici's ~300s
+        // inactivity timeout does not care that we have a good reason to be quiet, and a
+        // reasoning-heavy planner model can take that long. The heartbeat comment is
+        // live-only noise: it is never folded into `flat` below, because a replay of a
+        // *finished* generation has no planning wait to fill.
+        res.flushHeaders();
+        res.write(DOCTYPE_AND_PADDING);
+        const heartbeat = setInterval(() => res.write("<!-- planning -->\n"), 15_000);
 
-      // --- Fill ------------------------------------------------------------------
-      // Two modes, switchable via LLM_FILL_MODE without a code change, specifically so
-      // parallel fan-out output can be compared against Phase 3.5's single coherent call —
-      // one call can make every region agree by construction, N calls cannot.
-      // Defaults to sequential, not the plan's literal "parallel" default — Phase 4's own
-      // measurement found parallel slower and ~5.6x more completion tokens on this
-      // project's model (see .docs/open-problems.md). A fresh clone should not silently run
-      // the mode the phase concluded is currently a regression.
-      const fillMode = (process.env.LLM_FILL_MODE ?? "sequential").toLowerCase();
-      let filled: FilledApp;
-
-      if (fillMode === "sequential") {
-        // Unchanged from Phase 3.5: one call, slots land in plan order, any failure here
-        // fails the whole document (caught by the outer catch below, same as before).
-        const slotStream = createSlotStream();
-        for await (const chunk of streamFill(generation.prompt, plan, fillCred, ac.signal, id)) {
-          const out = slotStream.push(chunk);
-          if (out) res.write(out);
-        }
-        const tail = slotStream.flush();
-        if (tail) res.write(tail);
-        filled = { ...plan, content: slotStream.content };
-      } else {
-        // Slots can all be in flight for a while with nothing written — same undici
-        // inactivity problem the planner heartbeat solves, same fix.
-        const concurrency = Number(process.env.LLM_FILL_CONCURRENCY ?? 4);
-        const content: Record<string, string> = {};
-        let succeeded = 0;
-        const fillHeartbeat = setInterval(() => res.write("<!-- filling -->\n"), 15_000);
+        let plan;
+        let rawPlannerResponse: string | undefined;
         try {
-          for await (const result of fillAllSlots(
+          // `onRawResponse` fires with the exact provider text before `parsePlan` is even
+          // attempted (planner.ts), so it is populated here whenever the call reached a
+          // response at all — including the case below where `parsePlan` then throws.
+          plan = await planApp(
             generation.prompt,
-            plan,
-            fillCred,
-            concurrency,
+            plannerCred,
             ac.signal,
             id,
-          )) {
-            content[result.slot.id] = result.html;
-            if (!result.failed) succeeded++;
-            // One write, not `slotOpen` then `html` then `slotClose` separately — a
-            // <template> must be contiguous in the response.
-            res.write(slotOpen(result.slot.id) + result.html + slotClose(result.slot.id));
-          }
+            (raw) => {
+              rawPlannerResponse = raw;
+            },
+            undefined,
+            collector("planner", plannerResolved),
+          );
+        } catch (error) {
+          if (isAbortError(error)) throw error;
+          // Scrubbed even though this is a console line, not a stored or rendered one — a
+          // raw provider error can quote a credential back (confirmed historically; see
+          // scrub.ts), and `secrets` is already in hand here regardless of which provider
+          // actually threw.
+          console.warn(`generation ${id}: planning failed, falling back to linear:`, safeMessage(error, secrets));
+          await capturePlannerFailure(id, error, rawPlannerResponse, secrets);
+          await runLinearFallback(id, generation.prompt, fillCred, res, ac.signal, collector("linear", fillResolved));
+          return;
         } finally {
-          clearInterval(fillHeartbeat);
+          clearInterval(heartbeat);
         }
 
-        if (succeeded === 0) {
-          // A shell full of apologies is not a generated app.
-          res.write(SHELL_TAIL);
-          await markFailed(id, "every region failed to generate");
-          res.end();
+        // --- Shell ---------------------------------------------------------------------
+        // Always the placeholder — see renderShellHead's doc comment. The live bytes going
+        // to THIS viewer get the real, per-viewer token substituted in immediately before
+        // the write; the stored document (below, at persist time) keeps the placeholder.
+        res.write(withAppToken(renderShellHead(plan, studioOrigin), appToken));
+
+        // --- Fill ------------------------------------------------------------------
+        // Two modes, switchable via LLM_FILL_MODE without a code change, specifically so
+        // parallel fan-out output can be compared against Phase 3.5's single coherent call —
+        // one call can make every region agree by construction, N calls cannot.
+        // Defaults to sequential, not the plan's literal "parallel" default — Phase 4's own
+        // measurement found parallel slower and ~5.6x more completion tokens on this
+        // project's model (see .docs/open-problems.md). A fresh clone should not silently run
+        // the mode the phase concluded is currently a regression.
+        const fillMode = (process.env.LLM_FILL_MODE ?? "sequential").toLowerCase();
+        let filled: FilledApp;
+
+        if (fillMode === "sequential") {
+          // Unchanged from Phase 3.5: one call, slots land in plan order, any failure here
+          // fails the whole document (caught by the outer catch below, same as before).
+          const slotStream = createSlotStream();
+          for await (const chunk of streamFill(generation.prompt, plan, fillCred, ac.signal, id, collector("fill", fillResolved))) {
+            const out = slotStream.push(chunk);
+            if (out) res.write(out);
+          }
+          const tail = slotStream.flush();
+          if (tail) res.write(tail);
+          filled = { ...plan, content: slotStream.content };
+        } else {
+          // Slots can all be in flight for a while with nothing written — same undici
+          // inactivity problem the planner heartbeat solves, same fix.
+          const concurrency = Number(process.env.LLM_FILL_CONCURRENCY ?? 4);
+          const content: Record<string, string> = {};
+          let succeeded = 0;
+          const fillHeartbeat = setInterval(() => res.write("<!-- filling -->\n"), 15_000);
+          try {
+            for await (const result of fillAllSlots(
+              generation.prompt,
+              plan,
+              fillCred,
+              concurrency,
+              ac.signal,
+              id,
+              collector("fill", fillResolved),
+            )) {
+              content[result.slot.id] = result.html;
+              if (!result.failed) succeeded++;
+              // One write, not `slotOpen` then `html` then `slotClose` separately — a
+              // <template> must be contiguous in the response.
+              res.write(slotOpen(result.slot.id) + result.html + slotClose(result.slot.id));
+            }
+          } finally {
+            clearInterval(fillHeartbeat);
+          }
+
+          if (succeeded === 0) {
+            // A shell full of apologies is not a generated app.
+            res.write(SHELL_TAIL);
+            await markFailed(id, "every region failed to generate");
+            res.end();
+            return;
+          }
+          filled = { ...plan, content };
+        }
+
+        res.write(SHELL_TAIL);
+
+        // --- Persist ----------------------------------------------------------------
+        // Before ending the response, not after: ending it first would let `req`'s `close`
+        // event fire and flip `ac.signal.aborted` to true, so a database failure right here
+        // would be misread as the viewer having disconnected — discarding a generation that
+        // actually succeeded instead of reporting the real error.
+        //
+        // `renderFullHead` is the same function editing uses (edits.ts) — one producer of
+        // "the document" either way. `plan` carries the decomposed form both read. Always
+        // the placeholder token — see renderShellHead's doc comment.
+        //
+        // No streamed-vs-rendered consistency check here anymore (Phase 3's `flat`/
+        // `document !== flat`) — completion order means the parallel path's live bytes and
+        // `renderDocument`'s plan-ordered output are no longer expected to match, and that is
+        // correct: swap() has always been order-independent.
+        const document = renderDocument(filled, (p) => renderFullHead(p, studioOrigin), SHELL_TAIL);
+        await markCompleteWithPlan(id, document, filled);
+        res.end();
+      } catch (error) {
+        if (isAbortError(error)) {
+          // The viewer is gone and the socket is dead — there is nothing left to write.
+          // A half-written document must never be saved as complete; put the row back so a
+          // later request can retry it from scratch.
+          await resetForRetry(id);
           return;
         }
-        filled = { ...plan, content };
+        const message = safeMessage(error, secrets);
+        console.error(`generation ${id} failed:`, message);
+        await markFailed(id, message);
+        res.write(errorBanner(message));
+        res.end();
       }
-
-      res.write(SHELL_TAIL);
-
-      // --- Persist ----------------------------------------------------------------
-      // Before ending the response, not after: ending it first would let `req`'s `close`
-      // event fire and flip `ac.signal.aborted` to true, so a database failure right here
-      // would be misread as the viewer having disconnected — discarding a generation that
-      // actually succeeded instead of reporting the real error.
-      //
-      // `renderFullHead` is the same function editing uses (edits.ts) — one producer of
-      // "the document" either way. `plan` carries the decomposed form both read.
-      //
-      // No streamed-vs-rendered consistency check here anymore (Phase 3's `flat`/
-      // `document !== flat`) — completion order means the parallel path's live bytes and
-      // `renderDocument`'s plan-ordered output are no longer expected to match, and that is
-      // correct: swap() has always been order-independent.
-      const document = renderDocument(filled, (p) => renderFullHead(p, studioOrigin, appToken), SHELL_TAIL);
-      await markCompleteWithPlan(id, document, filled);
-      res.end();
-    } catch (error) {
-      if (isAbortError(error)) {
-        // The viewer is gone and the socket is dead — there is nothing left to write.
-        // A half-written document must never be saved as complete; put the row back so a
-        // later request can retry it from scratch.
-        await resetForRetry(id);
-        return;
-      }
-      const message = safeMessage(error, secrets);
-      console.error(`generation ${id} failed:`, message);
-      await markFailed(id, message);
-      res.write(errorBanner(message));
-      res.end();
+    } finally {
+      await flushUsage();
     }
   });
 
@@ -297,10 +429,11 @@ async function runLinearFallback(
   credential: ProviderCredential | null,
   res: Response,
   signal: AbortSignal,
+  onUsage: (usage: UsageInfo) => void,
 ): Promise<void> {
   const fenceGuard = createTrailingFenceGuard();
   let document = DOCTYPE_AND_PADDING;
-  for await (const chunk of streamApp(prompt, credential, signal, id)) {
+  for await (const chunk of streamApp(prompt, credential, signal, id, onUsage)) {
     const safe = fenceGuard.push(chunk);
     if (safe) {
       document += safe;

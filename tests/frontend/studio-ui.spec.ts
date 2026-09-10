@@ -12,6 +12,7 @@
 import { readFile } from "node:fs/promises";
 import pg from "pg";
 import { test, expect } from "@playwright/test";
+import type { Page } from "@playwright/test";
 import { seedGeneration } from "../harness/seed";
 import { HANDOFF_PATH } from "./global-setup";
 
@@ -44,6 +45,22 @@ async function promptsMatching(marker: string): Promise<string[]> {
   } finally {
     await pool.end();
   }
+}
+
+/**
+ * Phase 6 (impl-phase-6.md's known casualty table): the sidebar is now owner-scoped
+ * (`listRecentGenerations(owner)`), so a row seeded with no `session_id` belongs to nobody
+ * and never shows up for whichever fresh anonymous session this test's browser context gets.
+ * Every case below that seeds a row and then expects to see it in the sidebar navigates once
+ * FIRST to learn this page's real anonymous session id (the cookie value IS the session id —
+ * see session.ts), seeds the row as that same session's own, then reloads.
+ */
+async function establishAnonSession(page: Page): Promise<string> {
+  await page.goto("/");
+  const cookies = await page.context().cookies();
+  const cookie = cookies.find((c) => c.name === "anyapp_session");
+  if (!cookie) throw new Error("expected the home page to set an anyapp_session cookie");
+  return cookie.value;
 }
 
 test.describe("A — studio UI", () => {
@@ -84,7 +101,8 @@ test.describe("A — studio UI", () => {
 
   test("A4 — reload after a generation: the prompt appears in the sidebar with its status", async ({ page }) => {
     const prompt = `A4 sidebar ${Date.now()}`;
-    await seedGeneration(databaseUrl, { prompt, document: MINIMAL_DOCUMENT, status: "complete" });
+    const sessionId = await establishAnonSession(page);
+    await seedGeneration(databaseUrl, { prompt, document: MINIMAL_DOCUMENT, status: "complete", sessionId });
 
     await page.goto("/");
     const item = page.locator("#generation-list li", { hasText: prompt });
@@ -94,7 +112,8 @@ test.describe("A — studio UI", () => {
 
   test("A5 — clicking a sidebar entry swaps #stage to that app's iframe", async ({ page }) => {
     const prompt = `A5 click target ${Date.now()}`;
-    const seeded = await seedGeneration(databaseUrl, { prompt, document: MINIMAL_DOCUMENT, status: "complete" });
+    const sessionId = await establishAnonSession(page);
+    const seeded = await seedGeneration(databaseUrl, { prompt, document: MINIMAL_DOCUMENT, status: "complete", sessionId });
 
     await page.goto("/");
     await page.locator("#generation-list li", { hasText: prompt }).locator("button").click();
@@ -107,7 +126,8 @@ test.describe("A — studio UI", () => {
   test("A6 — a prompt longer than 80 characters is truncated in the sidebar", async ({ page }) => {
     const marker = `A6-${Date.now()}-`;
     const longPrompt = marker + "x".repeat(200) + "-should-be-cut";
-    await seedGeneration(databaseUrl, { prompt: longPrompt, document: MINIMAL_DOCUMENT, status: "complete" });
+    const sessionId = await establishAnonSession(page);
+    await seedGeneration(databaseUrl, { prompt: longPrompt, document: MINIMAL_DOCUMENT, status: "complete", sessionId });
 
     await page.goto("/");
     const button = page.locator("#generation-list li button", { hasText: marker });
@@ -120,11 +140,13 @@ test.describe("A — studio UI", () => {
 
   test("A7 — a failed generation shows \"failed\", styled by .status-failed", async ({ page }) => {
     const prompt = `A7 failed ${Date.now()}`;
+    const sessionId = await establishAnonSession(page);
     await seedGeneration(databaseUrl, {
       prompt,
       document: MINIMAL_DOCUMENT,
       status: "failed",
       error: "seeded failure for A7",
+      sessionId,
     });
 
     await page.goto("/");
@@ -148,6 +170,12 @@ test.describe("A — studio UI", () => {
     await page.fill('textarea[name="prompt"]', promptB);
     await page.click('button[type="submit"]');
     await expect(page.locator("#stage iframe")).toHaveCount(1); // still exactly one — replaced, not stacked
+    // `toHaveCount(1)` above is trivially already true (the FIRST iframe already satisfies
+    // it) the instant this click fires, so it does not by itself wait for the SECOND
+    // response to actually land — reading `src` right after it can (and, since Phase 6 added
+    // a couple of real DB round trips to POST /generations, now reliably does) still see the
+    // stale first iframe. Wait for the attribute to actually change before reading it.
+    await expect(page.locator("#stage iframe")).not.toHaveAttribute("src", srcA!);
     const srcB = await page.locator("#stage iframe").getAttribute("src");
 
     expect(srcB).not.toBe(srcA);

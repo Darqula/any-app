@@ -4,17 +4,53 @@ An LLM-driven web app builder (Websim-like): a user describes an app, the backen
 model, streams the generated app into the browser as it's produced, and persists it.
 Full product/architecture docs live in `.docs/` — **read `.docs/overview.md` first**, then
 `.docs/architecture.md` for locked design decisions. `.docs/plan.md` has the phase-by-phase
-build plan; each phase's actual step-by-step spec is `.docs/impl-phase-N.md`, with review
-findings in `.docs/review-phase-N.md` once a phase lands.
+build plan; each phase's actual step-by-step spec is `.docs/impl-phase-N.md`. Review findings
+live in `.docs/review-phase-N.md` while a phase is being reviewed, and that file is deleted
+once every finding is fixed and pinned — each fix's reasoning moves into a comment beside the
+code it explains, so the absence of a review doc means "nothing open", not "never reviewed".
 
-**Current status:** Phases 0–5 implemented (skeleton, linear generation, shell/slots,
+**Current status:** Phases 0–6 implemented (skeleton, linear generation, shell/slots,
 decomposed persistence + slot/CSS editing, multi-provider adapters + BYOK, parallel fill,
-generated-app data API) and verified end-to-end against real providers. Phase 5 (per-app
+generated-app data API, accounts/sharing/remix) — Phases 0–5 verified end-to-end against real
+providers; Phase 6 is verified against the full backend + frontend suites (both fully green,
+including `tests/backend/accounts.test.ts`'s L/M/N sections — now L1–L4, M1–M13 (M12b added
+alongside M12), N1–N3 — plus `data-api.test.ts`'s K26/K27 and a real assertion (not just an
+existing one still passing) added to each of `provider-adapters.test.ts`'s four primary S14
+cases, proving `onUsage` actually fires on the truncation path) but **not yet exercised
+against a real provider live**, the way 0–5 were. Four of its review fixes are the kind a
+future edit could easily undo without knowing why they are there, so each carries its
+reasoning in a code comment beside it — read that comment before changing any of them:
+`SameSite=Lax` on the session cookie, deliberately **not** `Strict` (`Strict` is not sent on a
+cross-site top-level navigation, so it silently signs out anyone who clicks a shared link);
+the `Sec-Fetch-Site`/`Origin` guard on every mutating studio route, which is what actually
+stops the same-site generated-app CSRF `Strict` looked like it was blocking; the view grant
+surfacing "expired" instead of silently downgrading a viewer to read-only; and `GET /apps/:id`
+as the real share-link page, because `/generations/:id/frame` is an htmx fragment that no
+recipient's browser can use on its own. Phase 5 (per-app
 origins, the `records` table, the data API, and the inlined `anyapp.data` client) is
 implemented and verified live against a real generation — see `.docs/impl-phase-5.md`'s
 "Found live" section before touching `apps/sandbox/src/data.ts` or its query parsing:
 Express 5's default query-parser setting silently broke every `where[key]=value` filter
-until `app.set("query parser", "extended")` was added. **Phase 4's parallel fill is implemented and
+until `app.set("query parser", "extended")` was added.
+
+**Phase 6 (accounts, sharing, remix) — see `.docs/impl-phase-6.md`.** Real users/sessions,
+owner-scoped everything, a signed view grant for shared apps, remix, and per-generation usage
+accounting with a monthly cap. Two things found live, not obvious from the plan doc alone:
+- **`apps/sandbox/src/index.ts`'s `/preview/:id` route did not originally forward the view
+  grant at all** — the plan's step 4c described this, but the first pass of this
+  implementation missed writing it, and the whole grant mechanism silently 404'd every
+  request that went through the sandbox (i.e. every real preview) until the backend suite's
+  D6/D8b caught it. If preview requests start 404ing after touching either server, check this
+  forwarding first — `req.query.g` must reach `internal.ts` unchanged.
+- **The view grant carries a `mode` (`"rw" | "ro"`), not just an app id** — extended beyond
+  what `impl-phase-6.md`'s own step 4a code sample shows, because step 7's read-only data
+  token has to come from *somewhere*, and the internal stream route (reached from the
+  sandbox, no cookie, no session) has no other way to learn whether this viewer is the app's
+  owner. `mintViewGrant`/`verifyViewGrant` (`packages/protocol/src/view-grant.ts`) mint/check
+  four dot-separated fields (`appId.mode.expiresAtMs.mac`), not three. A grant missing `mode`
+  is not a smaller, compatible token — it fails to parse at all.
+
+**Phase 4's parallel fill is implemented and
 correct but is currently a measured regression on this project's default model** — see below
 before enabling it. Default config is still `longcat-2.0` on the
 OpenAI-compatible path (`LLM_MODEL` in `.env`, not `OPENAI_MODEL` anymore — see below). See

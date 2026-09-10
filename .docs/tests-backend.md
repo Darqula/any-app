@@ -598,7 +598,9 @@ Every case here that mentions two apps needs two real tokens minted from two dif
 | K22 | `anyapp_sandbox` role against `generations` / `provider_credentials` | `permission denied` |
 | K23 | Response body of any data route | Contains no `app_id` — it is scope, not payload |
 | K24 | Document rendered for a plan with no collections | Contains neither the data runtime nor a token |
-| K25 | Document rendered twice for one app (generate, then edit) | Same token both times |
+| K25 | Document rendered twice for one app (generate, then edit), Phase 6 | Same `APP_TOKEN_PLACEHOLDER` both times, never a live token — see `withAppToken` |
+| K26 | A read-only (`ro`) token, Phase 6 step 7 | GET succeeds; POST/PATCH/DELETE all 403 `"this token is read-only"`; rejected writes never land |
+| K27 | An `rw` token's mode byte flipped to `ro` (or vice versa), MAC left alone | 401 — mode is signed, not merely carried |
 
 **K6 is the highest-value single case in this document.** Express 5 changed the default query
 parser to one with no bracket-notation support, so `where[status]=open` parses as a flat key
@@ -649,3 +651,62 @@ H4 and H5 were written to land before the BYOK storage layer existed. That ship 
 the layer shipped in Phase 3.5 — so they move into step 7 with the rest of H, but they keep
 their standing as the two cases worth writing first within it: a credential leak is much
 cheaper to prevent than to discover, and this project has already had one.
+
+---
+
+## L — accounts and sessions (Phase 6). `tests/backend/accounts.test.ts`
+
+Pure store layer, one shared scratch database (same reasoning as B and H1/H2/H7–H9).
+
+| Case | Scenario | Expected |
+|---|---|---|
+| L1 | `hashPassword`/`verifyPassword` round trip; a malformed stored hash (wrong field count, non-numeric params) | Round trips correctly; malformed input returns `false`, never throws |
+| L2 | `createUser` with an email already taken (case-insensitive) | Returns `null`, not a thrown unique-violation |
+| L3 | `authenticate` with a wrong password, and with an unknown email | Both return `null` — never distinguishable from the return value alone |
+| L4 | `claimAnonymousWork(sessionId, userId)` | The session's generations AND credentials re-key to the user, atomically; a DIFFERENT anonymous session's rows are untouched |
+
+Not covered here (deliberately, per impl-phase-6.md's own scope): session-fixation/rotation
+timing and the sign-up/sign-in HTTP routes' exact cookie behavior are exercised indirectly by
+M's route-level cases (every M case that authenticates does so through the real `/signup`
+cookie), rather than as a dedicated case — see N2's use of `/signup` for the one place this
+suite drives that route directly.
+
+## M — ownership, visibility, grants (Phase 6). `tests/backend/accounts.test.ts`
+
+Route-level: each case spins up its own scratch database + servers (real cookies, the real
+view-grant query param, the real internal-route grant check).
+
+| Case | Scenario | Expected |
+|---|---|---|
+| M1 | Another (cookie-less) viewer requests a private app's frame | 404 |
+| M2 | Another viewer POSTs an edit to a private app | 404, not 403 or 500 |
+| M3 | The owner requests their own private app's frame | 200, includes the edit form |
+| M4 | A non-owner views an `unlisted` app, then tries to edit it | View: 200, remix control, no edit form. Edit: still 404 — viewing an unlisted app grants no edit rights |
+| M5 | Internal stream route: private app, no grant vs. the owner's own grant | 404 vs. 200 |
+| M6 | A grant minted for app A presented for app B | 404 — the grant is bound to one specific app id |
+| M7 | An expired grant; a tampered grant (one byte flipped) | Both 404, indistinguishable from a missing grant |
+| M8 | Fork an unlisted app as a different viewer | New row (different id), `forked_from` set, `visibility='private'`, owned by the forker; the fork's stored document carries no trace of the source's live token; the forker can view their own fork |
+| M9 | A signed-in user with a BYOK credential generates | `usage_events` for it are `billable=false`; `select count(*) from sessions` is unchanged across the generation — the internal route derives `Owner` from `generation.owner_id`, not from a cookie-less request's `currentOwner` |
+| M10 | A well-signed but expired grant, for an unlisted app the caller owns | The response says the link expired — it does NOT silently render the actual app read-only |
+| M11 | A `status='complete'` row whose `plan` is not a `FilledApp` (e.g. a Phase-2-era shape) is forked | 409, not a 500 from the cast inside `forkGeneration` |
+| M12 | A mutating request (`POST .../visibility`) carries a valid owner cookie AND `Sec-Fetch-Site: cross-site` | 403; the row's `visibility` is unchanged |
+
+M1/M2's "404, never 403" is the load-bearing property, not incidental: a private app must not
+confirm its own existence to someone who cannot see it.
+
+## N — usage and limits (Phase 6). `tests/backend/accounts.test.ts`
+
+| Case | Scenario | Expected |
+|---|---|---|
+| N1 | A generation completes on the platform credential (no BYOK) | `usage_events` has a planner row and a fill row, both `billable=true`, both with real (>0) `prompt_tokens` |
+| N2 | A signed-up user's `monthly_token_limit` is already at/under their usage when a NEW generation's stream is requested | The stream route refuses with "Monthly token limit reached" **before** `claimForGeneration` runs and **before** any provider call (`fake.requestCount() === 0`); the row is marked `failed`, not left `streaming` |
+| N3 | A signed-up user with `monthly_token_limit = 0` posts an **edit** (not a fresh generation) to their own complete app | 503 "Monthly token limit reached"; `fake.requestCount() === 0`; the row's `version` has not moved |
+
+**`onUsage` firing on a genuinely truncated (`finish_reason: "length"`) response is pinned at
+the adapter level**, in `provider-adapters.test.ts`'s four primary S14 cases (OpenAI/Anthropic
+× streamText/completeText) — each now supplies `onUsage` via `req()`'s overrides and asserts
+it fired exactly once before the `TruncationError` was thrown. (An earlier version of this
+note claimed this coverage already existed; it did not — a follow-up review caught the
+gap between the claim and the actual test file, which supplied no `onUsage` at all until this
+fix.) N1 covers the complementary studio-side half: that whatever the adapter reports for a
+*normal* completion actually reaches `usage_events` with the right `billable` flag.

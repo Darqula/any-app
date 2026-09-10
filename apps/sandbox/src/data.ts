@@ -75,11 +75,12 @@ export function dataRouter(secret: string, appOriginTemplate: string): Router {
   router.use((req, res, next) => {
     const header = req.get("authorization") ?? "";
     const token = header.startsWith("Bearer ") ? header.slice(7) : "";
-    const appId = verifyAppToken(token, secret);
-    if (!appId) {
+    const verified = verifyAppToken(token, secret);
+    if (!verified) {
       res.status(401).json({ error: "invalid or missing app token" });
       return;
     }
+    const { appId, mode } = verified;
 
     // Defence in depth, not the authorization check. `appId` above already decided scope;
     // this only catches an app calling with a token that is not its own, which should be
@@ -91,12 +92,23 @@ export function dataRouter(secret: string, appOriginTemplate: string): Router {
       return;
     }
 
-    if (!checkRate(appId, req.method === "GET" ? "read" : "write")) {
+    // A shared (non-owner) viewer's token is read-only (Phase 6 step 7) — a public app's data
+    // is world-readable via its own link, and that must not also mean world-writable. `app_id`
+    // still comes from the token and from nothing else; this only narrows what the verified
+    // token may do.
+    const isWrite = req.method !== "GET";
+    if (mode === "ro" && isWrite) {
+      res.status(403).json({ error: "this token is read-only" });
+      return;
+    }
+
+    if (!checkRate(appId, isWrite ? "write" : "read")) {
       res.status(429).json({ error: "rate limit exceeded" });
       return;
     }
 
     res.locals.appId = appId;
+    res.locals.mode = mode;
     next();
   });
 

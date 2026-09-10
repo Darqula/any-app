@@ -2,6 +2,7 @@ import { SYSTEM_PROMPT } from "./system-prompt";
 import { createFenceStripper } from "./fence-stripper";
 import { resolve } from "./resolve";
 import type { ProviderCredential } from "./providers/types";
+import type { UsageInfo } from "./providers/usage";
 
 export { RefusalError, TruncationError } from "./providers/types";
 
@@ -25,6 +26,8 @@ export async function* streamApp(
   // See planApp's matching parameter — the generation id, shared across the whole app's
   // conversation.
   conversationId?: string,
+  // Phase 6 step 8 — see planApp's matching parameter.
+  onUsage?: (usage: UsageInfo) => void,
 ): AsyncGenerator<string> {
   const stripFence = createFenceStripper();
   const { provider, model, maxTokens } = resolve("fill", credential);
@@ -36,6 +39,7 @@ export async function* streamApp(
     signal,
     label: "linear",
     conversationId,
+    onUsage,
   })) {
     const text = stripFence(delta);
     if (text) yield text;

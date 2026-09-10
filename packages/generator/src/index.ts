@@ -13,6 +13,7 @@ export type { Role, RoleConfig } from "./roles";
 export { resolve, build, NoCredentialError } from "./resolve";
 export type { Resolved } from "./resolve";
 export type { ProviderId, ProviderCredential, Provider } from "./providers/types";
+export type { UsageInfo } from "./providers/usage";
 export { scrub, safeMessage } from "./scrub";
 export { fillAllSlots } from "./parallel-fill";
 export type { SlotResult } from "./parallel-fill";

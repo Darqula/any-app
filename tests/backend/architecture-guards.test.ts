@@ -295,10 +295,18 @@ test("I9 — apps/sandbox/src/data.ts reads app_id only from res.locals", () => 
   const assignments = [...content.matchAll(/res\.locals\.appId\s*=\s*([^;]+);/g)];
   assert.equal(assignments.length, 1, "expected exactly one res.locals.appId assignment");
   assert.equal(assignments[0]![1]!.trim(), "appId");
+  // Phase 6 step 7: verifyAppToken now also returns `mode` (rw/ro), so the appId is
+  // destructured out of its return value rather than assigned directly — same derivation,
+  // different literal shape.
   assert.match(
     content,
-    /const appId = verifyAppToken\(token, secret\);/,
-    "appId must be derived from verifyAppToken",
+    /const \{ appId, mode \} = verified;/,
+    "appId must be derived from verifyAppToken's return value",
+  );
+  assert.match(
+    content,
+    /const verified = verifyAppToken\(token, secret\);/,
+    "verifyAppToken must still be the sole source of the verified token",
   );
 
   // And every downstream read of the app id (route handlers) reads it back off res.locals,
@@ -327,10 +335,13 @@ test("I10 — apps/studio/src/views.ts never postMessages to \"*\"", () => {
 
 // ---------------------------------------------------------------------------------------
 // I11 — the session cookie is set with no Domain attribute (host-only), so it cannot leak
-// to <id>.apps.localhost, a subdomain of the studio's own host.
+// to <id>.apps.localhost, a subdomain of the studio's own host — and carries SameSite=Lax,
+// not Strict (Strict is not sent on a cross-site top-level
+// navigation, which is exactly what opening a shared /apps/:id link from Slack or email is —
+// see session.ts's COOKIE_ATTRS comment).
 // ---------------------------------------------------------------------------------------
 
-test("I11 — session cookie is set with no Domain attribute", () => {
+test("I11 — session cookie is set with no Domain attribute, and SameSite=Lax (not Strict)", () => {
   const content = read("apps/studio/src/session.ts");
   const setCookieMatch = /setHeader\(\s*["']Set-Cookie["']\s*,\s*([\s\S]*?)\)\s*;/.exec(content);
   assert.ok(setCookieMatch, "expected to find a Set-Cookie header assignment in session.ts");
@@ -341,6 +352,29 @@ test("I11 — session cookie is set with no Domain attribute", () => {
     "session cookie must not carry a Domain attribute — it must stay host-only so it is " +
       "never sent to <id>.apps.localhost, a subdomain of the studio's own host",
   );
-  // Sanity: make sure this is really the cookie-setting line and not an empty match.
-  assert.match(cookieExpr, /HttpOnly/i);
+  // Sanity: make sure this is really the cookie-setting line and not an empty match. Phase 6
+  // factored the shared `HttpOnly; SameSite=Lax; ...` attribute string out into its own
+  // `COOKIE_ATTRS` constant (three call sites now set this cookie: currentOwner, signInAs,
+  // signOut), so "HttpOnly" itself may live in that constant's own definition rather than
+  // inline in the `setHeader(...)` expression captured above — resolve it there too.
+  const attrsMatch = /COOKIE_ATTRS\s*=\s*(["'`])([\s\S]*?)\1/.exec(content);
+  const attrsExpr = attrsMatch ? attrsMatch[2]! : "";
+  assert.match(cookieExpr + attrsExpr, /HttpOnly/i);
+  // SameSite=Strict is not sent on a cross-site top-level navigation,
+  // so a shared /apps/:id link opened from Slack or email would arrive with no cookie —
+  // currentOwner would then mint a fresh anonymous session and its Set-Cookie would REPLACE
+  // the recipient's real one, silently signing them out. Lax rides along on that navigation;
+  // the same-site generated-app CSRF that Strict looked like it was defending against is
+  // caught by index.ts's Sec-Fetch-Site/Origin guard instead (see M12). Assert both
+  // directions — this is the guard that keeps that from regressing back to Strict.
+  const combined = cookieExpr + attrsExpr;
+  assert.match(combined, /SameSite=Lax/i, "session cookie must carry SameSite=Lax, not Strict");
+  assert.doesNotMatch(
+    combined,
+    /SameSite=Strict/i,
+    "session cookie must NOT carry SameSite=Strict — it breaks shared links arriving via a " +
+      "cross-site top-level navigation; the Sec-Fetch-Site/Origin " +
+      "guard in index.ts is what actually defends against the same-site generated-app CSRF " +
+      "Strict looked like it was for",
+  );
 });

@@ -1,21 +1,22 @@
 import { roleConfig, resolve, NoCredentialError } from "@any-app/generator";
 import type { Role, ProviderCredential, ProviderId } from "@any-app/generator";
 import { getCredential } from "@any-app/store";
+import type { Owner } from "@any-app/store";
 
 const ROLES: Role[] = ["planner", "fill", "edit", "router"];
 
 /**
- * Looks up the session's stored credential for whichever provider a role is configured to
- * use — `roleConfig` decides the provider, this decides whether the session has its own key
- * for it. Returns null when the session has none, in which case `resolve()` (generator)
- * falls back to the platform credential from `.env`.
+ * Looks up the caller's stored credential for whichever provider a role is configured to
+ * use — `roleConfig` decides the provider, this decides whether the subject (a signed-in
+ * user or an anonymous session) has its own key for it. Returns null when there is none, in
+ * which case `resolve()` (generator) falls back to the platform credential from `.env`.
  */
 export async function credentialForRole(
   role: Role,
-  sessionId: string,
+  owner: Owner,
 ): Promise<ProviderCredential | null> {
   const { provider } = roleConfig(role);
-  const stored = await getCredential(sessionId, provider);
+  const stored = await getCredential(owner, provider);
   if (!stored) return null;
   return { provider, apiKey: stored.apiKey, baseUrl: stored.baseUrl ?? undefined };
 }
@@ -32,7 +33,7 @@ export interface RoleProblem {
 
 /**
  * Every role that would fail right now — checked the same way `resolve()` checks it
- * (session credential, then platform `.env`), without making any HTTP call. Used to show a
+ * (owner credential, then platform `.env`), without making any HTTP call. Used to show a
  * banner before a generation is attempted, rather than letting someone discover the gap as
  * a failed generation or, worse, a 500 on the home page itself.
  *
@@ -42,11 +43,11 @@ export interface RoleProblem {
  * function, out of `GET /`, and into a 500; now it is caught here alongside the credential
  * case and shown as the same kind of banner instead.
  */
-export async function missingCredentials(sessionId: string): Promise<RoleProblem[]> {
+export async function missingCredentials(owner: Owner): Promise<RoleProblem[]> {
   const missing: RoleProblem[] = [];
   for (const role of ROLES) {
     try {
-      const credential = await credentialForRole(role, sessionId);
+      const credential = await credentialForRole(role, owner);
       resolve(role, credential);
     } catch (error) {
       if (error instanceof NoCredentialError) {

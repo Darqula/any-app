@@ -46,6 +46,17 @@ export interface ProviderRequest {
    * instead (see `providers/session.ts`'s `resolveConversationId`).
    */
   conversationId?: string;
+  /**
+   * Called with this call's token usage, whether or not the call then throws — a cost
+   * record, not a success record (Phase 6 step 8). Both adapters call this immediately
+   * beside `logUsage`, which is already called before every `throw` in both adapters
+   * (`openai.ts`, `anthropic.ts`); keep `onUsage` there too. A `TruncationError` means the
+   * model burned the entire budget and produced nothing usable — the single most expensive
+   * outcome this system has, and exactly the one a "log only on success" refactor would
+   * silently stop counting. Never throws on the caller's behalf; a usage-recording failure
+   * must not turn a real generation failure into something else.
+   */
+  onUsage?: (usage: import("./usage").UsageInfo) => void;
 }
 
 export interface Provider {

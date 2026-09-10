@@ -25,6 +25,7 @@ import {
   seedFilledApp,
   openSidebarApp,
   waitForFrameBySrc,
+  establishAnonSession,
   STUDIO_ORIGIN,
   isKnownStudioHomepageSyntaxBug,
 } from "./doc-builder";
@@ -37,11 +38,12 @@ const { databaseUrl, appTokenSecret } = JSON.parse(await readFile(HANDOFF_PATH, 
 test.describe("H — generated-app data", () => {
   test("H1 — an app with a DATA section carries the data runtime and a token", async ({ page }) => {
     const prompt = `H1-${Date.now()}`;
+    const sessionId = await establishAnonSession(page);
     const { id, document } = await seedFilledApp(databaseUrl, appTokenSecret, STUDIO_ORIGIN, prompt, {
       collections: [{ name: "todos", description: "things to do" }],
-    });
+    }, sessionId);
     expect(document).toContain("window.anyapp");
-    expect(document).toContain(mintAppToken(id, appTokenSecret));
+    expect(document).toContain(mintAppToken(id, "rw", appTokenSecret));
 
     const { frame } = await openSidebarApp(page, prompt);
     const hasData = await frame.evaluate(() => typeof (window as unknown as { anyapp?: { data?: { create?: unknown } } }).anyapp?.data?.create === "function");
@@ -50,9 +52,10 @@ test.describe("H — generated-app data", () => {
 
   test("H2 — a static app with no DATA section carries no data runtime and no token", async ({ page }) => {
     const prompt = `H2-${Date.now()}`;
-    const { id, document } = await seedFilledApp(databaseUrl, appTokenSecret, STUDIO_ORIGIN, prompt, {});
+    const sessionId = await establishAnonSession(page);
+    const { id, document } = await seedFilledApp(databaseUrl, appTokenSecret, STUDIO_ORIGIN, prompt, {}, sessionId);
     expect(document).not.toContain("window.anyapp");
-    expect(document).not.toContain(mintAppToken(id, appTokenSecret));
+    expect(document).not.toContain(mintAppToken(id, "rw", appTokenSecret));
 
     const { frame } = await openSidebarApp(page, prompt);
     const hasData = await frame.evaluate(
@@ -63,9 +66,10 @@ test.describe("H — generated-app data", () => {
 
   test("H3 — a record created from inside the frame is still there after a reload", async ({ page }) => {
     const prompt = `H3-${Date.now()}`;
+    const sessionId = await establishAnonSession(page);
     await seedFilledApp(databaseUrl, appTokenSecret, STUDIO_ORIGIN, prompt, {
       collections: [{ name: "notes", description: "notes" }],
-    });
+    }, sessionId);
     const { frame, src } = await openSidebarApp(page, prompt);
     const created = await frame.evaluate(async () => {
       const anyapp = (window as unknown as { anyapp: { data: DataApiBrowser } }).anyapp;
@@ -75,7 +79,7 @@ test.describe("H — generated-app data", () => {
 
     // Reload the SAME app — a fresh iframe, a fresh load.
     await page.locator("#generation-list li", { hasText: prompt }).locator("button").click();
-    const frame2 = await waitForFrameBySrc(page, src);
+    const frame2 = await waitForFrameBySrc(page, src, { excludeFrame: frame });
     const list = await frame2.evaluate(async () => {
       const anyapp = (window as unknown as { anyapp: { data: DataApiBrowser } }).anyapp;
       return anyapp.data.list("notes");
@@ -87,12 +91,13 @@ test.describe("H — generated-app data", () => {
   test("H4 — two apps with the same collection name each see only their own rows", async ({ page }) => {
     const promptA = `H4-A-${Date.now()}`;
     const promptB = `H4-B-${Date.now()}`;
+    const sessionId = await establishAnonSession(page);
     await seedFilledApp(databaseUrl, appTokenSecret, STUDIO_ORIGIN, promptA, {
       collections: [{ name: "shared", description: "x" }],
-    });
+    }, sessionId);
     await seedFilledApp(databaseUrl, appTokenSecret, STUDIO_ORIGIN, promptB, {
       collections: [{ name: "shared", description: "x" }],
-    });
+    }, sessionId);
 
     const { frame: frameA } = await openSidebarApp(page, promptA);
     await frameA.evaluate(async () => {
@@ -119,11 +124,12 @@ test.describe("H — generated-app data", () => {
     try {
       const prompt = `H5-${Date.now()}`;
       const slotId = "alpha";
+      const sessionId = await establishAnonSession(page);
       await seedFilledApp(databaseUrl, appTokenSecret, STUDIO_ORIGIN, prompt, {
         collections: [{ name: "notes", description: "x" }],
         slots: [{ id: slotId, height: 100, spec: "x" }],
         content: { [slotId]: "<p>original</p>" },
-      });
+      }, sessionId);
 
       const { frame, src } = await openSidebarApp(page, prompt);
       const seeded = await frame.evaluate(async () => {
@@ -144,6 +150,11 @@ test.describe("H — generated-app data", () => {
       fake.queueComplete({ text: "<p>edited region</p>" });
       await page.goto("/");
       await page.locator("#generation-list li", { hasText: prompt }).locator("button").click();
+      // Captured so the NEXT reload below can exclude this exact frame object — see
+      // waitForFrameBySrc's excludeFrame doc comment for why an uncaptured intermediate
+      // frame is exactly what lets the following reload race against itself.
+      const srcAfterFirstReload = await page.locator("#stage iframe").getAttribute("src");
+      const frameAfterFirstReload = await waitForFrameBySrc(page, srcAfterFirstReload!);
       await page.fill('#edit-form input[name="instruction"]', "reword this");
       await page.selectOption('#edit-form select[name="target"]', slotId);
       await page.click('#edit-form button[type="submit"]');
@@ -153,7 +164,7 @@ test.describe("H — generated-app data", () => {
       // renderDocument, reproducing mintAppToken(id, secret) rather than looking a token
       // up. If it didn't, this list() call would 401 instead of just coming back empty.
       await page.locator("#generation-list li", { hasText: prompt }).locator("button").click();
-      const frame2 = await waitForFrameBySrc(page, src);
+      const frame2 = await waitForFrameBySrc(page, src, { excludeFrame: frameAfterFirstReload });
       const list = await frame2.evaluate(async () => {
         const anyapp = (window as unknown as { anyapp: { data: DataApiBrowser } }).anyapp;
         return anyapp.data.list("notes");
@@ -168,9 +179,10 @@ test.describe("H — generated-app data", () => {
 
   test("H6 — a 429 from the data API is handled honestly: something readable on screen, no unhandled rejection", async ({ page }) => {
     const prompt = `H6-${Date.now()}`;
+    const sessionId = await establishAnonSession(page);
     await seedFilledApp(databaseUrl, appTokenSecret, STUDIO_ORIGIN, prompt, {
       collections: [{ name: "items", description: "x" }],
-    });
+    }, sessionId);
     const pageErrors: string[] = [];
     page.on("pageerror", (e) => pageErrors.push(String(e)));
 
@@ -210,9 +222,10 @@ test.describe("H — generated-app data", () => {
 
   test("H7 — no console errors while a data-backed app loads", async ({ page }) => {
     const prompt = `H7-${Date.now()}`;
+    const sessionId = await establishAnonSession(page);
     await seedFilledApp(databaseUrl, appTokenSecret, STUDIO_ORIGIN, prompt, {
       collections: [{ name: "things", description: "x" }],
-    });
+    }, sessionId);
     const errors: string[] = [];
     page.on("console", (msg) => {
       if (msg.type() === "error") errors.push(msg.text());

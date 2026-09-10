@@ -106,10 +106,16 @@ export function createOpenAIProvider(credential: ProviderCredential): Provider {
       // studio reports to the user as the model having declined the request — an abort must
       // win over both of the other post-loop checks, not just the sawContent one.
       if (req.signal?.aborted) throw new OpenAI.APIUserAbortError();
-      // Logged before either the truncation or the empty-content check below can throw, so
-      // usage is recorded for both of those outcomes too, not only a clean completion — the
-      // check order here is abort, then usage, then truncation, then empty-content (S14).
-      logUsage(req.label, "openai", usageFrom(usage));
+      // Logged/recorded before either the truncation or the empty-content check below can
+      // throw, so usage is recorded for both of those outcomes too, not only a clean
+      // completion — the check order here is abort, then usage, then truncation, then
+      // empty-content (S14). `onUsage` sits right beside `logUsage` deliberately (Phase 6
+      // step 8's ordering invariant) — a `TruncationError` is the single most expensive
+      // outcome this system has, and it is exactly the one a "log only on success" refactor
+      // would silently stop counting.
+      const info = usageFrom(usage);
+      logUsage(req.label, "openai", info);
+      if (info) req.onUsage?.(info);
       // Checked before `sawContent`: a response truncated right at the start (no visible
       // text at all yet) must surface as "we cut it off", not "the model declined" — those
       // call for different follow-ups (retry with a bigger budget vs. don't retry at all).
@@ -126,7 +132,9 @@ export function createOpenAIProvider(credential: ProviderCredential): Provider {
         },
         { signal: req.signal, headers: conversationHeaders(req.conversationId) },
       );
-      logUsage(req.label, "openai", usageFrom(completion.usage));
+      const info = usageFrom(completion.usage);
+      logUsage(req.label, "openai", info);
+      if (info) req.onUsage?.(info);
       const choice = completion.choices[0];
       if (choice?.finish_reason === "content_filter") {
         throw new RefusalError("content_filter");

@@ -20,6 +20,7 @@ import {
   buildFilledDocument,
   submitPrompt,
   openSidebarApp,
+  establishAnonSession,
   planText,
   slotMarker,
   SHELL_2_SLOTS,
@@ -37,7 +38,8 @@ test.describe("E — error and edge states", () => {
       slots: [{ id: "alpha", height: 100, spec: "x" }],
       content: { alpha: "<p>done</p>" },
     });
-    await seedGeneration(databaseUrl, { prompt, document });
+    const sessionId = await establishAnonSession(page);
+    await seedGeneration(databaseUrl, { prompt, document, sessionId });
     const { frame } = await openSidebarApp(page, prompt);
     await expect(frame.locator(".anyapp-skeleton")).toHaveCount(0);
     await expect(frame.locator("#slot-alpha")).toContainText("done");
@@ -116,10 +118,16 @@ test.describe("E — error and edge states", () => {
       fake.queueComplete({ text: planText({ shell: SHELL_2_SLOTS, slots: SLOTS_2 }) });
       const handle = fake.queueStream(); // left open — the first request is still "in progress"
 
-      const { id } = await submitPrompt(page, `E3-${Date.now()}`, servers.studioOrigin);
+      // `src`, not a hand-built `/preview/${id}` — it already carries the Phase 6 view grant
+      // (`?g=...`) `previewFrame` minted for the FIRST page's own iframe. The second page
+      // shares this context's cookie jar (`context.newPage()`, not a fresh browser context),
+      // but that cookie is host-only on studio's origin and never reaches the sandbox's — the
+      // grant in the URL is the only thing that authorizes this direct navigation to a
+      // (default-private) generation it does not own.
+      const { src } = await submitPrompt(page, `E3-${Date.now()}`, servers.studioOrigin);
 
       const second = await context.newPage();
-      await second.goto(`${servers.appOrigin(id)}/preview/${id}`);
+      await second.goto(src);
       await expect(second.locator("body")).toContainText("Already generating");
       await expect(second.locator('meta[http-equiv="refresh" i]')).toHaveCount(1);
 
@@ -134,10 +142,11 @@ test.describe("E — error and edge states", () => {
       fake.queueComplete({ text: planText({ shell: SHELL_2_SLOTS, slots: SLOTS_2 }) });
       const handle = fake.queueStream();
 
-      const { id } = await submitPrompt(page, `E4-${Date.now()}`, servers.studioOrigin);
+      // See E3's comment: reuse the grant-bearing `src`, not a hand-built preview URL.
+      const { src } = await submitPrompt(page, `E4-${Date.now()}`, servers.studioOrigin);
 
       const second = await context.newPage();
-      await second.goto(`${servers.appOrigin(id)}/preview/${id}`);
+      await second.goto(src);
       await expect(second.locator("body")).toContainText("Already generating");
 
       await handle.emit(slotMarker("alpha") + "<p>Alpha</p>\n" + slotMarker("beta") + "<p>Beta</p>\n");

@@ -86,7 +86,9 @@ export function createAnthropicProvider(credential: ProviderCredential): Provide
       // A refusal is HTTP 200 with `stop_reason: "refusal"` and no usable content, so it
       // has to be checked rather than caught.
       const final = await stream.finalMessage();
-      logUsage(req.label, "anthropic", usageFrom(final.usage));
+      const info = usageFrom(final.usage);
+      logUsage(req.label, "anthropic", info);
+      if (info) req.onUsage?.(info);
       if (final.stop_reason === "refusal") {
         throw new RefusalError(final.stop_details?.category ?? "refusal");
       }
@@ -112,7 +114,9 @@ export function createAnthropicProvider(credential: ProviderCredential): Provide
         { signal: req.signal, headers: conversationHeaders(req.conversationId) },
       );
 
-      logUsage(req.label, "anthropic", usageFrom(message.usage));
+      const info = usageFrom(message.usage);
+      logUsage(req.label, "anthropic", info);
+      if (info) req.onUsage?.(info);
       if (message.stop_reason === "refusal") {
         throw new RefusalError(message.stop_details?.category ?? "refusal");
       }

@@ -3,6 +3,7 @@ import { appContext } from "./fill-prompt";
 import { SLOT_FILL_PROMPT } from "./fill-slot-prompt";
 import { createFenceStripper, stripTrailingFence } from "./fence-stripper";
 import type { Provider } from "./providers/types";
+import type { UsageInfo } from "./providers/usage";
 
 export function slotRoster(plan: AppPlan, self: string): string {
   return plan.slots
@@ -28,6 +29,8 @@ export async function fillSlot(
   // (after `signal`), and optional, so existing positional call sites that stop at `signal`
   // (or earlier) keep compiling unchanged.
   conversationId?: string,
+  // Phase 6 step 8 — see planApp's matching parameter.
+  onUsage?: (usage: UsageInfo) => void,
 ): Promise<string> {
   let raw = "";
   for await (const chunk of provider.streamText(model, {
@@ -45,6 +48,7 @@ What belongs in it: ${slot.spec}`,
     signal,
     label: `fill:${slot.id}`,
     conversationId,
+    onUsage,
   })) {
     raw += chunk;
   }

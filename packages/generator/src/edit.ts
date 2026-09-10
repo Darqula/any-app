@@ -1,6 +1,7 @@
 import type { AppPlan } from "@any-app/protocol";
 import { resolve } from "./resolve";
 import type { ProviderCredential } from "./providers/types";
+import type { UsageInfo } from "./providers/usage";
 import { createFenceStripper, stripTrailingFence } from "./fence-stripper";
 
 const SLOT_EDIT_PROMPT = `You rewrite one region of an existing web app.
@@ -31,6 +32,7 @@ async function complete(
   credential: ProviderCredential | null,
   signal: AbortSignal | undefined,
   conversationId: string | undefined,
+  onUsage: ((usage: UsageInfo) => void) | undefined,
 ): Promise<string> {
   const { provider, model, maxTokens } = resolve("edit", credential);
 
@@ -42,6 +44,7 @@ async function complete(
     signal,
     label,
     conversationId,
+    onUsage,
   });
 
   // The same fence handling as generation: models fence output despite being told not to.
@@ -80,6 +83,8 @@ export async function regenerateSlot(
   signal?: AbortSignal,
   // The generation id — see planApp's matching parameter.
   conversationId?: string,
+  // Phase 6 step 8 — see planApp's matching parameter.
+  onUsage?: (usage: UsageInfo) => void,
 ): Promise<string> {
   const spec = plan.slots.find((s) => s.id === slotId)?.spec ?? "";
 
@@ -102,6 +107,7 @@ The change requested: ${instruction}`,
     credential,
     signal,
     conversationId,
+    onUsage,
   );
   return stripStyleTags(html, slotId);
 }
@@ -124,6 +130,8 @@ export async function regenerateCss(
   signal?: AbortSignal,
   // The generation id — see planApp's matching parameter.
   conversationId?: string,
+  // Phase 6 step 8 — see planApp's matching parameter.
+  onUsage?: (usage: UsageInfo) => void,
 ): Promise<string> {
   // The shell and region list are stable across repeated CSS edits in one session; the
   // stylesheet itself is what's being rewritten (and differs after every successful call),
@@ -142,6 +150,7 @@ The change requested: ${instruction}`,
     credential,
     signal,
     conversationId,
+    onUsage,
   );
   return unwrapStyleTag(css);
 }

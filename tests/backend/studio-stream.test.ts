@@ -29,6 +29,7 @@ import { createScratchDatabase } from "../harness/db";
 import { startServers } from "../harness/servers";
 import { findFreePorts } from "../harness/ports";
 import { startFakeProvider } from "../harness/fake-provider";
+import { extractPreview, grantQuery } from "../harness/preview";
 
 const { Pool } = pg;
 
@@ -92,11 +93,9 @@ test("C7 — happy path, full stream: 200, doctype then skeletons then templates
   });
   assert.equal(createRes.status, 200);
   const createBody = await createRes.text();
-  const idMatch = createBody.match(/\/preview\/([0-9a-f-]{36})"/);
-  assert.ok(idMatch, `expected an iframe src containing /preview/<uuid> in: ${createBody}`);
-  const id = idMatch![1]!;
+  const { id, grant } = extractPreview(createBody);
 
-  const streamRes = await fetch(`${servers.studioOrigin}/internal/generations/${id}/stream`, {
+  const streamRes = await fetch(`${servers.studioOrigin}/internal/generations/${id}/stream${grantQuery(grant)}`, {
     headers: { [INTERNAL_SECRET_HEADER]: INTERNAL_SECRET },
   });
   assert.equal(streamRes.status, 200);

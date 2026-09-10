@@ -19,10 +19,12 @@ import { randomBytes } from "node:crypto";
 import pg from "pg";
 import { createScratchDatabase } from "../harness/db";
 import type { ScratchDatabase } from "../harness/db";
+import type { Owner } from "@any-app/store";
 import { startServers } from "../harness/servers";
 import { findFreePorts } from "../harness/ports";
 import { startFakeProvider } from "../harness/fake-provider";
 import type { FakeProvider } from "../harness/fake-provider";
+import { extractPreview, grantQuery } from "../harness/preview";
 import { resolve, NoCredentialError, safeMessage } from "@any-app/generator";
 
 const { Pool } = pg;
@@ -55,10 +57,12 @@ const FILL_TEXT = `===SLOT alpha===
 <p>Beta content</p>
 `;
 
-function extractGenerationId(html: string): string {
-  const match = html.match(/\/preview\/([0-9a-f-]{36})/i);
-  if (!match) throw new Error("could not find a generation id in the preview frame HTML: " + html.slice(0, 300));
-  return match[1]!;
+/** Every H1/H2/H7/H8/H9 case below is deliberately anonymous — the store layer treats a
+ *  signed-in user's `owner_id` and an anonymous `session_id` identically (see owner.ts's
+ *  `ownerFilter`), so exercising the anon half of `Owner` here is sufficient; the
+ *  user-scoped half is covered by ownership/sharing section M (impl-phase-6.md step 9). */
+function anon(sessionId: string): Owner {
+  return { kind: "anon", sessionId };
 }
 
 function extractCookie(res: globalThis.Response): string {
@@ -88,7 +92,7 @@ after(async () => {
 
 test("H1 — a stored credential's database columns never contain the plaintext key", async () => {
   const apiKey = "h1-plaintext-must-never-appear-anywhere-in-storage";
-  await store.saveCredential("session-h1", "openai", apiKey, null);
+  await store.saveCredential(anon("session-h1"), "openai", apiKey, null);
 
   const { rows } = await store.pool.query<{ ciphertext: Buffer; iv: Buffer; tag: Buffer; hint: string }>(
     `select ciphertext, iv, tag, hint from provider_credentials where session_id = $1 and provider = $2`,
@@ -104,8 +108,8 @@ test("H1 — a stored credential's database columns never contain the plaintext 
 });
 
 test("H2 — reading a stored credential back decrypts to the original", async () => {
-  await store.saveCredential("session-h2", "anthropic", "ant-key-abc123", "https://example.invalid");
-  const cred = await store.getCredential("session-h2", "anthropic");
+  await store.saveCredential(anon("session-h2"), "anthropic", "ant-key-abc123", "https://example.invalid");
+  const cred = await store.getCredential(anon("session-h2"), "anthropic");
   assert.equal(cred?.apiKey, "ant-key-abc123");
   assert.equal(cred?.baseUrl, "https://example.invalid");
 });
@@ -137,19 +141,19 @@ test("H7 — fallback chain: user credential over platform, platform when no use
 });
 
 test("H8 — two sessions: session A can neither read nor generate with session B's credential", async () => {
-  await store.saveCredential("session-a", "openai", "key-belongs-to-a", null);
+  await store.saveCredential(anon("session-a"), "openai", "key-belongs-to-a", null);
 
-  const asB = await store.getCredential("session-b", "openai");
+  const asB = await store.getCredential(anon("session-b"), "openai");
   assert.equal(asB, null, "session B must see no credential for a provider only session A configured");
 
-  const asA = await store.getCredential("session-a", "openai");
+  const asA = await store.getCredential(anon("session-a"), "openai");
   assert.equal(asA?.apiKey, "key-belongs-to-a", "session A still sees its own credential");
 });
 
 test("H9 — deleting a credential: a subsequent generation falls back or fails cleanly, no stale decrypt", async () => {
-  await store.saveCredential("session-h9", "openai", "key-h9", null);
-  await store.deleteCredential("session-h9", "openai");
-  const afterDelete = await store.getCredential("session-h9", "openai");
+  await store.saveCredential(anon("session-h9"), "openai", "key-h9", null);
+  await store.deleteCredential(anon("session-h9"), "openai");
+  const afterDelete = await store.getCredential(anon("session-h9"), "openai");
   assert.equal(afterDelete, null, "a deleted credential must read back as absent, not as a decrypt error or stale value");
 });
 
@@ -229,9 +233,9 @@ test("H4/H5 — a provider 401 whose message echoes the key never reaches genera
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ prompt: "an app that needs two regions" }),
   });
-  const id = extractGenerationId(await createRes.text());
+  const { id, grant } = extractPreview(await createRes.text());
 
-  const streamRes = await fetch(`${servers.studioOrigin}/internal/generations/${id}/stream`, {
+  const streamRes = await fetch(`${servers.studioOrigin}/internal/generations/${id}/stream${grantQuery(grant)}`, {
     headers: { "x-internal-secret": "test-internal-secret" },
   });
   await streamRes.text(); // drain to completion
@@ -359,9 +363,9 @@ test("H11 — a completed generation's document and plan contain no credential s
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ prompt: "an app that needs two regions" }),
   });
-  const id = extractGenerationId(await createRes.text());
+  const { id, grant } = extractPreview(await createRes.text());
 
-  const streamRes = await fetch(`${servers.studioOrigin}/internal/generations/${id}/stream`, {
+  const streamRes = await fetch(`${servers.studioOrigin}/internal/generations/${id}/stream${grantQuery(grant)}`, {
     headers: { "x-internal-secret": "test-internal-secret" },
   });
   await streamRes.text();

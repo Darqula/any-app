@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import { startFakeProvider } from "../harness/fake-provider";
 import type { FakeProvider } from "../harness/fake-provider";
 import { RefusalError, TruncationError, isAbortError, resolve, roleConfig, NoCredentialError } from "@any-app/generator";
-import type { ProviderCredential } from "@any-app/generator";
+import type { ProviderCredential, UsageInfo } from "@any-app/generator";
 // Not part of @any-app/generator's public `exports` (only "." -> src/index.ts is declared).
 // Imported by relative filesystem path — Node's ESM resolver does not consult a package's
 // `exports` map for a path that never goes through the bare specifier at all. Same approach
@@ -461,14 +461,20 @@ test("S14 — OpenAI, finish_reason length surfaces as TruncationError (not Refu
   t.after(() => fake.close());
   const provider = createOpenAIProvider(openaiCred(fake));
 
+  // onUsage (Phase 6 step 8) must fire even though this call throws —
+  // a TruncationError means the model burned the whole budget and produced nothing usable,
+  // the single most expensive outcome this system has, and exactly the one a "log only on
+  // success" regression would silently stop billing for.
+  const seen: UsageInfo[] = [];
   fake.queueStream({ chunks: ["partial content"], finish: "length" });
   await assert.rejects(
-    () => collect(provider.streamText("fake-model", req({ maxTokens: 777 }))),
+    () => collect(provider.streamText("fake-model", req({ maxTokens: 777, onUsage: (u) => seen.push(u) }))),
     (error: unknown) =>
       error instanceof TruncationError &&
       !(error instanceof RefusalError) &&
       error.maxTokens === 777,
   );
+  assert.equal(seen.length, 1, "onUsage must fire on the truncation path");
 });
 
 test("S14 — OpenAI, finish_reason length surfaces as TruncationError (not RefusalError) on completeText", async (t) => {
@@ -476,14 +482,16 @@ test("S14 — OpenAI, finish_reason length surfaces as TruncationError (not Refu
   t.after(() => fake.close());
   const provider = createOpenAIProvider(openaiCred(fake));
 
+  const seen: UsageInfo[] = [];
   fake.queueComplete({ text: "partial content", finish: "length" });
   await assert.rejects(
-    () => provider.completeText("fake-model", req({ maxTokens: 555 })),
+    () => provider.completeText("fake-model", req({ maxTokens: 555, onUsage: (u) => seen.push(u) })),
     (error: unknown) =>
       error instanceof TruncationError &&
       !(error instanceof RefusalError) &&
       error.maxTokens === 555,
   );
+  assert.equal(seen.length, 1, "onUsage must fire on the truncation path");
 });
 
 test("S14 — Anthropic, stop_reason max_tokens surfaces as TruncationError (not RefusalError) on streamText", async (t) => {
@@ -491,14 +499,16 @@ test("S14 — Anthropic, stop_reason max_tokens surfaces as TruncationError (not
   t.after(() => fake.close());
   const provider = createAnthropicProvider(anthropicCred(fake));
 
+  const seen: UsageInfo[] = [];
   fake.queueStream({ chunks: ["partial content"], finish: "length" });
   await assert.rejects(
-    () => collect(provider.streamText("fake-model", req({ maxTokens: 333 }))),
+    () => collect(provider.streamText("fake-model", req({ maxTokens: 333, onUsage: (u) => seen.push(u) }))),
     (error: unknown) =>
       error instanceof TruncationError &&
       !(error instanceof RefusalError) &&
       error.maxTokens === 333,
   );
+  assert.equal(seen.length, 1, "onUsage must fire on the truncation path");
 });
 
 test("S14 — Anthropic, stop_reason max_tokens surfaces as TruncationError (not RefusalError) on completeText", async (t) => {
@@ -506,14 +516,16 @@ test("S14 — Anthropic, stop_reason max_tokens surfaces as TruncationError (not
   t.after(() => fake.close());
   const provider = createAnthropicProvider(anthropicCred(fake));
 
+  const seen: UsageInfo[] = [];
   fake.queueComplete({ text: "partial content", finish: "length" });
   await assert.rejects(
-    () => provider.completeText("fake-model", req({ maxTokens: 222 })),
+    () => provider.completeText("fake-model", req({ maxTokens: 222, onUsage: (u) => seen.push(u) })),
     (error: unknown) =>
       error instanceof TruncationError &&
       !(error instanceof RefusalError) &&
       error.maxTokens === 222,
   );
+  assert.equal(seen.length, 1, "onUsage must fire on the truncation path");
 });
 
 test("S14 — both adapters, a truncated response WITH NO visible text yet is TruncationError, not RefusalError('empty response')", async (t) => {

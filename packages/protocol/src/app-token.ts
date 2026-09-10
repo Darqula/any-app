@@ -15,37 +15,49 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 export const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * Per-app data-API token. Derived, not stored: an HMAC of the app id under a server secret
- * shared by studio (which mints) and sandbox (which verifies).
+ * What a data-API token authorizes. `rw` is the owner's own token; `ro` is what a shared
+ * (unlisted/public) app's non-owner viewers get — see impl-phase-6.md step 7 and
+ * architecture.md's "be blunt about what sharing does to Phase 5's data posture". A read-only
+ * token still identifies the app (so reads work), it just can never write.
+ */
+export type TokenMode = "rw" | "ro";
+
+/**
+ * Per-app data-API token. Derived, not stored: an HMAC of the app id and mode under a server
+ * secret shared by studio (which mints) and sandbox (which verifies).
  *
  * Deriving rather than storing buys three things. The sandbox needs no access to any table
  * but `records`, so the restricted role stays as narrow as architecture.md wants it. There
  * is no lookup on the hot path. And — the one that would otherwise cause a real bug — a
- * token is a pure function of the app id, so re-rendering a document (which every edit does,
- * via renderDocument) reproduces the same token instead of silently minting a new one or
- * dropping it.
+ * token is a pure function of the app id and mode, so re-rendering a document (which every
+ * edit does, via renderDocument) reproduces the same token instead of silently minting a new
+ * one or dropping it.
  *
  * This file uses node:crypto and is NEVER inlined into a generated document. Only
- * `swap-runtime.ts` and `data-runtime.ts` are strings that reach a browser.
+ * `swap-runtime.ts` and `data-runtime.ts` are strings that reach a browser — and, from Phase
+ * 6, `data-runtime.ts` carries `APP_TOKEN_PLACEHOLDER`, never a live token; see
+ * `withAppToken` there.
  *
  * The `v1:` prefix is a rotation seam. Changing it invalidates every token at once, which is
  * the whole of revocation in this phase — see impl-phase-5.md's "Deliberately deferred".
  */
-export function mintAppToken(appId: string, secret: string): string {
-  const mac = createHmac("sha256", secret).update(`v1:${appId}`).digest("base64url");
-  return `${appId}.${mac}`;
+export function mintAppToken(appId: string, mode: TokenMode, secret: string): string {
+  const mac = createHmac("sha256", secret).update(`v1:${mode}:${appId}`).digest("base64url");
+  return `${appId}.${mode}.${mac}`;
 }
 
-/** The app id this token is for, or null. Never trust an app id from anywhere else. */
-export function verifyAppToken(token: string, secret: string): string | null {
-  const dot = token.lastIndexOf(".");
-  if (dot <= 0) return null;
-  const appId = token.slice(0, dot);
+/** The app id and mode this token is for, or null. Never trust an app id from anywhere else. */
+export function verifyAppToken(token: string, secret: string): { appId: string; mode: TokenMode } | null {
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  const [appId, modeRaw, mac] = parts as [string, string, string];
   if (!UUID_PATTERN.test(appId)) return null;
+  if (modeRaw !== "rw" && modeRaw !== "ro") return null;
+  const mode = modeRaw as TokenMode;
 
-  const expected = Buffer.from(mintAppToken(appId, secret));
-  const actual = Buffer.from(token);
+  const expected = Buffer.from(mintAppToken(appId, mode, secret));
+  const actual = Buffer.from(`${appId}.${mode}.${mac}`);
   // Length must match before timingSafeEqual, which throws on differing lengths.
   if (expected.length !== actual.length) return null;
-  return timingSafeEqual(expected, actual) ? appId : null;
+  return timingSafeEqual(expected, actual) ? { appId, mode } : null;
 }

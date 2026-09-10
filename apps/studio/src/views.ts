@@ -1,6 +1,7 @@
-import type { Generation } from "@any-app/store";
-import type { CredentialHint } from "@any-app/store";
+import type { Generation, Visibility } from "@any-app/store";
+import type { CredentialHint, Owner } from "@any-app/store";
 import type { Role, ProviderId } from "@any-app/generator";
+import type { TokenMode } from "@any-app/protocol";
 import type { RoleProblem } from "./credential-resolve";
 
 /**
@@ -35,7 +36,13 @@ function escapeHtml(value: string): string {
     .replaceAll('"', "&quot;");
 }
 
-export function previewFrame(id: string, appOrigin: string): string {
+/**
+ * `grant` is the Phase 6 view grant (view-grant.ts) — a bearer capability to view THIS app
+ * until it expires, minted by the caller (index.ts, which knows the viewer) and forwarded
+ * blind by the sandbox all the way to studio's internal route. See architecture.md decision
+ * #10.
+ */
+export function previewFrame(id: string, appOrigin: string, grant: string): string {
   // allow-same-origin is now correct, where before it was forbidden. `appOrigin` is this
   // app's own subdomain (<app-id>.apps.localhost:3001, see index.ts's appOrigin()) — the
   // frame becomes same-origin with itself, not with the studio (localhost:3000, still
@@ -45,9 +52,103 @@ export function previewFrame(id: string, appOrigin: string): string {
   // every other app's storage.
   return `<iframe
     class="preview"
-    src="${escapeHtml(appOrigin)}/preview/${escapeHtml(id)}"
+    src="${escapeHtml(appOrigin)}/preview/${escapeHtml(id)}?g=${encodeURIComponent(grant)}"
     sandbox="allow-scripts allow-forms allow-popups allow-same-origin"
     title="Generated app preview"></iframe>`;
+}
+
+const VISIBILITY_LABELS: Record<Visibility, string> = {
+  private: "Private",
+  unlisted: "Unlisted (anyone with the link)",
+  public: "Public",
+};
+
+/**
+ * Shown only to the app's owner (see index.ts's frame route) — changing visibility and
+ * remixing someone else's app are different actions with different audiences. `shareUrl` is
+ * the plain studio frame link; there is deliberately no separate "public gallery" link,
+ * because a browsable index of everyone's public apps is out of scope (see
+ * impl-phase-6.md's "Deliberately deferred").
+ */
+export function ownerControls(id: string, visibility: Visibility, shareUrl: string): string {
+  const options = (Object.keys(VISIBILITY_LABELS) as Visibility[])
+    .map(
+      (v) =>
+        `<option value="${v}"${v === visibility ? " selected" : ""}>${escapeHtml(VISIBILITY_LABELS[v])}</option>`,
+    )
+    .join("");
+  return `<form id="visibility-form" hx-post="/generations/${escapeHtml(id)}/visibility"
+    hx-target="#visibility-result" hx-swap="innerHTML">
+    <label>Visibility
+      <select name="visibility">${options}</select>
+    </label>
+    <button>Update</button>
+  </form>
+  <div id="visibility-result"></div>
+  ${visibility !== "private" ? `<p class="hint">Link: <code>${escapeHtml(shareUrl)}</code></p>` : ""}`;
+}
+
+/** Shown to any viewer of a shared (unlisted/public) app who is not its owner. `hx-target`
+ * names an element ("#stage") that does not exist on `sharedAppPage` below — harmless: with
+ * `hx-swap="none"` htmx never writes into it, and this control's only real effect is the
+ * response's `HX-Redirect` header, which htmx follows regardless of target/swap. Kept as one
+ * function so the frame-route fragment and the standalone share page render it identically. */
+export function remixControl(id: string): string {
+  return `<form hx-post="/generations/${escapeHtml(id)}/fork" hx-target="#stage" hx-swap="none">
+    <button>Remix this app</button>
+  </form>
+  <p class="hint">Remixing copies the app, not its data — your copy starts empty.</p>`;
+}
+
+/**
+ * `GET /apps/:id` — the page a shared link actually opens. The frame
+ * route's own response (`previewFrame(...) + editFormHtml + ownerHtml`) is a bare htmx
+ * fragment: no doctype, no stylesheet, no htmx `<script>`. Opened directly it has no sizing
+ * for `.preview` (falls back to the ~300x150 replaced-element default) and "Remix this app"
+ * is a `<button>` in a `<form>` with no real submission path — with no htmx loaded, clicking
+ * it just re-GETs the current URL. This is a real, standalone page instead: same iframe,
+ * same remix control, its own head.
+ */
+export function sharedAppPage(id: string, title: string, appOrigin: string, grant: string, mode: TokenMode): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(title)}</title>
+${HTMX_CONFIG_META}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/htmx/2.0.4/htmx.min.js"></script>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; font: 15px/1.5 system-ui, sans-serif; display: flex; flex-direction: column; }
+  header { padding: 10px 16px; border-bottom: 1px solid #8883; display: flex;
+           justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+  header a { color: inherit; font-weight: 600; text-decoration: none; }
+  .preview-wrap { flex: 1; min-height: 400px; }
+  .preview { width: 100%; height: 100%; border: 0; display: block; }
+  form { margin: 0; }
+  button { font: inherit; padding: 6px 12px; cursor: pointer; }
+  .hint { font-size: 12px; opacity: .6; margin: 0; }
+</style>
+</head>
+<body>
+  <header>
+    <a href="/">any-app</a>
+    ${mode === "ro" ? remixControl(id) : `<span class="hint">This is your app — open it from your sidebar to edit it.</span>`}
+  </header>
+  <div class="preview-wrap">${previewFrame(id, appOrigin, grant)}</div>
+</body>
+</html>`;
+}
+
+export function notFoundPage(): string {
+  return `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Not found</title></head>
+<body style="font:15px system-ui;padding:24px"><p>Not found.</p></body>
+</html>`;
 }
 
 export function editForm(id: string, slots: { id: string }[]): string {
@@ -187,7 +288,46 @@ export function roleConfigTable(
   <p class="hint">Set via <code>LLM_MODEL</code> / <code>LLM_&lt;ROLE&gt;_MODEL</code> etc. in <code>.env</code>.</p>`;
 }
 
-export function settingsPage(hints: CredentialHint[], roleRows: { role: Role; provider: ProviderId; model: string; maxTokens: number }[]): string {
+/** Sign-in/sign-up forms for an anonymous visitor, or an account summary + sign-out for a
+ * signed-in one. Deliberately no password-reset link — see impl-phase-6.md's "Deliberately
+ * deferred" (no email infrastructure exists to send one). */
+// Every button below deliberately has NO explicit `type="submit"` attribute — a bare
+// `<button>` inside a `<form>` submits by default, so behavior is unchanged, but the CSS
+// attribute selector `button[type="submit"]` (which the pre-Phase-6 frontend suite already
+// uses, page-wide, to find the ONE original prompt-generate button) then does not also match
+// these new buttons. Confirmed live: with an explicit attribute, `page.click('button[type=
+// "submit"]')` resolved to 3 elements on the home page alone and every case using it timed
+// out waiting for whichever one it guessed wasn't visible.
+export function authForms(owner: Owner): string {
+  if (owner.kind === "user") {
+    return `<form hx-post="/signout" hx-target="body" hx-swap="none">
+      <button>Sign out</button>
+    </form>`;
+  }
+  return `<details class="auth">
+    <summary>Sign in / sign up</summary>
+    <form hx-post="/signup" hx-target="#auth-result" hx-swap="innerHTML">
+      <label>Email <input name="email" type="email" required></label>
+      <label>Password (8+ characters) <input name="password" type="password" minlength="8" required></label>
+      <button>Sign up</button>
+    </form>
+    <form hx-post="/signin" hx-target="#auth-result" hx-swap="innerHTML">
+      <label>Email <input name="email" type="email" required></label>
+      <label>Password <input name="password" type="password" required></label>
+      <button>Sign in</button>
+    </form>
+    <div id="auth-result"></div>
+    <p class="hint">Anonymous work is kept while you browse and claimed automatically if you sign up.
+      Signing in to an existing account instead leaves any apps you made in this browser
+      behind — they are not moved into the account.</p>
+  </details>`;
+}
+
+export function settingsPage(
+  hints: CredentialHint[],
+  roleRows: { role: Role; provider: ProviderId; model: string; maxTokens: number }[],
+  owner: Owner,
+): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -214,8 +354,10 @@ ${HTMX_CONFIG_META}
   .role-table th, .role-table td { text-align: left; padding: 4px 12px 4px 0; }
   .hint { font-size: 12px; opacity: .6; }
   .edit-ok { color: #0a7d2c; }
-  .edit-problem { color: #b00020; }
+  .edit-problem, .problem { color: #b00020; margin: 4px 0; }
   .empty { opacity: .6; }
+  .auth form { margin: 8px 0; }
+  .auth summary { cursor: pointer; }
 </style>
 </head>
 <body>
@@ -223,9 +365,17 @@ ${HTMX_CONFIG_META}
   <h1>Settings</h1>
 
   <section>
+    <h2>Account</h2>
+    ${authForms(owner)}
+  </section>
+
+  <section>
     <h2>Provider credentials</h2>
-    <p class="hint">Session-scoped — cleared if you clear cookies. Used in preference to the
-      platform key in <code>.env</code> for whichever role is configured to use that provider.</p>
+    <p class="hint">${owner.kind === "user"
+      ? "Tied to your account — available on any device you sign in on."
+      : "Session-scoped — cleared if you clear cookies, and claimed automatically if you sign up."}
+      Used in preference to the platform key in <code>.env</code> for whichever role is
+      configured to use that provider.</p>
     ${credentialList(hints)}
     ${credentialForm()}
   </section>
@@ -263,10 +413,11 @@ export function generationList(generations: Generation[]): string {
     .join("");
 }
 
-export function homePage(
-  generations: Generation[],
-  missing: RoleProblem[] = [],
-): string {
+// `owner` is required, not optional — this function has exactly
+// one caller (index.ts's `GET /`), which always has one by the time it renders the page; an
+// optional third parameter here means a future caller that forgets it drops the entire auth
+// UI silently instead of failing to compile.
+export function homePage(generations: Generation[], missing: RoleProblem[], owner: Owner): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -301,7 +452,10 @@ ${HTMX_CONFIG_META}
   #edit-form select, #edit-form button { font: inherit; padding: 6px 8px; }
   #edit-result { padding: 0 16px 12px; font-size: 13px; }
   .edit-ok { color: #0a7d2c; margin: 0; }
-  .edit-problem { color: #b00020; margin: 0; }
+  .edit-problem, .problem { color: #b00020; margin: 0; }
+  .auth form { margin: 8px 0; display: flex; flex-direction: column; gap: 4px; }
+  .auth summary { cursor: pointer; margin: 8px 0; }
+  .hint { font-size: 12px; opacity: .6; }
 </style>
 </head>
 <body>
@@ -309,6 +463,7 @@ ${HTMX_CONFIG_META}
   <aside>
     <h1>any-app</h1>
     <p><a href="/settings">Settings</a></p>
+    ${authForms(owner)}
     <ul id="generation-list">${generationList(generations)}</ul>
   </aside>
   <main>

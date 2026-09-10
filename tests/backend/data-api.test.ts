@@ -56,8 +56,8 @@ after(async () => {
 
 // --- helpers --------------------------------------------------------------------------
 
-function token(appId: string, secret = APP_TOKEN_SECRET): string {
-  return mintAppToken(appId, secret);
+function token(appId: string, secret = APP_TOKEN_SECRET, mode: "rw" | "ro" = "rw"): string {
+  return mintAppToken(appId, mode, secret);
 }
 
 /** `origin` is the app's own per-app origin (`servers.appOrigin(appId)`) unless a case is
@@ -669,28 +669,25 @@ test("K24 — a plan with no collections carries neither the data runtime nor a 
     slots: [],
     collections: [], // <-- the case under test
   };
-  const doc = renderShellHead(plan, "http://localhost:3000", mintAppToken(randomUUID(), APP_TOKEN_SECRET));
+  const doc = renderShellHead(plan, "http://localhost:3000");
   assert.doesNotMatch(doc, /anyapp\.data/);
   assert.doesNotMatch(doc, /TOKEN\s*=/);
 });
 
 // ---------------------------------------------------------------------------------------
-// K25 — a document rendered twice for one app (generate, then edit) carries the same token
-// both times.
-//
-// Full end-to-end coverage of this ("generate through the real route, then edit through the
-// real route, compare") needs a live model call on the edit path (edits.ts's regenerateCss/
-// regenerateSlot/fillSlot all call the provider) — outside this section's no-model,
-// no-fake-provider scope (the fake provider fixture is a separate agent's deliverable; see
-// tests/README.md's "Placeholder" section). What IS testable without a model is the
-// property both call sites actually rely on: `mintAppToken(id, secret)` is a pure function
-// of its two arguments, so calling it from two independent render passes — one shaped like
-// internal.ts's generate-time render (renderShellHead), one shaped like edits.ts's edit-time
-// render (renderFullHead) — must yield byte-identical tokens embedded in each document, and
-// both must match a direct, independent computation of the same token.
+// K25 — a document rendered twice for one app (generate, then edit) carries the SAME
+// placeholder both times (Phase 6 step 7 rewrote this: `renderShellHead`/`renderFullHead`
+// never embed a live token any more — every render, generate or edit, emits
+// `APP_TOKEN_PLACEHOLDER` unconditionally, and the real per-viewer token is substituted only
+// at send time via `withAppToken`, in `internal.ts`). What both call sites actually rely on
+// is now two separate, independently-checkable properties: (1) the two render shapes embed
+// byte-identical PLACEHOLDER text, and (2) `mintAppToken(id, mode, secret)` — and therefore
+// `withAppToken`'s substitution — is a pure function of its arguments, so re-deriving the
+// token for the same id/mode/secret on a later render (e.g. after an edit) reproduces the
+// exact same live token a viewer already holds.
 // ---------------------------------------------------------------------------------------
 
-test("K25 — the token embedded in a document is identical across independent render passes", () => {
+test("K25 — the placeholder embedded in a document is identical across independent render passes, and the token derived from it is a pure function of (id, mode, secret)", () => {
   const id = randomUUID();
   const plan: AppPlan = {
     title: "App with data",
@@ -701,25 +698,77 @@ test("K25 — the token embedded in a document is identical across independent r
     collections: [{ name: "notes", description: "notes" }],
   };
 
-  // Shaped like internal.ts's generate-time call (mintAppToken(id, secret), then
-  // renderShellHead).
-  const generateToken = mintAppToken(id, APP_TOKEN_SECRET);
-  const generateDoc = renderShellHead(plan, "http://localhost:3000", generateToken);
-
-  // Shaped like edits.ts's edit-time call (mintAppToken(id, secret) again — "minted from
-  // the id, not read back off the old document", per edits.ts's own comment — then
-  // renderFullHead).
-  const editToken = mintAppToken(id, APP_TOKEN_SECRET);
-  const editDoc = renderFullHead(plan, "http://localhost:3000", editToken);
+  // Shaped like internal.ts's generate-time call.
+  const generateDoc = renderShellHead(plan, "http://localhost:3000");
+  // Shaped like edits.ts's edit-time call.
+  const editDoc = renderFullHead(plan, "http://localhost:3000");
 
   const extract = (doc: string): string => {
     const m = /var TOKEN = "([^"]+)"/.exec(doc);
-    assert.ok(m, "expected to find an embedded TOKEN in the rendered document");
+    assert.ok(m, "expected to find an embedded TOKEN placeholder in the rendered document");
     return m![1]!;
   };
 
   const fromGenerate = extract(generateDoc);
   const fromEdit = extract(editDoc);
-  assert.equal(fromGenerate, fromEdit, "the same app id must embed the same token on every render");
-  assert.equal(fromGenerate, mintAppToken(id, APP_TOKEN_SECRET), "and it must match a fresh direct computation");
+  assert.equal(fromGenerate, fromEdit, "both render passes must embed the exact same placeholder");
+  assert.equal(fromGenerate, "{{ANYAPP_TOKEN}}", "and it must be the documented placeholder, not a live token");
+
+  assert.equal(
+    mintAppToken(id, "rw", APP_TOKEN_SECRET),
+    mintAppToken(id, "rw", APP_TOKEN_SECRET),
+    "the token derived at generate time and again at edit time must be byte-identical for the same id/mode/secret",
+  );
+});
+
+// ---------------------------------------------------------------------------------------
+// K26/K27 — Phase 6 step 7: a read-only ("ro") token reads fine but is rejected on every
+// write verb, with `app_id` still coming from the token alone (not the host, not the body).
+// ---------------------------------------------------------------------------------------
+
+test("K26 — a read-only token: GET succeeds, POST/PATCH/DELETE all 403 'this token is read-only'", async () => {
+  const { id, origin } = freshApp();
+  const rw = token(id, APP_TOKEN_SECRET, "rw");
+  const ro = token(id, APP_TOKEN_SECRET, "ro");
+
+  // Seed one row with the rw token first — the ro token must still be able to read it.
+  const created = await post(origin, rw, "notes", { text: "seeded by rw" });
+  assert.equal(created.status, 201);
+  const recordId = (await created.json() as { id: string }).id;
+
+  const list = await get(origin, ro, "/notes");
+  assert.equal(list.status, 200, "reads must succeed on a read-only token");
+  const payload = (await list.json()) as { records: { id: string }[] };
+  assert.equal(payload.records.length, 1);
+
+  const write = await post(origin, ro, "notes", { text: "should be rejected" });
+  assert.equal(write.status, 403);
+  assert.match((await write.json() as { error: string }).error, /read-only/);
+
+  const patchRes = await patch(origin, ro, "notes", recordId, { text: "nope" });
+  assert.equal(patchRes.status, 403);
+
+  const deleteRes = await fetch(dataUrl(origin, `/notes/${recordId}`), {
+    method: "DELETE",
+    headers: { authorization: `Bearer ${ro}` },
+  });
+  assert.equal(deleteRes.status, 403);
+
+  // The row is untouched by any of the rejected attempts.
+  const stillThere = await get(origin, rw, `/notes/${recordId}`);
+  assert.equal(stillThere.status, 200);
+  assert.equal((await stillThere.json() as { data: { text: string } }).data.text, "seeded by rw");
+});
+
+test("K27 — an rw and a ro token for the SAME app id never verify as each other", async () => {
+  const { id, origin } = freshApp();
+  const rw = token(id, APP_TOKEN_SECRET, "rw");
+  const ro = token(id, APP_TOKEN_SECRET, "ro");
+  assert.notEqual(rw, ro);
+
+  // Splicing ro's mode onto rw's signed body (or vice versa) must not verify — mode is
+  // signed, not merely carried; see app-token.test.ts's A8.4b for the unit-level version.
+  const rwWithRoMode = rw.replace(".rw.", ".ro.");
+  const res = await get(origin, rwWithRoMode, "/notes");
+  assert.equal(res.status, 401);
 });

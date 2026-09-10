@@ -24,6 +24,7 @@ import { findFreePorts } from "../harness/ports";
 import { startFakeProvider } from "../harness/fake-provider";
 import type { FakeProvider } from "../harness/fake-provider";
 import { seedGeneration } from "../harness/seed";
+import { extractPreview, grantQuery } from "../harness/preview";
 
 const INTERNAL_SECRET = "sandbox-routes-internal-secret";
 
@@ -87,16 +88,21 @@ async function setup(t: TestContext, envOverrides: Record<string, string> = {}):
   return { scratch, fake, servers };
 }
 
-async function createGeneration(servers: Stack["servers"], prompt = "Sandbox test app."): Promise<string> {
+/**
+ * Returns the id AND the view grant, so callers hitting `/preview/:id` on the sandbox
+ * directly can append `?g=<grant>` — sandbox forwards it blindly (index.ts), and studio's
+ * internal route 404s a real (default-private) generation without a valid one.
+ */
+async function createGeneration(
+  servers: Stack["servers"],
+  prompt = "Sandbox test app.",
+): Promise<{ id: string; grant: string }> {
   const res = await fetch(`${servers.studioOrigin}/generations`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ prompt }).toString(),
   });
-  const body = await res.text();
-  const idMatch = body.match(/\/preview\/([0-9a-f-]{36})"/);
-  assert.ok(idMatch, `expected an iframe src containing /preview/<uuid> in: ${body}`);
-  return idMatch![1]!;
+  return extractPreview(await res.text());
 }
 
 // -----------------------------------------------------------------------------------------
@@ -190,13 +196,13 @@ test("D5 — studio is down: sandbox responds without crashing the process", asy
 
 test("D6 — viewer disconnects: the upstream fetch is aborted (asserted on the studio/provider side)", async (t) => {
   const { servers, fake } = await setup(t);
-  const id = await createGeneration(servers, "Sandbox disconnect test.");
+  const { id, grant } = await createGeneration(servers, "Sandbox disconnect test.");
 
   fake.queueComplete({ text: PLAN_TEXT });
   const fillHandle = fake.queueStream(); // manual mode — left open until we choose to abort
 
   const controller = new AbortController();
-  const res = await fetch(`${servers.sandboxOrigin}/preview/${id}`, { signal: controller.signal });
+  const res = await fetch(`${servers.sandboxOrigin}/preview/${id}${grantQuery(grant)}`, { signal: controller.signal });
   assert.equal(res.status, 200);
   const reader = res.body!.getReader();
   await reader.read(); // drain the already-buffered doctype/shell
@@ -256,14 +262,14 @@ test("D7 — viewer disconnects before upstream headers arrive: no unhandled rej
 
 test("D8a — a deliberately small PREVIEW_TIMEOUT_MS bounds a stuck upstream instead of hanging", async (t) => {
   const { servers, fake } = await setup(t, { PREVIEW_TIMEOUT_MS: "1200" });
-  const id = await createGeneration(servers, "Timeout bound test.");
+  const { id, grant } = await createGeneration(servers, "Timeout bound test.");
 
   // The planner call alone takes far longer than PREVIEW_TIMEOUT_MS — proves the bound
   // actually cuts the proxied connection rather than waiting the full delay out.
   fake.queueComplete({ text: PLAN_TEXT, delayMs: 6000 });
 
   const start = Date.now();
-  const res = await fetch(`${servers.sandboxOrigin}/preview/${id}`);
+  const res = await fetch(`${servers.sandboxOrigin}/preview/${id}${grantQuery(grant)}`);
   try {
     // Read to completion — either naturally, or because sandbox cut the connection off
     // partway through. A response abandoned mid-chunked-body is not a clean end from the
@@ -284,7 +290,7 @@ test("D8a — a deliberately small PREVIEW_TIMEOUT_MS bounds a stuck upstream in
 
 test("D8b — heartbeat comments keep a quiet proxied connection alive (bounded wait, not the forbidden 300s)", async (t) => {
   const { servers, fake } = await setup(t); // default PREVIEW_TIMEOUT_MS (900000) — plenty of headroom
-  const id = await createGeneration(servers, "Heartbeat test.");
+  const { id, grant } = await createGeneration(servers, "Heartbeat test.");
 
   // Studio's own planning heartbeat (internal.ts) fires every 15s while planApp() is
   // pending and is not configurable — unlike D8a's bound, this genuinely has to wait past
@@ -292,7 +298,7 @@ test("D8b — heartbeat comments keep a quiet proxied connection alive (bounded 
   fake.queueComplete({ text: PLAN_TEXT, delayMs: 17_000 });
 
   const controller = new AbortController();
-  const res = await fetch(`${servers.sandboxOrigin}/preview/${id}`, { signal: controller.signal });
+  const res = await fetch(`${servers.sandboxOrigin}/preview/${id}${grantQuery(grant)}`, { signal: controller.signal });
   assert.equal(res.status, 200);
 
   const reader = res.body!.getReader();

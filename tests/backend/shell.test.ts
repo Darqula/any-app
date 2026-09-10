@@ -7,19 +7,16 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { renderShellHead, renderFullHead } from "../../apps/studio/src/shell";
-import { mintAppToken, utilityCss, renderDocument, renderSkeletons } from "@any-app/protocol";
+import { utilityCss, renderDocument, renderSkeletons } from "@any-app/protocol";
 import type { AppPlan, FilledApp } from "@any-app/protocol";
 
 // `__dirname` does not exist in ES modules — same pattern as tests/harness/*.ts and
 // packages/store/src/migrate.ts.
 const here = path.dirname(fileURLToPath(import.meta.url));
-
-const SECRET = "shell-test-fixed-app-token-secret";
 
 function plan(css: string): AppPlan {
   return {
@@ -33,7 +30,7 @@ function plan(css: string): AppPlan {
 }
 
 test("shell — planner CSS lacks .hidden: the fallback <style> is emitted, after the planner stylesheet", () => {
-  const doc = renderShellHead(plan(".panel{padding:8px}"), "http://localhost:3000", mintAppToken(randomUUID(), SECRET));
+  const doc = renderShellHead(plan(".panel{padding:8px}"), "http://localhost:3000");
   const anyappIndex = doc.indexOf('<style id="anyapp-css">');
   const utilityIndex = doc.indexOf(".hidden{display:none}");
   assert.notEqual(anyappIndex, -1, "planner stylesheet must be present");
@@ -45,7 +42,6 @@ test("shell — planner CSS already defines .hidden: no fallback is emitted at a
   const doc = renderShellHead(
     plan(".panel{padding:8px} .hidden{visibility:hidden}"),
     "http://localhost:3000",
-    mintAppToken(randomUUID(), SECRET),
   );
   assert.equal(doc.includes(".hidden{display:none}"), false, "must not override a planner that had its own opinion");
   // The planner's own .hidden rule is still there, untouched.
@@ -53,14 +49,14 @@ test("shell — planner CSS already defines .hidden: no fallback is emitted at a
 });
 
 test("shell — SKELETON_CSS is always emitted before the planner stylesheet, regardless of the fallback", () => {
-  const doc = renderShellHead(plan(""), "http://localhost:3000", mintAppToken(randomUUID(), SECRET));
+  const doc = renderShellHead(plan(""), "http://localhost:3000");
   const skeletonIndex = doc.indexOf("anyapp-skeleton");
   const anyappIndex = doc.indexOf('<style id="anyapp-css">');
   assert.ok(skeletonIndex !== -1 && anyappIndex !== -1 && skeletonIndex < anyappIndex);
 });
 
 test("shell — renderFullHead (the edit-time render path) gates and places the fallback the same way as renderShellHead", () => {
-  const doc = renderFullHead(plan(".panel{padding:8px}"), "http://localhost:3000", mintAppToken(randomUUID(), SECRET));
+  const doc = renderFullHead(plan(".panel{padding:8px}"), "http://localhost:3000");
   const anyappIndex = doc.indexOf('<style id="anyapp-css">');
   const utilityIndex = doc.indexOf(".hidden{display:none}");
   assert.ok(anyappIndex !== -1 && utilityIndex !== -1 && anyappIndex < utilityIndex);
@@ -186,7 +182,7 @@ test("S13 — the real artifact's ACTUAL (pre-fix) shape: [data-slot=\"confirmat
     slots: b1Slots(),
     collections: [],
   };
-  const doc = renderShellHead(planA, "http://localhost:3000", mintAppToken(randomUUID(), SECRET));
+  const doc = renderShellHead(planA, "http://localhost:3000");
   const marker = 'data-slot="confirmation-panel"';
   const start = doc.lastIndexOf("<", doc.indexOf(marker));
   const end = doc.indexOf(">", doc.indexOf(marker)) + 1;
@@ -216,7 +212,7 @@ test("S13 — B-shaped plan (Change 1): placeholder carries the region's class, 
     slots: b1Slots(),
     collections: [],
   };
-  const doc = renderShellHead(planB, "http://localhost:3000", mintAppToken(randomUUID(), SECRET));
+  const doc = renderShellHead(planB, "http://localhost:3000");
   const marker = 'data-slot="confirmation-panel"';
   const start = doc.lastIndexOf("<", doc.indexOf(marker));
   const end = doc.indexOf(">", doc.indexOf(marker)) + 1;

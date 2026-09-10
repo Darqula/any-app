@@ -23,6 +23,7 @@ import { startServers } from "../harness/servers";
 import { findFreePorts } from "../harness/ports";
 import { startFakeProvider } from "../harness/fake-provider";
 import type { FakeProvider } from "../harness/fake-provider";
+import { extractPreview, grantQuery } from "../harness/preview";
 
 const { Pool } = pg;
 
@@ -67,24 +68,25 @@ async function setup(t: TestContext, envOverrides: Record<string, string> = {}):
   return { scratch, fake, servers };
 }
 
-async function createGeneration(servers: Stack["servers"], prompt: string): Promise<string> {
+async function createGeneration(servers: Stack["servers"], prompt: string): Promise<{ id: string; grant: string }> {
   const res = await fetch(`${servers.studioOrigin}/generations`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ prompt }).toString(),
   });
-  const body = await res.text();
-  const idMatch = body.match(/\/preview\/([0-9a-f-]{36})"/);
-  assert.ok(idMatch, `expected an iframe src containing /preview/<uuid> in: ${body}`);
-  return idMatch![1]!;
+  return extractPreview(await res.text());
 }
 
 function authHeaders(): Record<string, string> {
   return { [INTERNAL_SECRET_HEADER]: INTERNAL_SECRET };
 }
 
-async function driveToCompletion(servers: Stack["servers"], id: string): Promise<{ status: number; body: string }> {
-  const res = await fetch(`${servers.studioOrigin}/internal/generations/${id}/stream`, {
+async function driveToCompletion(
+  servers: Stack["servers"],
+  id: string,
+  grant: string,
+): Promise<{ status: number; body: string }> {
+  const res = await fetch(`${servers.studioOrigin}/internal/generations/${id}/stream${grantQuery(grant)}`, {
     headers: authHeaders(),
   });
   return { status: res.status, body: await res.text() };
@@ -95,12 +97,12 @@ test("planner raw-response capture — ANYAPP_PLANNER_RAW_DIR set: a PlanError w
   t.after(() => rm(captureDir, { recursive: true, force: true }));
 
   const { servers, scratch, fake } = await setup(t, { ANYAPP_PLANNER_RAW_DIR: captureDir });
-  const id = await createGeneration(servers, "Capture test app.");
+  const { id, grant } = await createGeneration(servers, "Capture test app.");
 
   fake.queueComplete({ text: UNPARSEABLE_PLAN_TEXT });
   fake.queueStream({ chunks: ["<h1>Linear fallback app</h1>\n"], finish: "stop" });
 
-  const { status, body } = await driveToCompletion(servers, id);
+  const { status, body } = await driveToCompletion(servers, id, grant);
   assert.equal(status, 200);
   assert.ok(body.includes("<h1>Linear fallback app</h1>"), "generation must still complete via the linear fallback");
 
@@ -130,12 +132,12 @@ test("planner raw-response capture — ANYAPP_PLANNER_RAW_DIR set: a PlanError w
 
 test("planner raw-response capture — ANYAPP_PLANNER_RAW_DIR unset (default): no file is written, and the raw response never lands in server output", async (t) => {
   const { servers, fake } = await setup(t); // no ANYAPP_PLANNER_RAW_DIR — the npm-run-dev default
-  const id = await createGeneration(servers, "No-capture test app.");
+  const { id, grant } = await createGeneration(servers, "No-capture test app.");
 
   fake.queueComplete({ text: UNPARSEABLE_PLAN_TEXT });
   fake.queueStream({ chunks: ["<h1>Linear fallback app</h1>\n"], finish: "stop" });
 
-  const { status, body } = await driveToCompletion(servers, id);
+  const { status, body } = await driveToCompletion(servers, id, grant);
   assert.equal(status, 200);
   assert.ok(body.includes("<h1>Linear fallback app</h1>"), "must still complete via the linear fallback when the switch is off");
 

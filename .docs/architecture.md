@@ -15,6 +15,7 @@
 | 7 | htmx for the studio UI only | Good fit for our own shell; irrelevant to generated apps, which are not part of our DOM. |
 | 8 | Generated apps get a **per-app origin** before Phase 5 | The shared sandbox origin only protects the studio from generated apps, not generated apps from each other. See below. |
 | 9 | **Native provider adapters**, not a lowest-common-denominator wire format | A compatibility shim hides exactly the provider-specific features worth having — `cache_control` breakpoints above all, which Phase 4's economics depend on. |
+| 10 | A served app is authorized by a **signed view grant**, not by a session | The viewer's session cookie is host-only on the studio origin and never reaches the app's. The alternative is teaching the sandbox about users, which is the coupling decision #3 exists to prevent. See below. |
 
 ## The origin boundary
 
@@ -67,6 +68,52 @@ deliberately:
   `Origin` header — the origin is a browser-side isolation mechanism, not an
   authorization boundary the server can trust.
 - `allow-same-origin` is not added to the preview iframe until per-app origins exist.
+
+### Authorizing a view
+
+The origin split has a second consequence, and it only becomes visible once apps have owners.
+
+The studio's session cookie is host-only on `localhost:3000` (no `Domain` attribute) and is
+never sent to `<app-id>.apps.<domain>`. That is deliberate — it is the same boundary that
+keeps a generated app from reading the session — and it means the serving path knows nothing
+about **who is looking**. The sandbox proxies `/preview/:id` to the studio's internal route
+authenticated with `INTERNAL_SECRET`, which says "this came from our sandbox" and nothing
+about the viewer.
+
+So from Phase 6, when an app has an owner and a visibility, there is nowhere in that path
+that can enforce it. Three ways out:
+
+1. **Give the sandbox a session.** It would need the studio's cookie, session table, and user
+   model — the exact coupling decision #3 exists to prevent.
+2. **Rely on unguessable ids.** What Phases 1–5 do. It cannot express "private", and once
+   links are shareable, *unguessable* and *unshared* stop being the same property.
+3. **Have the studio decide and issue a capability.** The studio renders the page containing
+   the iframe and does know the viewer there.
+
+**Decision:** (3). The studio mints a short-lived **view grant** — an HMAC over the app id, a
+`mode` (`"rw"` for the owner, `"ro"` for everyone else), and an expiry, under the same secret
+as the per-app data token, with a distinct signed prefix so one kind can never verify as the
+other. The iframe URL carries it, the sandbox forwards it without inspecting it, and the
+studio's internal route verifies it. `mode` is not cosmetic: the internal route is reached
+from the sandbox with no cookie at all, so it cannot re-derive "is this viewer the owner"
+itself — the grant is the only place that fact can travel, which is also why `mode` is inside
+the signed payload rather than a separate, unsigned query parameter (see
+`packages/protocol/src/view-grant.ts`).
+
+This is deliberately the same shape as the per-app data token: signed, stateless, no lookup
+on the hot path, and no new knowledge in the sandbox beyond "pass this opaque string along."
+
+Three rules follow:
+
+- A grant is a **bearer capability for one app until it expires**, not an identity. The
+  verifying side cannot identify a viewer either, so binding one in would be decoration.
+- A grant travels in a URL, so the preview response sets **`Referrer-Policy: no-referrer`**.
+  Generated apps load libraries from a CDN, and without it the grant goes to a third party in
+  a `Referer` header.
+- Visibility gates the document, and the document carries the app's data token — so gating the
+  document gates the data. That is why publishing a link is a data decision as much as a
+  viewing one, and why a shared app's data token must be scoped read-only for non-owners (see
+  [`impl-phase-6.md`](./impl-phase-6.md) step 7).
 
 ### Dependency rules
 
