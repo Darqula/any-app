@@ -1,14 +1,6 @@
 /**
- * Covers the harness gap closed alongside the section-F quality sweep's log-capture work
- * (see `tests/quality/README.md`'s "Layout" entry for `planner-fail-<id>.json`): when a real
- * `PlanError` fires, `apps/studio/src/internal.ts`'s `capturePlannerFailure` must make the
- * exact raw planner text (and the failure reason) recoverable from disk, gated behind
- * `ANYAPP_PLANNER_RAW_DIR` so a plain `npm run dev` never writes or logs it.
- *
- * Same shape as `studio-routes.test.ts`'s C14 ("planner returns unparseable output: falls
- * back to linear") — this file exercises the identical PlanError trigger, but asserts on the
- * new capture artifact instead of (well, in addition to) the existing row/body assertions,
- * which is why it is a separate file rather than inserted into C14 itself.
+ * capturePlannerFailure: a real PlanError must leave the raw planner text and the reason on disk, only when ANYAPP_PLANNER_RAW_DIR is set.
+ * Same trigger as C14 but asserts the capture artifact, hence its own file. See tests/quality/README.md.
  */
 import { test } from "node:test";
 import type { TestContext } from "node:test";
@@ -29,8 +21,7 @@ const { Pool } = pg;
 
 const INTERNAL_SECRET = "planner-raw-capture-internal-secret";
 
-// Deliberately not a plan at all — the same trigger C14 uses (`parsePlan` throws `PlanError`
-// with "plan is missing sections", since none of TITLE/CSS/SHELL/SLOTS parse out of prose).
+// Not a plan at all: the C14 trigger (parsePlan throws "plan is missing sections").
 const UNPARSEABLE_PLAN_TEXT =
   "This is not a plan at all, just some prose the model wrote instead — capture-test marker XYZZY.";
 
@@ -141,10 +132,7 @@ test("planner raw-response capture — ANYAPP_PLANNER_RAW_DIR unset (default): n
   assert.equal(status, 200);
   assert.ok(body.includes("<h1>Linear fallback app</h1>"), "must still complete via the linear fallback when the switch is off");
 
-  // The unchanged behavior this whole feature must preserve: the console line stays the
-  // short, scrubbed PlanError message (see internal.ts's existing "falling back to linear"
-  // warning) — never the full raw model response, and no trace of the capture machinery at
-  // all when the env var is unset.
+  // Unchanged behaviour: the console line stays the short scrubbed message, never the raw response, with no trace of the capture when unset.
   const studioLog = servers.logs("studio");
   assert.ok(studioLog.includes("falling back to linear"), "the existing fallback log line must be unaffected");
   assert.ok(

@@ -14,14 +14,8 @@ export interface CredentialHint {
 }
 
 /**
- * Persists a credential that has already passed `provider.validate()` — the caller
- * validates first and only calls this on success (see settings.ts), so `validated_at` is
- * set here rather than needing a separate follow-up write.
- *
- * Keyed by `owner_id` for a signed-in user, `session_id` for anonymous — never both (see
- * migration 008's `credential_subject_ck`). The `on conflict` target has to name the right
- * partial unique index for the subject at hand, because a partial unique index only serves
- * `on conflict` when the clause matches it exactly.
+ * Persists a credential that already passed validate(), so validated_at is set here. Keyed by owner_id
+ * or session_id, never both. `on conflict` must name the matching partial unique index.
  */
 export async function saveCredential(
   owner: Owner,
@@ -47,7 +41,6 @@ export async function saveCredential(
   );
 }
 
-/** Decrypts and returns one subject's credential for one provider, or null if none is stored. */
 export async function getCredential(
   owner: Owner,
   provider: string,

@@ -4,10 +4,17 @@ An LLM-driven web app builder (Websim-like): a user describes an app, the backen
 model, streams the generated app into the browser as it's produced, and persists it.
 Full product/architecture docs live in `.docs/` — **read `.docs/overview.md` first**, then
 `.docs/architecture.md` for locked design decisions. `.docs/plan.md` has the phase-by-phase
-build plan; each phase's actual step-by-step spec is `.docs/impl-phase-N.md`. Review findings
+build plan. Review findings
 live in `.docs/review-phase-N.md` while a phase is being reviewed, and that file is deleted
-once every finding is fixed and pinned — each fix's reasoning moves into a comment beside the
-code it explains, so the absence of a review doc means "nothing open", not "never reviewed".
+once every finding is fixed and pinned — each fix's reasoning moves into `.docs/memory/` (see
+below), so the absence of a review doc means "nothing open", not "never reviewed".
+
+**Where reasoning lives.** Code comments are short, self-contained and reserved for genuinely
+non-obvious solutions: a reader of the source must never need another file to understand one, so a
+comment never points at `.docs/memory/`. `.docs/memory/*.md` is agent-only background (README there
+is the index): incidents with numbers and dates, measurements, rejected designs and cross-file traps
+that a short comment cannot carry. Read the matching file before changing a guarded behaviour, and when
+a fix teaches something non-obvious, put the essential *why* in a short comment and the history there.
 
 **Current status:** Phases 0–6 implemented (skeleton, linear generation, shell/slots,
 decomposed persistence + slot/CSS editing, multi-provider adapters + BYOK, parallel fill,
@@ -18,8 +25,8 @@ alongside M12), N1–N3 — plus `data-api.test.ts`'s K26/K27 and a real asserti
 existing one still passing) added to each of `provider-adapters.test.ts`'s four primary S14
 cases, proving `onUsage` actually fires on the truncation path) but **not yet exercised
 against a real provider live**, the way 0–5 were. Four of its review fixes are the kind a
-future edit could easily undo without knowing why they are there, so each carries its
-reasoning in a code comment beside it — read that comment before changing any of them:
+future edit could easily undo without knowing why they are there, so each has its reasoning in
+`.docs/memory/security.md` — read it before changing any of them:
 `SameSite=Lax` on the session cookie, deliberately **not** `Strict` (`Strict` is not sent on a
 cross-site top-level navigation, so it silently signs out anyone who clicks a shared link);
 the `Sec-Fetch-Site`/`Origin` guard on every mutating studio route, which is what actually
@@ -28,12 +35,12 @@ surfacing "expired" instead of silently downgrading a viewer to read-only; and `
 as the real share-link page, because `/generations/:id/frame` is an htmx fragment that no
 recipient's browser can use on its own. Phase 5 (per-app
 origins, the `records` table, the data API, and the inlined `anyapp.data` client) is
-implemented and verified live against a real generation — see `.docs/impl-phase-5.md`'s
-"Found live" section before touching `apps/sandbox/src/data.ts` or its query parsing:
+implemented and verified live against a real generation — see `.docs/memory/data-api.md`
+before touching `apps/sandbox/src/data.ts` or its query parsing:
 Express 5's default query-parser setting silently broke every `where[key]=value` filter
 until `app.set("query parser", "extended")` was added.
 
-**Phase 6 (accounts, sharing, remix) — see `.docs/impl-phase-6.md`.** Real users/sessions,
+**Phase 6 (accounts, sharing, remix).** Real users/sessions,
 owner-scoped everything, a signed view grant for shared apps, remix, and per-generation usage
 accounting with a monthly cap. Two things found live, not obvious from the plan doc alone:
 - **`apps/sandbox/src/index.ts`'s `/preview/:id` route did not originally forward the view
@@ -42,8 +49,7 @@ accounting with a monthly cap. Two things found live, not obvious from the plan 
   request that went through the sandbox (i.e. every real preview) until the backend suite's
   D6/D8b caught it. If preview requests start 404ing after touching either server, check this
   forwarding first — `req.query.g` must reach `internal.ts` unchanged.
-- **The view grant carries a `mode` (`"rw" | "ro"`), not just an app id** — extended beyond
-  what `impl-phase-6.md`'s own step 4a code sample shows, because step 7's read-only data
+- **The view grant carries a `mode` (`"rw" | "ro"`), not just an app id**, because the read-only data
   token has to come from *somewhere*, and the internal stream route (reached from the
   sandbox, no cookie, no session) has no other way to learn whether this viewer is the app's
   owner. `mintViewGrant`/`verifyViewGrant` (`packages/protocol/src/view-grant.ts`) mint/check
@@ -54,11 +60,11 @@ accounting with a monthly cap. Two things found live, not obvious from the plan 
 correct but is currently a measured regression on this project's default model** — see below
 before enabling it. Default config is still `longcat-2.0` on the
 OpenAI-compatible path (`LLM_MODEL` in `.env`, not `OPENAI_MODEL` anymore — see below). See
-`.docs/open-problems.md` for the provider/model investigation history — worth reading before
+`.docs/open-problems.md` (open issues) and `.docs/memory/model-and-sweep-history.md` (investigation history) — worth reading before
 changing `LLM_MODEL`, since one model on this same gateway (`glm-5.3-flash`) never converged
 on this task at any legal token budget, and `qwen3.8-flash` (tried via Phase 3.5's Anthropic
 path) has its own reasoning-tax and streaming-ceiling issues documented there. See
-`.docs/impl-phase-3.md`'s "Found live, not in the original plan" section before touching the
+`.docs/memory/editing.md` before touching the
 edit prompts (`edit.ts`, `edit-router.ts`) — the model does not reliably follow its own
 "never write `<style>`" or "edit, not rewrite" instructions, and both `edit.ts` and
 `edits.ts` carry defensive checks for that, confirmed to actually fire in testing.
@@ -75,7 +81,7 @@ adapter is implemented and typechecked, and was exercised live against a third-p
 gateway's Anthropic-*shaped* endpoint. That endpoint, and the OpenAI-compatible one, both
 genuinely cache at a large-enough prefix (~4.5k tokens) — an earlier note here claiming
 caching didn't work was a false negative from testing too small a prefix, corrected during
-Phase 4 — see `.docs/open-problems.md`.
+Phase 4 — see `.docs/memory/model-and-sweep-history.md`.
 
 **Parallel fill (Phase 4, `packages/generator/src/{fan-out,fill-slot,parallel-fill}.ts`,
 toggled via `LLM_FILL_MODE`) currently defaults to `sequential`, not `parallel`, in both
@@ -85,8 +91,8 @@ first run), found parallel slower (up to 6m3s vs sequential's 2m30s) *and* ~5.6-
 completion tokens on `longcat-2.0` — this reasoning-heavy model reasons far more per
 isolated region than per whole document, and prompt caching (which does work — see above)
 only discounts input tokens, not that completion-token blowup. Not a code bug; a real
-property of this model, confirmed twice. See `.docs/open-problems.md`'s Phase 4 section
-before flipping `LLM_FILL_MODE` back to `parallel`. **Budget is two separate variables
+property of this model, confirmed twice. See `.docs/open-problems.md` (item 3) and
+`.docs/memory/model-and-sweep-history.md` before flipping `LLM_FILL_MODE` back to `parallel`. **Budget is two separate variables
 now**: `LLM_FILL_MAX_TOKENS` (sequential, whole-document) and `LLM_FILL_SLOT_MAX_TOKENS`
 (parallel, per-region) — they used to be one variable with mode-dependent meaning, which is
 exactly what made the first comparison hard to trust.
@@ -129,7 +135,7 @@ S1) — correct as an import specifier, wrong as a dependency. `sandbox` gets `l
 the credential-holding module graph into the sandbox through one import. `records/src/db.ts`
 duplicates ~15 lines of `.env`-loading logic instead of importing `store`'s — two pools
 against one database, authenticating as different roles, is the whole point (see
-`.docs/impl-phase-5.md` step 4).
+`.docs/memory/data-api.md`).
 
 ## Commands
 
@@ -149,9 +155,9 @@ for the watcher.
 
 Postgres is **not** a dedicated container for this project — it reuses an existing
 `my-postgres` docker container (port 5432, user `postgres`) shared with other projects,
-with a dedicated `anyapp` database created inside it. `docker-compose.yml` from the
-original implementation plan was deliberately not created; see `.docs/impl-phase-0-1.md`
-step 0.3 for both the actual setup and the from-scratch reference version.
+with a dedicated `anyapp` database created inside it. `docker-compose.yml` was deliberately not created. Setup: `docker exec my-postgres psql -U postgres -c "CREATE DATABASE anyapp;"`,
+then `DATABASE_URL=postgres://postgres:<password>@localhost:5432/anyapp`. On a machine with no Postgres, run a dedicated
+one instead (e.g. `postgres:17`, host port 5433, user/password/database `anyapp`).
 
 ## Model provider (Phase 3.5)
 
@@ -176,14 +182,14 @@ they return completely empty responses, and *some models never converge on this 
 regardless of budget* (confirmed for `glm-5.3-flash` up to its provider's max of 131,072).
 Every call logs its real token usage (each `providers/*.ts` adapter calls
 `providers/usage.ts`'s `logUsage`) — check the studio log rather than guessing. See
-`.docs/open-problems.md` for the full investigation, current numbers, and the Phase 3.5
+`.docs/open-problems.md` and `.docs/memory/model-and-sweep-history.md` for the investigation, numbers, and the Phase 3.5
 `qwen3.8-flash`/Anthropic-shim findings (including: `completeText`, unlike `streamText`, has
 an SDK-enforced ceiling on `max_tokens` that a heavily-reasoning model can hit).
 
 **No real Anthropic (`sk-ant-...`) key has been tested against this project.** The adapter
 is implemented, typechecked, and was exercised live against a third-party gateway's
 Anthropic-*shaped* endpoint — confirmed to accept real Messages-API requests, and (once
-tested with a large-enough prefix — see `open-problems.md`) confirmed to genuinely cache:
+tested with a large-enough prefix — see `memory/model-and-sweep-history.md`) confirmed to genuinely cache:
 both this endpoint and the OpenAI-compatible one show clean cache hits (`cached_tokens`/
 `cache_read_input_tokens`) at ~4,500 shared tokens. An earlier note here claiming caching
 didn't work was a false negative from testing too small a prefix — corrected during Phase 4.
@@ -204,8 +210,8 @@ way `CREDENTIAL_KEY` already works). Studio mints it fresh every time it renders
 (`internal.ts`, `edits.ts`); sandbox verifies it on every `/data/*` request
 (`apps/sandbox/src/data.ts`) and cross-checks the app id it decodes against the request's
 `Host` header. Records live in their own table (`records`, migration `005_records.sql`),
-reached only by a **restricted Postgres role** (`anyapp_sandbox`, created by hand per
-`.docs/impl-phase-5.md` step 3 — not in a migration, since it needs a password) that can
+reached only by a **restricted Postgres role** (`anyapp_sandbox`, created by hand, SQL in the comments of
+`005_records.sql` — not in a migration, since it needs a password) that can
 touch `records` and nothing else; `SANDBOX_DATABASE_URL` in `.env` is that role's connection
 string, separate from `DATABASE_URL`.
 
@@ -234,5 +240,5 @@ into the document only when `plan.collections.length > 0`), never its own `fetch
   `.docs/architecture.md`'s data-API rules.
 - Assume Express's default query parser understands `where[key]=value` bracket notation —
   Express 5 changed the default to one that doesn't. `apps/sandbox/src/index.ts` sets
-  `app.set("query parser", "extended")` explicitly; see `.docs/impl-phase-5.md`'s "Found
-  live" section before touching sandbox query parsing.
+  `app.set("query parser", "extended")` explicitly; see `.docs/memory/data-api.md`
+  before touching sandbox query parsing.

@@ -1,8 +1,4 @@
-/**
- * Proves the harness itself works end to end. Not part of the real backend suite (see
- * .docs/tests-backend.md for that) — these are cases C1, D1, plus a standalone check of
- * harness/db.ts's scratch-database lifecycle and restricted-role guarantee.
- */
+/** Proves the harness end to end (C1, D1 and the scratch-database lifecycle). Not part of the real backend suite. */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import pg from "pg";
@@ -35,9 +31,7 @@ test("scratch database: migrate() runs and the restricted role is actually restr
   const scratch = await createScratchDatabase();
   t.after(() => scratch.drop());
 
-  // createScratchDatabase() already asserts this internally (and throws loudly if it does
-  // not hold), but the point of this test is to prove that guarantee from the outside too,
-  // using nothing but the connection strings the harness handed back.
+  // createScratchDatabase already asserts this; here it is proven again from outside with only the returned connection strings.
   const restricted = new Pool({ connectionString: scratch.sandboxDatabaseUrl });
   t.after(() => restricted.end());
 

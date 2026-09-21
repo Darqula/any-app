@@ -89,7 +89,7 @@ validates `event.origin` against it, and the data API derives its host check fro
 suites want `localhost:3000` and `*.apps.localhost:3001`, they cannot run concurrently.
 
 **3. Someone has to script the `anyapp_sandbox` role, and it is currently on nobody's list.**
-Section K needs it, and `impl-phase-5.md` creates it by hand on purpose — it takes a password,
+Section K needs it, and it is created by hand on purpose (SQL in `005_records.sql`) — it takes a password,
 so it is operator setup rather than a migration. A scratch database per run needs that
 bootstrap automated. It belongs with this suite, since K is what depends on it, but it is
 worth naming as its own task rather than assuming it falls out of `migrate()`.
@@ -665,7 +665,7 @@ Pure store layer, one shared scratch database (same reasoning as B and H1/H2/H7�
 | L3 | `authenticate` with a wrong password, and with an unknown email | Both return `null` — never distinguishable from the return value alone |
 | L4 | `claimAnonymousWork(sessionId, userId)` | The session's generations AND credentials re-key to the user, atomically; a DIFFERENT anonymous session's rows are untouched |
 
-Not covered here (deliberately, per impl-phase-6.md's own scope): session-fixation/rotation
+Not covered here (deliberately): session-fixation/rotation
 timing and the sign-up/sign-in HTTP routes' exact cookie behavior are exercised indirectly by
 M's route-level cases (every M case that authenticates does so through the real `/signup`
 cookie), rather than as a dedicated case — see N2's use of `/signup` for the one place this

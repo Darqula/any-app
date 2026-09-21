@@ -1,13 +1,8 @@
 import type { AppPlan } from "@any-app/protocol";
 
 /**
- * S13 (.docs/testing-review.md): this prompt's "region element already exists and carries the
- * region's class(es)" rule is the other half of `planner-prompt.ts`'s SHELL rule — the planner
- * may put the region's own class on the placeholder, and this call must never re-wrap that
- * class in a container of its own. The two rules must change together: this half alone (no
- * class on the placeholder) leaves the fill call's class unreachable from CSS/shell-script
- * selectors targeting `[data-slot="id"]` (the original bug); the planner half alone (no "don't
- * wrap" rule here) lands the class twice, nested, doubling any padding/border/background it sets.
+ * Pairs with planner-prompt's SHELL rule: the placeholder already carries the region's class,
+ * so this call must not wrap it again. Change both together.
  */
 export const FILL_SYSTEM_PROMPT = `You write the content of individual regions of a web app whose layout and stylesheet already exist.
 
@@ -29,20 +24,9 @@ Absolute rules:
 - anyapp.data.update merges shallowly, one level deep. Patching {tags: [...]} replaces the whole tags array/object, it does not merge inside it. To change one nested field, read the record, edit the field in JavaScript, then send the whole top-level property back.`;
 
 /**
- * The part of an app that never changes for the lifetime of that app: the stylesheet, the
- * shell, and the shared script. Belongs in `ProviderRequest.context`, not `user`, so a cache
- * breakpoint (Anthropic) or a stable prefix (OpenAI-compatible) can actually land on it.
- *
- * This is also what Phase 4's per-slot calls and cache pre-warm use directly (see
- * `fill-slot.ts`) — it is deliberately the *narrowest* stable unit, with no per-call
- * additions (like a slot list), so that the pre-warm and every parallel slot call share the
- * exact same byte-identical prefix and therefore the exact same cache entry. That guarantee
- * stops there, though: `regenerateSlot`/`regenerateCss` (edit.ts) build their own context
- * strings and never call this function, so an edit is not part of that shared-prefix set —
- * and `fillContext` below adds the slot list *after* this text, which only extends a shared
- * OpenAI-compatible prefix; on the Anthropic path there is no cache breakpoint at this
- * function's own boundary, so a sequential fill's single combined block does not read
- * whatever a pre-warm alone wrote.
+ * The part of an app that never changes, for ProviderRequest.context. Kept narrow (no slot list) so
+ * the pre-warm and every parallel slot call share one byte-identical cache prefix.
+ * Edits build their own context and do not share it.
  */
 export function appContext(plan: AppPlan): string {
   const data =
@@ -64,13 +48,7 @@ ${plan.script}
 </script>${data}`;
 }
 
-/**
- * The sequential (Phase 3.5) fill call's stable half: `appContext` plus the full slot list,
- * since one call writes every region and needs to see all of them up front. Kept distinct
- * from `appContext` itself — the parallel path's per-slot calls (Phase 4) share only the
- * narrower `appContext`, since a slot list naming every region would differ in emphasis
- * (whose region is "yours") across calls and break the shared prefix instead of protecting it.
- */
+/** Sequential fill's stable half: appContext plus every region. Not shared with parallel calls. */
 export function fillContext(plan: AppPlan): string {
   const slots = plan.slots
     .map((s) => `===SLOT ${s.id}=== (about ${s.height}px tall)\n${s.spec}`)

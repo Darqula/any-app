@@ -1,13 +1,6 @@
 /**
- * L — accounts and sessions, M — ownership/visibility/grants, N — usage and limits.
- * Spec: impl-phase-6.md step 9's L/M/N sections. Target: packages/store/src/{users,sessions,
- * passwords,claim,generations,usage}.ts, packages/protocol/src/view-grant.ts, apps/studio/src/
- * {auth,index,internal,edits}.ts.
- *
- * L is pure store-layer, sharing ONE scratch database (same reasoning as store-db.test.ts's
- * B-series and credentials.test.ts's H1/H2/H7-H9). M and N are route-level: each case spins
- * up its own scratch database + servers, because they need the real HTTP surface (cookies,
- * the view-grant query param, the internal route's grant check).
+ * L: accounts and sessions, M: ownership/visibility/grants, N: usage and limits. L is store-level and shares one
+ * scratch database; M and N need the HTTP surface (cookies, grant param, internal route), so each case has its own database and servers.
  */
 import { test, before, after } from "node:test";
 import type { TestContext } from "node:test";
@@ -46,14 +39,8 @@ function cookieValue(cookie: string): string {
 }
 
 /**
- * `internal.ts`/`edits.ts` write `usage_events` in an outer `finally` block that runs AFTER
- * `res.end()` (see internal.ts's flushUsage doc comment) — the client's `fetch()` can observe
- * the response as fully complete a tick or two before that write actually lands in Postgres,
- * since the two are racing independent async operations, not sequenced by anything the client
- * can see. Polling briefly (rather than querying once, immediately after `.text()` resolves)
- * is what makes a usage_events assertion right after a stream/edit response reliable instead
- * of occasionally flaky under load — confirmed live: a bare single query here failed once in
- * a full-suite run and never failed in isolation, which is exactly this race's signature.
+ * usage_events are written in a finally that runs after res.end(), so a client can see the response complete a tick before the row lands.
+ * Polling makes the assertion reliable (a bare query failed once in a full run and never alone).
  */
 async function waitForUsageEvents(
   databaseUrl: string,
@@ -77,9 +64,6 @@ async function waitForUsageEvents(
   }
 }
 
-// -----------------------------------------------------------------------------------------
-// L — accounts and sessions (pure store layer, one shared scratch database)
-// -----------------------------------------------------------------------------------------
 
 let scratch: ScratchDatabase;
 let store: typeof import("@any-app/store");
@@ -108,10 +92,8 @@ test("L1 — hashPassword/verifyPassword round trip; a malformed stored hash ret
     "not-a-hash",
     "scrypt$abc$8$1$salt$hash",
     "bcrypt$10$salt$hash",
-    // A stored value whose salt/hash fields decode (via
-    // Buffer.from(x, "base64"), which silently drops invalid characters) to zero-length
-    // buffers. Without the length guard in passwords.ts, ALL of these return true for ANY
-    // password — an authentication bypass, not a thrown error.
+    // Fields that decode to zero-length buffers (Buffer.from base64 drops invalid characters). Without the length guard they verify for ANY
+    // password: an authentication bypass, not an exception.
     "scrypt$32768$8$1$$",
     "scrypt$32768$8$1$AAAA$",
     "scrypt$32768$8$1$!!!!$!!!!",
@@ -155,12 +137,8 @@ test("L4 — claimAnonymousWork: re-keys an anonymous session's generations and 
   assert.ok(user);
   await store.claimAnonymousWork(anonSessionId, user.id);
 
-  // getGenerationForOwner had no production caller and its own doc
-  // comment falsely claimed one ("every studio route uses this one") — deleted rather than
-  // kept as a convenience only this test used. `getGeneration` (unscoped) + a direct
-  // ownership-column check is what a production route would never do (see index.ts's own
-  // "never call this from a studio route" comment on getGeneration), but is exactly right
-  // for a test asserting on raw row state.
+  // getGenerationForOwner had no production caller and was deleted. Raw ownership columns are read through the unscoped getGeneration,
+  // which a production route must not use but a test asserting row state should.
   const claimedRow = await store.getGeneration(gen.id);
   assert.equal(claimedRow?.owner_id, user.id, "the anonymous session's generation must now belong to the new user");
   assert.equal(claimedRow?.session_id, null, "and no longer carry the old session id");
@@ -175,9 +153,6 @@ test("L4 — claimAnonymousWork: re-keys an anonymous session's generations and 
   assert.equal(claimedCred?.apiKey, "l4-anon-key", "the credential must be re-keyed too, same transaction");
 });
 
-// -----------------------------------------------------------------------------------------
-// M — ownership, visibility, grants (route-level, own scratch db + servers per case)
-// -----------------------------------------------------------------------------------------
 
 interface Stack {
   scratch: ScratchDatabase;
@@ -210,8 +185,7 @@ async function setupM(t: TestContext): Promise<Stack> {
   return { scratch: scratchM, fake, servers, secret };
 }
 
-/** Drives a full generation (through the real POST /generations + internal stream) for the
- *  given cookie (or none, for a fresh anonymous owner), returning the id/grant/cookie used. */
+/** Drives a real generation (POST /generations plus the internal stream) for a cookie, or a fresh anonymous owner if none. */
 async function generateAs(
   stack: Stack,
   prompt: string,
@@ -281,7 +255,6 @@ test("M4 — an unlisted app is viewable by a non-owner (remix control, not edit
   });
   assert.equal(setVis.status, 200);
 
-  // A different (fresh, cookie-less) viewer.
   const frameRes = await fetch(`${stack.servers.studioOrigin}/generations/${owner.id}/frame`);
   assert.equal(frameRes.status, 200, "unlisted must be viewable without being the owner");
   const body = await frameRes.text();
@@ -355,7 +328,6 @@ test("M8 — fork: copies the plan (not the document), the fork's document carri
   });
   assert.equal(setVis.status, 200);
 
-  // A different viewer forks it.
   const forkRes = await fetch(`${stack.servers.studioOrigin}/generations/${owner.id}/fork`, {
     method: "POST",
   });
@@ -478,7 +450,7 @@ test("M10 — an expired-but-well-signed grant for an unlisted app the caller ow
     `${stack.servers.studioOrigin}/internal/generations/${owner.id}/stream${grantQuery(expiredOwnGrant)}`,
     { headers: { "x-internal-secret": "test-internal-secret" } },
   );
-  assert.equal(res.status, 200); // still a normal page response, not a 4xx/5xx
+  assert.equal(res.status, 200);
   const body = await res.text();
   assert.match(body, /expired/i, "must say the link expired, not silently render the app read-only");
   // The real document (and any live token) must not be in this response at all.
@@ -535,11 +507,8 @@ test("M12b — a mutating request with Sec-Fetch-Site: same-site is refused too,
   const stack = await setupM(t);
   const owner = await generateAs(stack, "M12b owner's app");
 
-  // This is the ACTUAL attack shape F2/R1 exist for — a generated (model-written, untrusted)
-  // app on <id>.apps.example.com posting back to example.com is same-site, cross-origin, so a
-  // real browser sends exactly this header. `cross-site` (M12 above) is the easier case that
-  // SameSite=Lax alone would already catch; this is the one that needs the guard, now that
-  // SameSite=Strict is gone (R1).
+  // The real attack: a model-written app on <id>.apps.example.com posting to example.com is same-site and cross-origin, so a browser
+  // sends this header. cross-site (M12) is the easier case; this one needs the guard, now that SameSite=Strict is gone.
   const res = await fetch(`${stack.servers.studioOrigin}/generations/${owner.id}/visibility`, {
     method: "POST",
     headers: {
@@ -591,9 +560,7 @@ test("M13 — GET /apps/:id: an unlisted app renders the full share page with no
   const privateRes = await fetch(`${stack.servers.studioOrigin}/apps/${owner.id}`);
   assert.equal(privateRes.status, 404);
 
-  // The owner's own frame response must advertise this page as the share link, not the
-  // htmx-fragment frame route — that mismatch was F3's whole failure mode (M4 passed on a
-  // fetch body while the real browser experience 404'd/broke).
+  // The owner's frame must advertise the share page, not the htmx fragment route (F3: M4 passed on a body while the browser experience broke).
   await fetch(`${stack.servers.studioOrigin}/generations/${owner.id}/visibility`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded", cookie: owner.cookie },
@@ -609,9 +576,6 @@ test("M13 — GET /apps/:id: an unlisted app renders the full share page with no
   );
 });
 
-// -----------------------------------------------------------------------------------------
-// N — usage and limits
-// -----------------------------------------------------------------------------------------
 
 async function deleteApp(stack: Stack, id: string, cookie?: string): Promise<globalThis.Response> {
   return fetch(`${stack.servers.studioOrigin}/generations/${id}`, {

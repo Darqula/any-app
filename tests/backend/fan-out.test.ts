@@ -1,12 +1,4 @@
-/**
- * J1–J5 — asCompleted / limitConcurrency.
- * Spec: .docs/tests-backend.md section J. Target: packages/generator/src/fan-out.ts.
- *
- * Neither function is re-exported from @any-app/generator's index.ts — they are exported
- * from their own module (fan-out.ts) but not re-exported through the package barrel (only
- * `parallel-fill.ts`, which imports them directly by relative path, uses them). Reached here
- * the same way, with no production-code change: a relative import straight to the module.
- */
+/** J1-J5: asCompleted / limitConcurrency. Not re-exported by the package index, so reached by relative import. */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { asCompleted, limitConcurrency } from "../../packages/generator/src/fan-out";
@@ -34,13 +26,8 @@ test("J2 — asCompleted, every task resolving: all N yielded exactly once", asy
 test(
   "J3 — asCompleted where one task rejects: the generator throws, and no unhandledRejection fires for the others",
   async () => {
-    // The property this pins: Promise.race attaches a rejection handler to every pending
-    // task, so tasks still in flight when the generator throws do not become unhandled
-    // rejections later, even though they DO reject after the generator has already stopped
-    // consuming them. Node 22 crashes the whole process on an unhandled rejection, so
-    // losing this property turns a closed browser tab (one aborted region among several
-    // in-flight ones) into a dead server. This was previously verified only by a throwaway
-    // script that no longer exists — see tests-backend.md's J section.
+    // Pins that Promise.race handles rejections of still-running tasks after the generator throws. Otherwise Node 22 crashes on an unhandled
+    // rejection and a closed tab (one aborted region among several) kills the server.
     let unhandledCount = 0;
     const onUnhandled = () => {
       unhandledCount++;
@@ -113,9 +100,7 @@ test("J5 — limitConcurrency with a rejecting task: the semaphore is released, 
   const result = await Promise.allSettled([limit(() => Promise.reject(new Error("boom")))]);
   assert.equal(result[0]?.status, "rejected");
 
-  // If release() were skipped on the reject path, this would hang forever (limit is 1, and
-  // the failed task would still be holding the only slot) — the test's own timeout is the
-  // deadlock detector.
+  // If release() were skipped on the reject path this hangs (limit 1); the test timeout is the deadlock detector.
   let secondRan = false;
   await limit(async () => {
     secondRan = true;

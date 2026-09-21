@@ -1,12 +1,7 @@
 /**
- * Backend cases C1–C6, C8–C16 (`.docs/tests-backend.md` section C). C7 already exists in
- * `studio-stream.test.ts` and is deliberately not repeated here.
- *
- * Every test spins up its own scratch database, fake provider, and pair of studio/sandbox
- * processes (`setup()` below) — see `tests/README.md`'s cleanup-order trap: `t.after()` runs
- * in registration order, so `scratch.drop()` must be registered before `servers.stop()`, and
- * any raw `pg.Pool` this file opens for a DB assertion is closed inline (`try/finally`)
- * rather than deferred, exactly like `studio-stream.test.ts`'s C7.
+ * Cases C1-C6, C8-C16; C7 lives in studio-stream.test.ts. Each test gets its own scratch database, fake
+ * provider and server pair. Cleanup order: t.after() runs in registration order, so drop() is registered before stop(); raw pg pools
+ * are closed inline.
  */
 import { test } from "node:test";
 import type { TestContext } from "node:test";
@@ -25,9 +20,7 @@ const { Pool } = pg;
 
 const INTERNAL_SECRET = "studio-routes-internal-secret";
 
-// A minimal, well-formed planner response — see planner.ts's parsePlan for the exact
-// section-header contract (`===NAME===`, alone on its own line). Reused, unmodified, by
-// every case below that needs a plan to succeed.
+// A minimal, well-formed planner response (===NAME=== headers alone on their lines), reused wherever a plan must succeed.
 const PLAN_TEXT = `===TITLE===
 Test App
 ===CSS===
@@ -122,12 +115,7 @@ async function setup(t: TestContext, envOverrides: Record<string, string> = {}):
   return { scratch, fake, servers };
 }
 
-/**
- * Returns the id AND the view grant `previewFrame` minted for it — every case below that
- * hits `/internal/generations/:id/stream` directly needs the grant, because a real
- * generation defaults to `visibility: "private"` and the internal route now 404s a private
- * app with no valid grant for its exact id (see internal.ts, view-grant.ts).
- */
+/** Returns the id and the view grant: a real generation is private, and the internal route 404s it without a valid grant. */
 async function createGeneration(
   servers: Stack["servers"],
   prompt = "Test app prompt.",
@@ -148,7 +136,6 @@ function authHeaders(): Record<string, string> {
   return { [INTERNAL_SECRET_HEADER]: INTERNAL_SECRET };
 }
 
-// -----------------------------------------------------------------------------------------
 
 test("C1 — GET /health", async (t) => {
   const { servers } = await setup(t);
@@ -219,11 +206,8 @@ test("C9 — two concurrent stream requests for one id: one provider round trip,
   const { servers, scratch, fake } = await setup(t);
   const { id, grant } = await createGeneration(servers, "Race test app.");
 
-  // Exactly one full script queued (planner, then fill). If claimForGeneration's atomicity
-  // regressed and both concurrent requests started generating, the second attempt would
-  // find this queue already drained and get the fake's own "queue empty" 500 instead of a
-  // real plan/fill — which is exactly the kind of failure requestCount() below is there to
-  // catch, on top of the direct "Already generating" body check.
+  // One full script (planner, fill) is queued. If claimForGeneration stopped being atomic, the second request would find the queue empty
+  // and get the fake's 500; requestCount() catches that beyond the body check.
   fake.queueComplete({ text: PLAN_TEXT });
   fake.queueStream({ chunks: FILL_CHUNKS, finish: "stop" });
 
@@ -255,24 +239,10 @@ test("C9 — two concurrent stream requests for one id: one provider round trip,
 });
 
 /**
- * C10 — client disconnect mid-stream: the row goes back to `pending` and no document is
- * saved, so a later request retries from scratch.
- *
- * This asserted the *opposite* (a truncated document persisted as `complete`) while
- * testing-review.md's S8 stood. Root cause, since fixed: both SDKs' `Stream` classes treat
- * the request's composed abort signal firing as a silent, non-throwing `return` from the
- * async iterator — unlike their non-streaming path, which throws a real `APIUserAbortError`
- * (which is why C15's planner-stage disconnect always behaved correctly). `streamText` saw
- * its `for await` loop simply end with partial text intact, nothing threw, so
- * `internal.ts`'s `catch (isAbortError) -> resetForRetry` could never fire and
- * `markCompleteWithPlan` ran on a mid-sentence document.
- *
- * Fixed in the adapters rather than at the persist site: `providers/{openai,anthropic}.ts`
- * now raise the SDK's own `APIUserAbortError` after the stream loop when `req.signal.aborted`,
- * so the streaming and non-streaming paths classify aborts identically and every existing
- * `isAbortError` guard works as its comments already claimed. That also fixes the
- * before-any-content variant, which used to surface as `RefusalError("empty response")` and
- * leave the row `failed` with a misleading "model declined this request".
+ * C10 — a disconnect mid-stream sends the row back to pending and saves no document.
+ * Regression: the SDKs' stream iterators end silently on abort, so nothing threw and a mid-sentence document was saved as complete.
+ * Fixed in the adapters (they raise the abort error after the loop), which also fixes the before-any-content case that used to fail
+ * as a bogus "model declined".
  */
 test("C10 — client disconnect mid-stream: row back to pending, no document saved", async (t) => {
   const { servers, scratch, fake } = await setup(t);
@@ -394,30 +364,16 @@ test("C14 — planner returns unparseable output: falls back to linear, app stil
 });
 
 /**
- * C15 — planner call aborted: does NOT fall back to linear.
- *
- * The HTTP/database outcome alone cannot prove this (testing-review.md S9). Deleting
- * `internal.ts`'s `if (isAbortError(error)) throw error;` guard used to leave this case
- * green: both SDKs check `signal?.aborted` and throw their own abort error *before ever
- * sending a request*, and `runLinearFallback` gets the same already-aborted `ac.signal`, so
- * even a wrongly-attempted fallback self-aborts with no network call — `requestCount` stays
- * at 1 and the outer catch resets the row to `pending` either way. Both assertions hold
- * under the correct code and under that one-line regression.
- *
- * The log assertion at the end is what actually distinguishes them: `internal.ts` logs
- * "planning failed, falling back to linear" on entry to the branch, so its absence is direct
- * evidence the branch was never entered. `servers.logs("studio")` is the harness seam that
- * makes it observable (added for this and for H5).
+ * C15 — an aborted planner call must not fall back to linear. The HTTP and database outcome cannot show it: an already-aborted
+ * signal makes even a wrong fallback self-abort with no network call. Only the server log line "planning failed, falling back to
+ * linear" distinguishes them (servers.logs("studio"), added for this and H5).
  */
 test("C15 — planner call aborted: does NOT fall back to linear, row goes back to pending", async (t) => {
   const { servers, scratch, fake } = await setup(t);
   const { id, grant } = await createGeneration(servers, "Abort during planning test app.");
 
-  // Only ONE response is ever queued. See the comment above for why this does not, on its
-  // own, distinguish "correctly skipped the fallback" from "wrongly attempted it, which then
-  // self-aborted before reaching the network" — kept anyway as a guard against a *coarser*
-  // regression (e.g. the fallback somehow using a fresh, non-aborted signal), which this
-  // would still catch as a second request landing on an empty queue.
+  // Only one response is queued. That alone cannot tell "skipped" from "attempted then self-aborted"; it still catches a coarser
+  // regression such as the fallback using a fresh signal.
   const plannerHandle = fake.queueComplete({ text: PLAN_TEXT, delayMs: 4000 });
 
   const controller = new AbortController();
@@ -448,10 +404,7 @@ test("C15 — planner call aborted: does NOT fall back to linear, row goes back 
   assert.equal(row?.status, "pending");
   assert.equal(row?.document, null);
 
-  // The assertion that actually pins the guard — see this case's doc comment. Without
-  // `if (isAbortError(error)) throw error;` the catch below it runs and logs this line
-  // before calling runLinearFallback, so its presence means the branch was entered even
-  // though nothing observable downstream would differ.
+  // Pins the guard: without `if (isAbortError(error)) throw error`, the catch logs this line before calling runLinearFallback.
   assert.ok(
     !servers.logs("studio").includes("falling back to linear"),
     "an aborted planner call must never enter the linear-fallback branch",
@@ -463,9 +416,7 @@ test("C16 — fill call fails after the shell was written: error banner appended
   const { id, grant } = await createGeneration(servers, "Partial fill failure test app.");
 
   fake.queueComplete({ text: PLAN_TEXT });
-  // The header slot completes and swaps successfully; the body slot is left mid-write when
-  // the finish reason arrives — proving the already-open response is appended to, not
-  // discarded or replaced.
+  // The header slot completes; the body slot is mid-write when the finish reason arrives. The open response is appended to, not replaced.
   fake.queueStream({
     chunks: ["===SLOT header===\n<h1>Partial success</h1>\n===SLOT body===\n<p>unfinished"],
     finish: "content_filter",

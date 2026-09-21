@@ -1,25 +1,7 @@
 /**
- * Backend case C7 only (`.docs/tests-backend.md`): the happy path, full stream, driven
- * end to end through a real studio process against the fake provider fixture — 200, body
- * has the doctype, then skeletons, then templates and swaps, and the row ends `complete`.
- *
- * Deliberately does not implement the rest of section C (C1/C4-C6/C8-C16) — that is a later
- * task. This exists to prove the fixture actually drives a real generation through studio,
- * not to be the full C-section suite.
- *
- * Hits `/internal/generations/:id/stream` directly (with the internal secret header), the
- * same way sandbox's `/preview/:id` does internally — sandbox is not needed for this case
- * (see section C vs. D in tests-backend.md: C is studio-only), so it is started by
- * `startServers` but never addressed.
- *
- * The final DB check opens its own short-lived `pg.Pool` and closes it *inline*, before the
- * test function returns, rather than deferring the close via `t.after()`. `t.after()` hooks
- * run in registration order (confirmed empirically — Node does not reverse them), so a pool
- * closed via a `t.after()` registered after `scratch.drop()`'s would still be open when
- * `drop()` runs `pg_terminate_backend` on every other connection to the scratch database;
- * the resulting unsolicited termination fires `pool`'s `"error"` event, and with nothing
- * listening for it, that crashes the whole test process. Closing inline sidesteps the
- * ordering question entirely instead of depending on it.
+ * Case C7 only: the happy path through a real studio against the fake provider (200, doctype, skeletons, templates
+ * and swaps, row `complete`). Calls the internal stream route directly with the internal secret. The final DB check opens and closes its own
+ * pool inline, because t.after() runs in registration order and a pool still open at drop() crashes the process on an unhandled "error".
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -101,7 +83,6 @@ test("C7 — happy path, full stream: 200, doctype then skeletons then templates
   assert.equal(streamRes.status, 200);
   const body = await streamRes.text();
 
-  // --- Ordering: doctype, then skeletons, then templates/swaps ---------------------------
   assert.ok(body.startsWith("<!doctype html>"), "response must start with the doctype, nothing before it");
 
   const skeletonIndex = body.indexOf('class="anyapp-skeleton"');
@@ -113,7 +94,6 @@ test("C7 — happy path, full stream: 200, doctype then skeletons then templates
   assert.ok(skeletonIndex < headerTemplateIndex, "skeletons must render before any slot template");
   assert.ok(headerTemplateIndex < bodyTemplateIndex, "sequential fill lands slots in plan/shell order");
 
-  // --- Each slot's template is closed and swapped -----------------------------------------
   assert.ok(body.includes("<h1>Welcome to the Test App</h1>"), "header content must be present");
   assert.ok(body.includes("<p>This is the main content area.</p>"), "body content must be present");
   assert.ok(body.includes('</template><script>swap("header")</script>'), "header slot must be closed and swapped");
@@ -123,10 +103,8 @@ test("C7 — happy path, full stream: 200, doctype then skeletons then templates
     "swap calls land in plan/shell order under sequential fill",
   );
 
-  // --- Only the two scripted calls happened (planner, then fill) -------------------------
   assert.equal(fake.requestCount(), 2);
 
-  // --- The row is persisted as complete ---------------------------------------------------
   const pool = new Pool({ connectionString: scratch.databaseUrl });
   try {
     const { rows } = await pool.query("select status, document from generations where id = $1", [id]);

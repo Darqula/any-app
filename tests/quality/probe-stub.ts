@@ -1,25 +1,9 @@
-/**
- * A stub `Provider` (`packages/generator/src/providers/types.ts`) for `probe.ts --dry-run`.
- * Returns pre-scripted text — no network, no real provider, no cost — so the S13 probe's
- * plumbing (CLI parsing, prompt selection, `parsePlan`, the wrapped-root measurement, disk
- * writes, reporting) can be exercised and shown correct without spending anything real.
- *
- * Deliberately NOT the HTTP-level `tests/harness/fake-provider.ts` fixture — that is a real
- * wire-format server (useful for testing the *adapters themselves*), which is more machinery
- * than a dry run of this harness needs. `probe.ts` never touches `resolve()`/the real
- * `providers/openai.ts`/`providers/anthropic.ts` adapters in `--dry-run` mode at all; this
- * stub is swapped in ahead of them, in-process, so there is no HTTP anywhere in a dry run.
- */
+/** An in-process Provider stub for `probe.ts --dry-run`: scripted text, no network, no cost. Not the HTTP fake-provider (more than a dry run needs). */
 import type { Provider, ProviderRequest } from "../../packages/generator/src/providers/types";
 
 export type StubScript = { text: string } | { chunks: string[] };
 
-/**
- * Queue-driven stub: each `completeText`/`streamText` call consumes the next scripted
- * response, in order. Throws a clear error (not a silent empty string) if more calls happen
- * than were scripted — the same "harness misuse should be loud" convention
- * `tests/harness/fake-provider.ts` uses for its own empty queue.
- */
+/** Each call consumes the next scripted response; extra calls throw loudly, like the fake provider's empty queue. */
 export function createStubProvider(scripts: StubScript[]): Provider {
   let i = 0;
   function next(caller: string): StubScript {
@@ -52,12 +36,7 @@ export function createStubProvider(scripts: StubScript[]): Provider {
   };
 }
 
-// -----------------------------------------------------------------------------------------
-// Tier 1 dry-run fixtures — three canned planner responses, matching the shape `--dry-run`'s
-// contract asks for: one with classes on every placeholder, one with none, one that fails
-// parsePlan. Hand-written directly in the `===NAME===` section format `parseSections`
-// (packages/generator/src/section-parser.ts) expects — each header alone on its own line.
-// -----------------------------------------------------------------------------------------
+// Tier 1 dry-run fixtures: planner responses with classes on every placeholder, on none, and one that fails parsePlan.
 
 /** A well-formed planner response whose every placeholder carries the region's own class —
  * the "fix worked" case. */
@@ -98,19 +77,13 @@ form-panel|380|The contact form itself.
 confirmation-panel|180|A confirmation message shown after submitting.
 `;
 
-/** Missing `===SLOTS===` (and, deliberately, `===SHELL===` too) so `parsePlan` throws
- * `PlanError` — this is the "must be captured raw before anything else" case Q2
- * (`.docs/open-problems.md`) exists to guard against. */
+/** Omits ===SLOTS=== (and ===SHELL===) so parsePlan throws: the "capture raw first" case. */
 export const TIER1_FIXTURE_PARSE_FAILURE = `===TITLE===
 Stub Broken Plan
 ===CSS===
 body{margin:0}
 `;
 
-// -----------------------------------------------------------------------------------------
-// Tier 2 dry-run fixtures — one fill response that wraps its output in a single element
-// carrying a planner-defined class, one that doesn't.
-// -----------------------------------------------------------------------------------------
 
 /** Wraps its entire output in one root element carrying `stubClass` — the S13 shape
  * `DIAG:fill-wrapped-root` exists to catch. */

@@ -1,8 +1,4 @@
-/**
- * Who a row belongs to. A signed-in browser carries both — `userId` owns the data,
- * `sessionId` is still the cookie it arrived on (claim.ts's `claimAnonymousWork` needs both
- * at once).
- */
+/** Who a row belongs to. A signed-in browser carries both: userId owns the data, sessionId is the cookie. */
 export type Owner =
   | { kind: "user"; userId: string; sessionId: string }
   | { kind: "anon"; sessionId: string };

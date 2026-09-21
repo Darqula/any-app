@@ -41,9 +41,7 @@ export function settingsRouter(): Router {
       // failed generation minutes later.
       await build(credential).validate(model);
     } catch (error) {
-      // `apiKey` is not yet in any resolved secrets list (it was never saved), so it has to
-      // be scrubbed explicitly here — the one place a just-typed key could otherwise leak
-      // straight back into the page via a provider's own error text.
+      // The typed key is in no secrets list yet, so scrub it explicitly before showing the provider's error.
       res.status(400).type("html").send(editProblem(safeMessage(error, [apiKey])));
       return;
     }

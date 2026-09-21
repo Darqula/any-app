@@ -1,17 +1,6 @@
 /**
- * G1–G14 — provider adapters. Spec: .docs/tests-backend.md section G.
- * Target: packages/generator/src/providers/{openai,anthropic}.ts, resolve.ts, roles.ts.
- *
- * These run the *same* assertions against both wire formats via the fake provider fixture
- * (tests/harness/fake-provider.ts) — the whole point of the adapters is to make the two
- * protocols indistinguishable to the rest of the generator, and this is the only way to know
- * that actually holds. `tests/backend/fake-provider.test.ts` is a self-test of the fixture
- * itself and happens to already exercise several of these scenarios (labelled with the same
- * case ids) while proving the fixture is faithful; this file is the dedicated G-suite the
- * task brief asks for and stands on its own.
- *
- * G15 (real provider, nightly/on-demand — never in CI) is listed at the bottom as a
- * documented `skip`, per the task brief: it needs a real key and real money.
+ * G1-G14: provider adapters. The same assertions run against both wire formats through the fake provider,
+ * which is how we know the adapters make them indistinguishable. G15 (real provider, real money) is a documented skip.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -19,10 +8,7 @@ import { startFakeProvider } from "../harness/fake-provider";
 import type { FakeProvider } from "../harness/fake-provider";
 import { RefusalError, TruncationError, isAbortError, resolve, roleConfig, NoCredentialError } from "@any-app/generator";
 import type { ProviderCredential, UsageInfo } from "@any-app/generator";
-// Not part of @any-app/generator's public `exports` (only "." -> src/index.ts is declared).
-// Imported by relative filesystem path — Node's ESM resolver does not consult a package's
-// `exports` map for a path that never goes through the bare specifier at all. Same approach
-// already used by fake-provider.test.ts and fan-out.test.ts; no production code changed.
+// Not in @any-app/generator's exports map, so imported by relative path (as fake-provider.test.ts and fan-out.test.ts do).
 import { createOpenAIProvider } from "../../packages/generator/src/providers/openai";
 import { createAnthropicProvider } from "../../packages/generator/src/providers/anthropic";
 import type { ProviderRequest } from "../../packages/generator/src/providers/types";
@@ -46,9 +32,7 @@ async function collect(gen: AsyncGenerator<string>): Promise<string[]> {
   return out;
 }
 
-/** Saves and restores every listed env var around `fn`, so G11–G13's env manipulation never
- * leaks into a later test in this same process (each test file is its own `node --test`
- * child process, but tests within one file share `process.env`). */
+/** Saves and restores env vars so one test's changes do not leak into the next in the same process. */
 async function withEnv<T>(overrides: Record<string, string | undefined>, fn: () => Promise<T>): Promise<T> {
   const saved: Record<string, string | undefined> = {};
   for (const key of Object.keys(overrides)) saved[key] = process.env[key];
@@ -84,9 +68,6 @@ beta|180|Second region
 ===DATA===
 `;
 
-// -----------------------------------------------------------------------------------------
-// G1–G3: passthrough
-// -----------------------------------------------------------------------------------------
 
 test("G1 — OpenAI adapter, streamText yields exactly choices[0].delta.content text, in order", async (t) => {
   const fake = await startFakeProvider();
@@ -131,11 +112,8 @@ test("G3 — both adapters, completeText: returns the full text of a non-streame
   assert.equal(await createAnthropicProvider(anthropicCred(anthropicFake)).completeText("fake-model", req()), "hello from anthropic");
 });
 
-// -----------------------------------------------------------------------------------------
-// G4 — abort. The regression: neither SDK's abort class sets `name` to "AbortError", so a
-// name-based check looks reasonable and silently never matches. Prove both halves: the real
-// check passes, AND the naive check that was wrong once already would still be wrong.
-// -----------------------------------------------------------------------------------------
+// G4 — abort. Neither SDK's abort class sets name to "AbortError", so a name check silently never matches. Proves the real check passes
+// and the naive one is still wrong.
 
 test("G4 — OpenAI: isAbortError is true for OpenAI's own abort error class", async (t) => {
   const fake = await startFakeProvider();
@@ -201,9 +179,6 @@ test("G4 — Anthropic: isAbortError is true for Anthropic's own abort error cla
   );
 });
 
-// -----------------------------------------------------------------------------------------
-// G5–G8 — refusal and empty-response shapes
-// -----------------------------------------------------------------------------------------
 
 test("G5 — OpenAI, finish_reason content_filter surfaces as RefusalError", async (t) => {
   const fake = await startFakeProvider();
@@ -268,16 +243,13 @@ test("G8 — both adapters, empty response surfaces as RefusalError('empty respo
     (error: unknown) => error instanceof RefusalError && error.reason === "empty response",
   );
 
-  anthropicFake.queueComplete({}); // text omitted
+  anthropicFake.queueComplete({});
   await assert.rejects(
     () => createAnthropicProvider(anthropicCred(anthropicFake)).completeText("fake-model", req()),
     (error: unknown) => error instanceof RefusalError && error.reason === "empty response",
   );
 });
 
-// -----------------------------------------------------------------------------------------
-// G9 — system prompt placement
-// -----------------------------------------------------------------------------------------
 
 test("G9 — system prompt placement: OpenAI is a role:system message, Anthropic is the top-level system field and never a message", async (t) => {
   const fake = await startFakeProvider();
@@ -303,9 +275,6 @@ test("G9 — system prompt placement: OpenAI is a role:system message, Anthropic
   );
 });
 
-// -----------------------------------------------------------------------------------------
-// G10 — no assistant prefill
-// -----------------------------------------------------------------------------------------
 
 test("G10 — Anthropic: assistant prefill is never attempted", async (t) => {
   const fake = await startFakeProvider();
@@ -326,9 +295,6 @@ test("G10 — Anthropic: assistant prefill is never attempted", async (t) => {
   assert.deepEqual(streamCaptured.body.messages.map((m: any) => m.role), ["user"], "same for the streaming path");
 });
 
-// -----------------------------------------------------------------------------------------
-// G11 — token budget is per-role, not global
-// -----------------------------------------------------------------------------------------
 
 test("G11 — a raised token budget applies only to the role configured for it, not globally", async () => {
   await withEnv(
@@ -349,9 +315,6 @@ test("G11 — a raised token budget applies only to the role configured for it, 
   );
 });
 
-// -----------------------------------------------------------------------------------------
-// G12 — per-role resolution, with fallback
-// -----------------------------------------------------------------------------------------
 
 test("G12 — planner, fill, edit, router each resolve their own provider/model/budget; an unset role falls back to the default", async () => {
   await withEnv(
@@ -387,9 +350,6 @@ test("G12 — planner, fill, edit, router each resolve their own provider/model/
   );
 });
 
-// -----------------------------------------------------------------------------------------
-// G13 — resolution fails before any HTTP call
-// -----------------------------------------------------------------------------------------
 
 test("G13 — a role pointed at a provider with no credential fails at resolution, before any HTTP call", async (t) => {
   const fake = await startFakeProvider();
@@ -423,9 +383,6 @@ test("G13 — a role pointed at a provider with no credential fails at resolutio
   );
 });
 
-// -----------------------------------------------------------------------------------------
-// G14 — same prompt, both adapters, same parseable output
-// -----------------------------------------------------------------------------------------
 
 test("G14 — the same plan prompt through both adapters produces output parsePlan accepts", async (t) => {
   const openaiFake = await startFakeProvider();
@@ -449,22 +406,15 @@ test("G14 — the same plan prompt through both adapters produces output parsePl
   assert.deepEqual(openaiPlan, anthropicPlan, "the adapter changes transport, not semantics — parsed plans must be identical");
 });
 
-// -----------------------------------------------------------------------------------------
-// S14 — a response cut off at the token budget must surface as TruncationError, distinct
-// from RefusalError: only a truncation is worth retrying with a bigger budget. Covers both
-// wire formats (finish_reason: "length" / stop_reason: "max_tokens") on both call paths.
-// See .docs/testing-review.md's S14 entry.
-// -----------------------------------------------------------------------------------------
+// A budget cut-off must surface as TruncationError, distinct from RefusalError (only a truncation merits a bigger budget). Both wire
+// formats, both call paths.
 
 test("S14 — OpenAI, finish_reason length surfaces as TruncationError (not RefusalError) on streamText", async (t) => {
   const fake = await startFakeProvider();
   t.after(() => fake.close());
   const provider = createOpenAIProvider(openaiCred(fake));
 
-  // onUsage (Phase 6 step 8) must fire even though this call throws —
-  // a TruncationError means the model burned the whole budget and produced nothing usable,
-  // the single most expensive outcome this system has, and exactly the one a "log only on
-  // success" regression would silently stop billing for.
+  // onUsage must fire even though this call throws: a truncation is the most expensive outcome and must stay counted.
   const seen: UsageInfo[] = [];
   fake.queueStream({ chunks: ["partial content"], finish: "length" });
   await assert.rejects(
@@ -529,9 +479,7 @@ test("S14 — Anthropic, stop_reason max_tokens surfaces as TruncationError (not
 });
 
 test("S14 — both adapters, a truncated response WITH NO visible text yet is TruncationError, not RefusalError('empty response')", async (t) => {
-  // The two checks (truncated vs. empty) could collide when the cutoff lands before the
-  // first delta — this pins the order: truncation must win, since "cut off" is the more
-  // actionable diagnosis and the caller still needs to know a bigger budget might help.
+  // When the cut-off lands before the first delta, truncation must win over "empty": it is the more actionable diagnosis.
   const openaiFake = await startFakeProvider();
   t.after(() => openaiFake.close());
   const anthropicFake = await startFakeProvider();
@@ -543,7 +491,7 @@ test("S14 — both adapters, a truncated response WITH NO visible text yet is Tr
     (error: unknown) => error instanceof TruncationError,
   );
 
-  anthropicFake.queueComplete({ finish: "length" }); // text omitted
+  anthropicFake.queueComplete({ finish: "length" });
   await assert.rejects(
     () => createAnthropicProvider(anthropicCred(anthropicFake)).completeText("fake-model", req()),
     (error: unknown) => error instanceof TruncationError,
@@ -571,13 +519,10 @@ test("S14 — both adapters, both paths: a normal (stop / end_turn) response is 
   assert.equal(await createAnthropicProvider(anthropicCred(anthropicFake)).completeText("fake-model", req()), "all good");
 });
 
-// -----------------------------------------------------------------------------------------
-// G15 — real provider, nightly/on-demand only. Never in CI: needs a real key and real money.
-// -----------------------------------------------------------------------------------------
 
 test(
   "G15 — caching: two calls sharing a realistic (~4,500-token) prefix, the second reports a nonzero cache-read count (SKIPPED)",
-  { skip: "requires a real provider credential and spends real money — never run in CI; see .docs/open-problems.md for the last measured numbers" },
+  { skip: "requires a real provider credential and spends real money — never run in CI" },
   async () => {
     // Deliberately not implemented against a live endpoint here. See tests-backend.md's G
     // section and CLAUDE.md's provider notes: a minimal (too-short) shared prefix silently

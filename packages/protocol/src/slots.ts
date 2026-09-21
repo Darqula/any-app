@@ -14,7 +14,6 @@ export interface CollectionSpec {
   description: string;
 }
 
-/** Everything the planner call produces. */
 export interface AppPlan {
   title: string;
   css: string;
@@ -23,56 +22,22 @@ export interface AppPlan {
   /** Shared state and delegated listeners. Runs before any slot lands. */
   script: string;
   slots: SlotSpec[];
-  /**
-   * Collections this app's data API exposes. Empty for most apps — a static app should not
-   * carry a data-API token it never uses (see `dataRuntime`). A row written before Phase 5
-   * has no `collections` key at all; `getFilledApp` (store/generations.ts) defaults it to
-   * `[]` on read, the same way a field added to a persisted JSONB shape always needs a
-   * migration of *reads*, not just of writers.
-   */
+  /** Empty for most apps. Older rows lack the key (getFilledApp defaults it). */
   collections: CollectionSpec[];
 }
 
-/** A plan plus the filled content of each slot, keyed by slot id. */
 export interface FilledApp extends AppPlan {
   content: Record<string, string>;
 }
 
 export const SLOT_ID_PATTERN = /^[a-z][a-z0-9-]{0,30}$/;
 
-/**
- * Shared by the planner (parsing the DATA section), `packages/records` (validating a
- * collection name on every data-API request), and the fill prompts (naming collections in
- * context). One definition so the three never drift apart — a name the planner accepts but
- * the data API rejects would be a collection nothing can ever write to.
- */
+/** Shared by the planner, records and fill prompts so the names they accept never drift apart. */
 export const COLLECTION_PATTERN = /^[a-z][a-z0-9_]{0,30}$/;
 
 /**
- * Tolerant placeholder scan.
- *
- * The planner prompt asks for `<div data-slot="id"></div>` exactly, but the model routinely
- * writes `<div class="panel" data-slot="chart"></div>` (a styling hook for its own CSS) or
- * `<span data-slot="last-updated"></span>` — a byte-exact regex missed those entirely,
- * measured at 28% of real generations losing the whole shell/slots architecture to the
- * linear fallback (`shell contains no slot placeholders`), plus silent partial drops when
- * only some placeholders in a shell matched. See `.docs/open-problems.md`'s "Phase 6
- * pre-flight" section.
- *
- * Any tag name, any attributes in any order (in either quote style, unquoted, or valueless/
- * boolean — `hidden`, `disabled`, `required` — since ordinary HTML permits all three; a
- * digit or colon is also allowed in an attribute name after its first character, so
- * `data-col2`/`aria-x1` match), self-closing or open/close with only whitespace between —
- * but never non-whitespace content, which is genuinely ambiguous and not something a regex
- * can safely treat as an empty placeholder.
- * Groups: 1 = tag, 2 = attribute blob, 3 = id (double-quoted), 4 = id (single-quoted).
- *
- * An unquoted value cannot legally contain whitespace, `>`, `"`, `'`, `=`, or a backtick —
- * excluding exactly those from the unquoted branch's character class is what stops the match
- * from running past the end of the tag (e.g. treating the next attribute, or the closing
- * `>`, as part of the value). `data-slot` itself (`DS`, below) deliberately still requires a
- * quoted value — only ordinary attributes were widened, since an unquoted or boolean
- * `data-slot` would leave no id worth capturing.
+ * Tolerant placeholder scan: any tag, any attribute order/quoting, empty or self-closing, never with content.
+ * Groups: 1 tag, 2 attribute blob, 3 id (double-quoted), 4 id (single-quoted).
  */
 const ATTR =
   '[a-z][a-z0-9:-]*(?:\\s*=\\s*(?:"[^"]*"|\'[^\']*\'|[^\\s"\'=<>`]+))?';
@@ -80,25 +45,12 @@ const DS = 'data-slot\\s*=\\s*(?:"([a-z][a-z0-9-]{0,30})"|\'([a-z][a-z0-9-]{0,30
 const OPEN = "<([a-z][a-z0-9]*)((?:\\s+" + ATTR + ")*?\\s+" + DS + "(?:\\s+" + ATTR + ")*)\\s*";
 const PLACEHOLDER_PATTERN = OPEN + "(?:\\/>|>\\s*<\\/\\1\\s*>)";
 
-/** One `data-slot="id"` attribute occurrence, in the form the generic attribute scan finds it. */
 const DATA_SLOT_ATTR = /data-slot\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
 
-/**
- * A generic attribute — `name="value"`, `name='value'`, `name=value` (unquoted), or a bare
- * valueless/boolean `name` — used to pull attributes out of a match's blob. Mirrors `ATTR`
- * above (see its comment for why each form is legal HTML); kept as a separate regex, rather
- * than derived from the `ATTR` string, because this one is applied with `exec` in a loop and
- * needs its own capture groups. Groups: 1 = name, 2 = double-quoted value, 3 = single-quoted
- * value, 4 = unquoted value; a boolean attribute leaves 2-4 all undefined.
- */
+/** One attribute, quoted, unquoted or boolean. Groups: 1 name, 2 "…", 3 '…', 4 unquoted. */
 const GENERIC_ATTR = /([a-zA-Z][a-zA-Z0-9:-]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
 
-/**
- * Blanks out `<script>...</script>` bodies (replacing with equal-length spaces, so every
- * other match's index stays valid against the original string). The shell legitimately
- * contains scripts, and a model writing `el.innerHTML = '<div data-slot="x"></div>'` must
- * not have that string rewritten as if it were a real placeholder.
- */
+/** Blanks <script> bodies with equal-length spaces so match indexes stay valid. */
 function maskScripts(shell: string): string {
   return shell.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, (m) => " ".repeat(m.length));
 }
@@ -111,13 +63,7 @@ interface PlaceholderMatch {
   id: string;
 }
 
-/**
- * Runs the tolerant scan against `shell`, script-masked, skipping any match that is our own
- * previously-rendered output (contains `id="slot-…"`, either quote style) — since S12,
- * `renderSkeletons` emits `data-slot` itself, and without this guard a rendered document
- * would re-scan as if it were an unfilled shell. Both `renderSkeletons` and `slotIdsInShell`
- * go through this one function so they can never disagree about what counts as a placeholder.
- */
+/** Tolerant scan over the script-masked shell; skips already-rendered output (id="slot-…"). */
 function scanPlaceholders(shell: string): PlaceholderMatch[] {
   const masked = maskScripts(shell);
   const re = new RegExp(PLACEHOLDER_PATTERN, "gi");
@@ -137,19 +83,15 @@ function parseAttrs(blob: string): Array<{ name: string; value: string }> {
   GENERIC_ATTR.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = GENERIC_ATTR.exec(blob))) {
-    // A boolean attribute (no `=` at all) leaves groups 2-4 undefined; treated as value ""
-    // rather than e.g. the attribute's own name, so `renderSkeletonElement` re-emits it as
-    // `hidden=""` — valid HTML, equivalent to bare `hidden` — rather than dropping it.
+    // A boolean attribute has no value; it is stored as "" and re-emitted as hidden="".
     attrs.push({ name: m[1]!, value: m[2] ?? m[3] ?? m[4] ?? "" });
   }
   return attrs;
 }
 
 /**
- * Ids named by a `data-slot="..."` attribute somewhere in the (script-masked) shell that the
- * tolerant scan above did NOT recognize as a complete placeholder — e.g. real content inside
- * the element, a mismatched closing tag, or a malformed quote. Used by `parsePlan` to fail
- * loudly with `PlanError` instead of silently dropping the region (see `.docs/open-problems.md`).
+ * Ids in a data-slot attribute the scan did not accept as a complete placeholder
+ * (content inside, mismatched close tag, bad quote). parsePlan fails loudly on these.
  */
 export function unmatchedSlotAttributes(shell: string): string[] {
   const masked = maskScripts(shell);
@@ -166,9 +108,7 @@ export function unmatchedSlotAttributes(shell: string): string[] {
   return out;
 }
 
-/** Elements that can never have a close tag / children — depth-tracking must not treat one
- * of these as opening or closing a nesting level, even if the model wrote a matching-name
- * void element inside a placeholder's content. */
+/** Void elements never open or close a nesting level. */
 const VOID_ELEMENTS = new Set([
   "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source",
   "track", "wbr",
@@ -177,15 +117,8 @@ const VOID_ELEMENTS = new Set([
 type TagToken = { end: number; name: string; closing: boolean; selfClosing: boolean };
 
 /**
- * Reads one tag starting at `s[start] === '<'`, respecting quoted attribute values so a
- * `<div title="a > b">` doesn't end the tag at the `>` inside the quote. Three outcomes:
- *  - a `TagToken` for a real, fully-terminated tag (open, close, or self-closing);
- *  - `null` when `start` is not actually the beginning of a tag at all (a stray `<` in text,
- *    a `<!DOCTYPE ...>`, a processing instruction) — safe to treat as literal text and keep
- *    scanning from the next character;
- *  - the string `"unterminated"` when a tag name was found but no unquoted `>` (or the
- *    closing quote of an attribute value) ever arrives before end of string — genuinely
- *    ambiguous, and the caller must bail out entirely rather than guess.
+ * Reads the tag at s[start] === '<', honouring quoted values. Returns null when it is not a tag
+ * at all, "unterminated" when no closing '>' arrives.
  */
 function readTag(s: string, start: number): TagToken | "unterminated" | null {
   let i = start + 1;
@@ -222,18 +155,9 @@ function readTag(s: string, start: number): TagToken | "unterminated" | null {
 }
 
 /**
- * Depth-tracked scan for the close tag matching the same-named element that opened at
- * `contentStart` (the index right after that element's own opening `>`). Counts nesting of
- * the SAME tag name only (so `<div data-slot="x"><div>a</div></div>` closes correctly),
- * skips void elements and explicit self-closing tags (neither opens a nesting level),
- * and skips over `<!-- comments -->` and `<script>`/`<style>` bodies wholesale so markup-
- * shaped text inside them is never mistaken for a real tag.
- *
- * Returns `null` — "cannot determine unambiguously" — when: no matching close tag is found
- * before end of input; a comment, `<script>`, or `<style>` body is left unterminated; or an
- * attribute-value quote inside a tag encountered during the scan is left unterminated. Every
- * one of those is exactly the case `sanitizePlaceholders` must leave alone so `PlanError`
- * still fires, per its own doc comment.
+ * Close tag matching the same-named element opened just before contentStart (nesting of that
+ * tag name only). Returns null when it cannot tell: no close tag, or an unterminated
+ * comment/script/style body or attribute quote.
  */
 function findMatchingClose(
   shell: string,
@@ -299,12 +223,8 @@ function findMatchingClose(
 }
 
 /**
- * Blanks out `<!-- comments -->` and `<script>`/`<style>` bodies (equal-length spaces, same
- * trick as `maskScripts`) purely so the "does this content contain another data-slot
- * element" check below can't be fooled by a `data-slot`-shaped string sitting in a comment or
- * inside a nested script/style body — text like that is not markup and must not trigger the
- * nested-slot bail-out. (If such a region is left unterminated, `findMatchingClose` above has
- * already bailed the whole candidate before this function is ever reached.)
+ * Blanks comments and script/style bodies so a data-slot-shaped string inside them is not
+ * mistaken for a nested slot.
  */
 function maskNonMarkupForNestedSlotCheck(html: string): string {
   let out = html.replace(/<!--[\s\S]*?-->/g, (m) => " ".repeat(m.length));
@@ -313,63 +233,22 @@ function maskNonMarkupForNestedSlotCheck(html: string): string {
   return out;
 }
 
-/** One placeholder `sanitizePlaceholders` rewrote, for diagnostics/logging. */
 export interface StrippedPlaceholder {
-  /** The slot id from its `data-slot="id"` attribute. */
   id: string;
-  /** The raw inner content that was removed, verbatim. */
   removed: string;
 }
 
 /**
- * Deterministically strips real content out of a `data-slot` element the tolerant scan could
- * not treat as a placeholder — `<div data-slot="chart" class="card"><div
- * class="loading-spinner">Loading chart...</div></div>` becomes `<div data-slot="chart"
- * class="card"></div>` — instead of leaving it for `unmatchedSlotAttributes`/`parsePlan` to
- * reject the whole plan over.
- *
- * This is safe, not just convenient: `swap()` replaces a filled slot element's entire
- * contents with the fill call's generated output, unconditionally. Whatever the model wrote
- * inside a placeholder in the SHELL was already never going to survive past the fill call —
- * it is destined to be overwritten regardless. Removing it here changes nothing about the
- * finished app; it cannot lose user-visible content, because that content was never going to
- * be user-visible in the first place.
- *
- * This is a deterministic safety net, not the primary repair — a prompt-side fix already
- * landed (the planner prompt now names the auto-rendered skeleton as the reason the slot must
- * stay empty), and a 6-prompt live probe on 2026-09-08 came back clean. This function exists
- * for whatever the prompt fix doesn't catch, and should not be oversold as the main defense.
- *
- * Deliberately conservative: every case below leaves the element untouched (so
- * `unmatchedSlotAttributes` still reports it and `parsePlan` still raises `PlanError`) rather
- * than risk mangling the shell —
- *  - the element's own tag is a void element (no legal body to strip content out of);
- *  - it is written self-closing (no body to strip — and if it were a genuinely complete,
- *    valid placeholder, `scanPlaceholders` would already have matched it);
- *  - no depth-tracked matching close tag can be found before end of input (`findMatchingClose`
- *    returns `null` — see its own doc comment for every sub-case that triggers this);
- *  - the content contains ANOTHER `data-slot` attribute — a nested slot is a genuinely
- *    different and worse problem (silently deleting it would drop a distinct planned region,
- *    not just doomed placeholder filler) and must keep failing loudly, not be stripped away
- *    along with its parent.
- *
- * Never touches text inside a top-level `<script>` in the shell (reuses `maskScripts`, so
- * every match index found here still lines up against the original, unmasked `shell`) or our
- * own already-rendered output (`id="slot-…"` — the same guard `scanPlaceholders` applies).
- *
- * Idempotent: every element this strips becomes a complete, empty placeholder — exactly what
- * `scanPlaceholders` matches — so calling this again on its own output finds nothing left to
- * strip and returns the shell unchanged.
+ * Strips content out of a data-slot element the scan rejected, so a placeholder body does not
+ * fail the whole plan (swap() overwrites it anyway). A safety net, not the primary fix.
+ * Leaves void, self-closing, unmatched and nested-slot cases for parsePlan to reject. Idempotent.
  */
 export function sanitizePlaceholders(shell: string): { shell: string; stripped: StrippedPlaceholder[] } {
   const masked = maskScripts(shell);
   const matchedSpans = scanPlaceholders(shell).map((m) => [m.index, m.index + m.length] as const);
   const isInsideMatch = (i: number) => matchedSpans.some(([start, end]) => i >= start && i < end);
 
-  // Same OPEN building block as PLACEHOLDER_PATTERN, but matching just the opening tag (any
-  // attributes, in any order, carrying a valid data-slot), with an optional trailing `/` so a
-  // self-closing occurrence can be recognized (and skipped — see doc comment) rather than
-  // misread as an open tag with content following.
+  // Opening tag only, with an optional trailing "/" so self-closing occurrences are skipped.
   const openTagPattern = OPEN + "(\\/)?>";
   const re = new RegExp(openTagPattern, "gi");
   const replacements: { start: number; end: number; text: string }[] = [];
@@ -414,11 +293,7 @@ export function sanitizePlaceholders(shell: string): { shell: string; stripped: 
   return { shell: out, stripped };
 }
 
-/**
- * Server-owned skeleton styling. Deliberately not left to the planner: skeletons should
- * look identical across every generated app, and a planner that invents its own each time
- * makes loading states one more thing that varies for no reason.
- */
+/** Server-owned so loading states look the same in every app. */
 export const SKELETON_CSS = `
 .anyapp-skeleton{position:relative;overflow:hidden;border-radius:8px;background:color-mix(in srgb,currentColor 8%,transparent)}
 .anyapp-skeleton::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,color-mix(in srgb,currentColor 10%,transparent),transparent);animation:anyapp-shimmer 1.2s infinite}
@@ -427,78 +302,19 @@ export const SKELETON_CSS = `
 `.trim();
 
 /**
- * CSS class selectors appearing in a stylesheet: a `.` followed by a name that starts with a
- * letter, `_`, or `-`. No lookbehind excluding a preceding word character — a decimal like
- * `0.5` or `.65` is already excluded by the capture group alone, since the character right
- * after the `.` there is a digit, which the group's first character class rejects. A
- * lookbehind would additionally (and wrongly) reject the second class of a genuine compound
- * selector — `.form-panel.hidden` — since `.hidden` there is preceded by the word character
- * `l`. That was a real bug caught during review: it made `utilityCss` below blind to a
- * planner that legitimately defined `.hidden` as part of a compound selector, which is
- * exactly the "clobber a planner's own opinion" failure mode `utilityCss`'s doc comment says
- * must be avoided. `tests/quality/checks-doc.ts` keeps its own separate copy of a
- * similarly-named regex for its own class-usage scan (tests cannot reach into production
- * internals not exported for it) — that copy is not this one and is not affected by this fix.
- *
- * CROSS-REFERENCE, read before "unifying" anything: `utilityCss` below no longer feeds this
- * regex's raw "is `hidden` mentioned as a selector token anywhere" answer into its own
- * decision — it uses `hasStandaloneHiddenSelector`, a separate predicate defined just below
- * this one, for a narrower question that turned out NOT to be the same one. This regex here
- * still answers "is `hidden` styled at all" — correct and unchanged for F8 (a compound rule
- * genuinely does style an element that also carries the compound's other class) — but
- * `utilityCss` needs "will adding `hidden` to an arbitrary element hide it", which a compound
- * rule does NOT answer yes to. See `hasStandaloneHiddenSelector`'s and `utilityCss`'s doc
- * comments for the live case that proved the two questions must not share one answer.
+ * Class selectors in a stylesheet. No lookbehind: it would miss the second class of a
+ * compound selector such as .a.hidden.
  */
 const CSS_CLASS_SELECTOR = /\.(-?[a-zA-Z_][a-zA-Z0-9_-]*)/g;
 
 /**
- * True when `css` contains a selector that applies `.hidden` to an element ON ITS OWN, with no
- * other class required on that same element. This is deliberately a different, narrower
- * question than `CSS_CLASS_SELECTOR` above answers ("is `hidden` styled at all", which is what
- * F8's class-usage check needs). `.confirmation-panel.hidden{}` DOES style `hidden` for F8's
- * purposes — an element that already carries `confirmation-panel` gets a real rule once
- * `hidden` is added to it — but it does NOT mean adding `hidden` to an ARBITRARY element will
- * hide it; only an element that also carries `confirmation-panel` is affected. `utilityCss`
- * needs exactly that second, narrower question answered, because its fallback exists for the
- * case where a slot's script adds `hidden` to whatever element it is toggling, with no
- * guarantee that element also carries a companion class some compound rule requires.
- *
- * Live proof this distinction is real, not theoretical: a planner stylesheet defined only
- * `.confirmation-panel.hidden{display:none}` and a slot's script toggled `hidden` on a
- * DIFFERENT element (`.contact-form`, no matching rule at all). Crediting the compound
- * selector as "the planner has an opinion on `.hidden`" — F8's question, which an earlier
- * version of this gate also asked — stood `utilityCss`'s fallback down exactly when it was
- * needed, and the form never hid. See `utilityCss`'s own doc comment for the full writeup.
- *
- * A selector answers yes only when one of its COMPOUND units — the simple selectors between
- * combinators (whitespace, `>`, `+`, `~`) or commas, so `.confirmation-panel` and `.hidden`
- * are two separate compound units in `.confirmation-panel .hidden` (descendant) but one single
- * compound unit in `.confirmation-panel.hidden` — carries `.hidden` as its ONLY class:
- *   - `.hidden{}`                    → standalone (trivially its own unit)
- *   - `.panel .hidden{}`             → standalone (descendant combinator splits the units)
- *   - `.a, .hidden{}`                → standalone (comma splits the units)
- *   - `.a.hidden, .hidden{}`         → standalone (the SECOND unit alone already qualifies,
- *                                      even though the first does not)
- *   - `.confirmation-panel.hidden{}` → NOT standalone (one compound unit, two classes)
- *
- * DO NOT fold this into `CSS_CLASS_SELECTOR`, and do not delete either in favor of the other —
- * they intentionally answer different questions for different callers (this one for
- * `utilityCss`, that one for F8/`definedClassesFromCss`); see both doc comments before
- * changing either.
+ * True when some compound selector carries .hidden as its only class (".hidden", ".a .hidden",
+ * ".a, .hidden"; not ".a.hidden"). A different question from CSS_CLASS_SELECTOR's — do not merge.
  */
 function hasStandaloneHiddenSelector(css: string): boolean {
-  // Selectors only ever appear before a `{` — drop declaration blocks first, so stray
-  // `.something`-shaped text inside a VALUE (a `url(x.hidden.png)`, a decimal such as
-  // `opacity:.65`) is never scanned as if it were a selector. `[^{}]*` deliberately does not
-  // span a nested brace, so this only strips one level — fine here, since a selector can never
-  // legally contain an unescaped `{` for this to mis-nest against.
+  // Drop declaration blocks so value text (url(x.hidden.png), .65) is not scanned as selectors.
   const selectorsOnly = css.replace(/\{[^{}]*\}/g, " ");
-  // Drop parenthesized content (`:not(.foo)`, `:nth-child(2n+1)`, ...) so a class named inside
-  // a pseudo-class's argument is never mistaken for a class compounded onto the SAME element as
-  // `.hidden` — `.hidden:not(.foo)` still applies `.hidden` on its own, unconditionally, to any
-  // element that has it (`.foo` there restricts what does NOT get selected, not what else the
-  // selected element must additionally carry).
+  // Drop parenthesised arguments (:not(.foo)) so they are not read as classes on the same element.
   const withoutParens = selectorsOnly.replace(/\([^()]*\)/g, "");
   const units = withoutParens.split(/[\s,>+~]+/).filter(Boolean);
   for (const unit of units) {
@@ -512,53 +328,8 @@ function hasStandaloneHiddenSelector(css: string): boolean {
 }
 
 /**
- * A `.hidden{display:none}` fallback, returned only when the planner's own stylesheet does not
- * already define a STANDALONE `.hidden` selector (see `hasStandaloneHiddenSelector` above for
- * exactly what "standalone" means here, and why that is a different, narrower question than
- * "does `hidden` appear as a selector token anywhere" — the latter is what F8's
- * `CSS_CLASS_SELECTOR` answers, for a different caller with a different need); an empty string
- * otherwise. Real cause: the fill call is told "never write a `<style>` element or a style
- * attribute" and to use the planner's classes, but the planner writes the stylesheet before any
- * region's actual states (toggled panels, active tabs, positive/negative values) are known — so
- * slot content routinely emits `class="confirmation-panel hidden"` with no rule that actually
- * hides an element carrying just `hidden` on its own. `.hidden` is the one state class safe to
- * guess a fallback for, because "hidden" has exactly one reasonable meaning; `.active`/
- * `.selected`/`.positive` do not, and must not get guessed styling here.
- *
- * This gate used to ask F8's question — "does the planner CSS mention `.hidden` at all,
- * including as part of a compound selector" — and stand down whenever the answer was yes. A
- * real generation proved that wrong: the planner defined only
- * `.confirmation-panel.hidden{display:none}`, and a DIFFERENT element's toggle
- * (`.contact-form`'s) added `hidden` with no rule anywhere that matched it alone. The old gate
- * saw `hidden` "mentioned" (via the compound rule) and stood down, exactly when its fallback
- * would have fixed the bug — the form never hid. `hasStandaloneHiddenSelector` asks the
- * question this gate actually needs — "will adding `hidden` to an arbitrary element hide it?"
- * — so that case now correctly still fires the fallback.
- *
- * Trade-off, deliberately accepted, not hidden: firing more often means a planner that
- * genuinely intended `.hidden` to apply only alongside a specific companion class — e.g.
- * `.panel.hidden{opacity:0;transition:opacity .2s}`, written for a fade — now ALSO gets our
- * `.hidden{display:none}`. Specificity does not save it, because there is no conflict for
- * specificity to resolve: our rule sets `display`, a property theirs never mentions, so both
- * rules simply apply together rather than one overriding the other — the element snaps to
- * `display:none` on top of whatever fade the planner wrote, instead of fading. Judged the
- * safer default: an element that fails to hide at all is a functional bug (content stuck on
- * screen, a form that can't be dismissed); a fade that degrades to a snap is cosmetic. If that
- * judgment stops looking right, this paragraph — not tribal memory — is where to revisit it,
- * with real evidence from generations either way.
- *
- * Callers MUST place the returned rule in a `<style>` emitted AFTER `<style id="anyapp-css">`
- * — see `renderShellHead` — so that when it fires it wins ties on source order alone. Two
- * simpler designs were rejected:
- *  - Folding a plain `.hidden{display:none}` into `SKELETON_CSS` (emitted BEFORE the planner
- *    stylesheet) loses to any later planner rule of equal specificity — a planner-written
- *    `.confirmation-panel{display:block}` would beat an earlier `.hidden`, which is exactly
- *    the observed bug (a JS-toggled success panel stuck permanently visible).
- *  - Using `!important` to force the rule to win regardless of order would clobber a planner
- *    that legitimately defined `.hidden` itself (e.g. `visibility:hidden` plus a transition) —
- *    we cannot tell that apart from an accident, so we must not override it.
- * Emitting last, and only in the planner's silence, avoids both failure modes without
- * guessing at styling the planner never asked for.
+ * .hidden{display:none} fallback, only when the planner defines no standalone .hidden.
+ * Must be emitted after the planner stylesheet so it wins on source order alone.
  */
 export function utilityCss(planCss: string): string {
   if (hasStandaloneHiddenSelector(planCss)) return "";
@@ -572,26 +343,14 @@ export function slotErrorPlaceholder(id: string): string {
   return `<p ${SLOT_ERROR_MARKER}>This section could not be generated. Ask for a change to "${id}" to try again.</p>`;
 }
 
-/**
- * True when a slot's stored content is the placeholder above, not real content. An edit
- * request against a placeholder is a fill, not an edit — there is nothing to preserve, and
- * `SLOT_EDIT_PROMPT`'s "this is an edit, not a rewrite" rule would otherwise have the model
- * dutifully keep the apology paragraph intact. See edits.ts.
- */
+/** True when a region holds the failed-fill placeholder; an edit of it is really a fill. */
 export function isSlotErrorPlaceholder(html: string): boolean {
   return html.includes(SLOT_ERROR_MARKER);
 }
 
 /**
- * Renders one matched placeholder as a sized skeleton, keeping the model's tag and
- * attributes rather than discarding them — the model's own stylesheet targets classes it
- * put on the placeholder (e.g. `class="panel"`), so replacing the element wholesale silently
- * broke that styling even when the old exact-match regex succeeded.
- *
- * Merges rather than clobbers: an existing `style` gets `min-height:<height>px` appended, an
- * existing `class` gets `anyapp-skeleton` appended, and `id`/`data-slot` are always forced to
- * our own `id="slot-<id>"` / `data-slot="<id>"` (S12 — see the comment on
- * `unmatchedSlotAttributes`'s sibling scan above) regardless of what the model wrote there.
+ * Keeps the model's tag and attributes: min-height is merged into style, anyapp-skeleton into
+ * class, and id/data-slot are forced to ours.
  */
 function renderSkeletonElement(m: PlaceholderMatch, height: number): string {
   const attrs = parseAttrs(m.attrs);
@@ -620,13 +379,7 @@ function renderSkeletonElement(m: PlaceholderMatch, height: number): string {
   return `<${m.tag} ${parts.join(" ")}></${m.tag}>`;
 }
 
-/**
- * Replaces each slot placeholder with a sized skeleton the browser can paint immediately.
- * Unknown slot ids are left with height 0 rather than throwing — a plan with one stray
- * placeholder should still render. See `unmatchedSlotAttributes` above for why the scan is
- * tolerant of shape and `renderSkeletonElement` for why the model's own element is kept
- * rather than replaced.
- */
+/** Replaces each placeholder with a sized skeleton. Unknown ids get height 0 rather than throwing. */
 export function renderSkeletons(shell: string, slots: SlotSpec[]): string {
   const byId = new Map(slots.map((s) => [s.id, s]));
   const matches = scanPlaceholders(shell);
@@ -644,7 +397,6 @@ export function renderSkeletons(shell: string, slots: SlotSpec[]): string {
   return out;
 }
 
-/** The list of slot ids actually referenced by the shell, in document order. */
 export function slotIdsInShell(shell: string): string[] {
   return scanPlaceholders(shell).map((m) => m.id);
 }
@@ -660,12 +412,8 @@ export function slotClose(id: string): string {
 }
 
 /**
- * The one and only definition of a generated app's document.
- *
- * The live generation stream is an *incremental emission of exactly this* — same shell,
- * same templates, same swap calls, same ordering — which is what keeps a replayed app
- * behaving identically to one being watched as it generates. Editing re-renders through
- * here too, so an edited app is structurally the same kind of document as a fresh one.
+ * The single definition of a generated app's document. The live stream emits exactly this,
+ * incrementally, so a replay matches what was watched.
  */
 export function renderDocument(
   filled: FilledApp,

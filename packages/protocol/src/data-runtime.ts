@@ -1,18 +1,6 @@
 /**
- * Inlined into every generated document that has at least one collection (see
- * `shell.ts`'s `renderShellHead` — a static app carries no token and no data runtime at
- * all). Dependency-free, same constraints as `swap-runtime.ts`: it is a string, not a
- * module, and nothing bundles it.
- *
- * The model must not write its own HTTP wrapper — see impl-phase-5.md step 7. This is the
- * one place `fetch("/data/...")` is allowed to appear; a generated app's own script talks to
- * `window.anyapp.data` instead.
- *
- * The token is a plain string in the document. That is not a leak to plug — see
- * impl-phase-5.md's "be blunt about what this phase does not do". Do not add obfuscation
- * that suggests otherwise. From Phase 6, what actually lands here at render time is either a
- * live token (rw for the owner, ro for a shared viewer) or, in the row `generations.document`
- * persists, `APP_TOKEN_PLACEHOLDER` — see `withAppToken` below.
+ * Inlined into documents that have at least one collection; a dependency-free string like swap-runtime.
+ * The one place fetch("/data/...") may appear: generated scripts use window.anyapp.data.
  */
 export function dataRuntime(token: string): string {
   return `
@@ -57,20 +45,12 @@ export function dataRuntime(token: string): string {
 }
 
 /**
- * What is stored in `generations.document` in place of a live token. `renderShellHead`
- * always emits `dataRuntime(APP_TOKEN_PLACEHOLDER)` — a stored document must never carry a
- * live token, because the SAME stored row is served to every viewer, and viewers get
- * different modes (owner: rw, shared visitor: ro). `withAppToken` below substitutes the
- * real, per-viewer token at send time. Must not appear in any generated app's own content —
- * the braces and the prefix make that effectively impossible.
+ * Stored in generations.document instead of a live token: one stored row serves viewers with
+ * different modes. withAppToken substitutes the real token at send time.
  */
 export const APP_TOKEN_PLACEHOLDER = "{{ANYAPP_TOKEN}}";
 
-/**
- * Do NOT use `String.replace(placeholder, token)`. This project has already shipped a `$&`
- * corruption bug where a replacement string containing `$&` spliced an entire matched block
- * into a JS string literal (see impl-phase-3.md). `split`/`join` has no such interpretation.
- */
+/** split/join, not String.replace: a token containing $& would be read as a replacement pattern. */
 export function withAppToken(document: string, token: string): string {
   return document.split(APP_TOKEN_PLACEHOLDER).join(token);
 }

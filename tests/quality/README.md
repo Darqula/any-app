@@ -135,7 +135,7 @@ After every mode requested has run, it prints the stdout table (per-case pass ra
     falls back to Phase 1 linear generation). Contains `{ generationId, at, reason, raw }`:
     `reason` is the scrubbed `PlanError.message`, `raw` is the exact (scrubbed) text the
     planner returned, captured **before** `parsePlan` was even attempted — closing the gap
-    that cost two paid sweeps (`.docs/open-problems.md`): a `PlanError`'s raw response used
+    that cost two paid sweeps: a `PlanError`'s raw response used
     to be discarded entirely, and "why did this fail" needed a separate paid probe run to
     answer. `runner.ts` reads this file back per generation and folds `reason` into F4's
     `detail` in `report.json` (`checks-doc.ts`'s `checkF4`) and into the stdout table; the
@@ -164,7 +164,7 @@ Two independently-selectable tiers:
 - **Tier 1** (`--tier1`): one real PLANNER call per prompt (`resolve("planner", null)` +
   `provider.completeText` with `PLANNER_PROMPT` directly — never `planApp`, so a malformed
   response is captured raw before `parsePlan` is even attempted, not lost to a thrown
-  `PlanError`; see `.docs/open-problems.md`'s Q2). Measures: of every slot placeholder in the
+  `PlanError`). Measures: of every slot placeholder in the
   returned shell, how many carry at least one class? Prompt count defaults to 5, is
   configurable via `--count=N`, and always includes `contact-form` (S13's reproduction case)
   regardless of `N` — selection is deterministic and is printed before anything runs.

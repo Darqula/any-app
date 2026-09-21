@@ -1,10 +1,6 @@
 /**
- * Shared, non-test helpers for security.spec.ts, app-data.spec.ts, progressive.spec.ts,
- * error-states.spec.ts, and settings.spec.ts: hand-writing generated-app documents (per
- * .docs/tests-frontend.md's instruction that the security section needs an app whose script
- * attempts an access and writes the result somewhere observable, hand-written rather than
- * asked of a model), building fake-provider plan/fill scripts, and a couple of Playwright
- * navigation helpers used across every one of those files.
+ * Shared helpers for the security, app-data, progressive, error-states and settings specs: hand-written generated-app documents,
+ * fake-provider plan/fill scripts, and Playwright navigation helpers.
  */
 import pg from "pg";
 import { expect } from "@playwright/test";
@@ -21,31 +17,12 @@ import type { AppPlan, FilledApp, SlotSpec, CollectionSpec } from "@any-app/prot
 
 const { Pool } = pg;
 
-/** Fixed for the shared default server every seeded-row case runs against (security.spec.ts,
- * app-data.spec.ts, settings.spec.ts's session-credential cases) — that server always binds
- * studio to this exact origin, since its ports never change. Isolated per-file server pairs
- * (progressive.spec.ts, error-states.spec.ts, settings.spec.ts's G9) use their own
- * `servers.studioOrigin` instead, since their ports are ephemeral. */
+/** The shared default server (fixed ports). Per-file isolated servers use their own servers.studioOrigin. */
 export const STUDIO_ORIGIN = "http://localhost:3000";
 
 /**
- * PRODUCTION DEFECT, not a harness gap — reported, not fixed here (CLAUDE.md forbids
- * production edits from this suite; see security.spec.ts's B10 for the full write-up and
- * how it was proven). apps/studio/src/views.ts's homePage() inline <script> contains a
- * regex literal written as `\/generations\/([^/]+)\/edits\/` inside a JS template literal —
- * `\/` is not a real escape sequence, so template-literal processing drops the backslash,
- * and the SERVED script contains `//generations/...` instead: `//` opens a line comment
- * that swallows the rest of that statement, which is a syntax error. A syntax error
- * anywhere in a <script> block prevents the WHOLE block from parsing, so this fires on
- * EVERY studio homepage load, not just when an edit is submitted.
- *
- * H6/H7 (app-data.spec.ts) and E8 (error-states.spec.ts) navigate the top-level studio page
- * as part of driving a seeded/generated app and assert there are no console/page errors —
- * their actual intent is "the APP under test introduces no errors", not "the pre-existing,
- * already-reported studio shell bug is now someone else's problem too". This filters that
- * one, specific, already-documented error out of what those cases assert on, so they still
- * catch a real regression in the app under test (or a NEW, different studio-shell error)
- * without being permanently red over a bug that isn't theirs to fix and is already reported.
+ * Filters one historical studio error: homePage's inline script once had a regex literal that lost its backslashes in the template literal
+ * (a syntax error on every homepage load). H6/H7/E8 assert the app under test adds no errors, so they exclude it.
  */
 export function isKnownStudioHomepageSyntaxBug(text: string): boolean {
   return text.includes("Unexpected token 'var'");
@@ -60,14 +37,7 @@ export function appOriginFor(id: string): string {
 const DOCTYPE = "<!doctype html>\n";
 const SHELL_TAIL = "</body>\n</html>\n";
 
-/**
- * A minimal, fully static HTML document with no slots and no adversarial script baked in —
- * B3/B4/B6/B7/B8/B9's actual attack code is injected later via `frame.evaluate()` instead
- * (see security.spec.ts), which executes just as much inside the frame's real
- * origin/sandbox context as an inline `<script>` would, and is far easier to parameterise
- * per test. This just needs to be a valid, standards-mode document with a `<title>` an
- * attack test can safely overwrite.
- */
+/** A minimal static document: attack code is injected later through frame.evaluate(), which runs in the same origin and sandbox context. */
 export function buildStaticDoc(title: string): string {
   return `${DOCTYPE}<html lang="en">
 <head><meta charset="utf-8"><title>${title}</title></head>
@@ -76,11 +46,7 @@ export function buildStaticDoc(title: string): string {
 `;
 }
 
-/** Replicates apps/studio/src/shell.ts's `renderShellHead` exactly. That file lives inside
- * an app (`apps/studio/src`), not a package, so it cannot be imported from here — and per
- * this task's brief, the security/data documents in this suite are meant to be hand-written
- * fixtures anyway, not a dependency on production wiring that could change out from under a
- * test silently. Keep this in sync with shell.ts's shape if that ever changes structurally. */
+/** Mirrors apps/studio/src/shell.ts's renderShellHead (an app, not importable here). Keep in sync if its shape changes. */
 function renderHead(plan: AppPlan, studioOrigin: string, appToken: string): string {
   const data = plan.collections.length > 0 ? `<script>${dataRuntime(appToken)}</script>\n` : "";
   return `<html lang="en">
@@ -108,9 +74,7 @@ export interface HandDoc {
   collections?: CollectionSpec[];
 }
 
-/** Builds a full, replayable generated-app document in exactly the shape `renderDocument`
- * produces in production, from a hand-written spec — real shell+slots+swap()+data-runtime
- * semantics, real derived app token, but authored directly rather than by a model. */
+/** Builds a replayable document in the shape renderDocument produces (real shell, slots, swap(), data runtime, derived token), hand-written. */
 export function buildFilledDocument(
   appId: string,
   appTokenSecret: string,
@@ -133,14 +97,8 @@ export function buildFilledDocument(
 }
 
 /**
- * Seeds a `generations` row whose document/plan reference the row's OWN id (needed for a
- * real data-API token, or a real `getFilledApp`-shaped plan an edit can target) — something
- * `harness/seed.ts`'s `seedGeneration` cannot do alone, since the id only exists after the
- * insert but the token has to be embedded IN the document at insert time. Two-phase: insert
- * a placeholder row to learn the real id, build the real document against that id, then
- * update the row in place. Raw `pg`, like `harness/seed.ts`/`harness/db.ts` — deliberately
- * not `@any-app/store` — so this stays safe to call repeatedly against the shared scratch
- * database from any spec file's process.
+ * Seeds a row whose document and plan reference its own id, which harness/seed.ts cannot: insert to learn the id, build the document, update.
+ * Raw pg, like the harness.
  */
 export async function seedFilledApp(
   databaseUrl: string,
@@ -148,14 +106,7 @@ export async function seedFilledApp(
   studioOrigin: string,
   prompt: string,
   doc: HandDoc,
-  /**
-   * The anonymous session this row should belong to (Phase 6) — get it from
-   * `establishAnonSession` below FIRST, before seeding, and reuse the same `page` afterward
-   * so `openSidebarApp`/`submitPrompt`'s own navigation carries the matching cookie. Without
-   * it the row belongs to nobody and never shows up in an owner-scoped sidebar listing.
-   * `visibility: 'unlisted'`, not the column's own `'private'` default, either way — a
-   * direct `/preview/:id` navigation (not through the sidebar at all) still needs no grant.
-   */
+  /** The anonymous session that owns the row: get it from establishAnonSession first. Visibility is 'unlisted' so a direct /preview/:id needs no grant. */
   sessionId: string | null = null,
 ): Promise<{ id: string; document: string; plan: FilledApp; appToken: string }> {
   const pool = new Pool({ connectionString: databaseUrl });
@@ -177,13 +128,7 @@ export async function seedFilledApp(
   }
 }
 
-/**
- * Navigates `page` to the studio home page once (establishing its real anonymous session —
- * the cookie value IS the session id, per session.ts's `COOKIE=id` format) and returns that
- * id, so a caller can seed a row as that same session's own BEFORE the sidebar-dependent
- * navigation that needs to find it (`openSidebarApp`/`submitPrompt`'s own `page.goto`s reuse
- * the same cookie automatically). See impl-phase-6.md step 2: the sidebar is owner-scoped.
- */
+/** Loads the home page once to establish the anonymous session (the cookie value is the session id) so a row can be seeded as its own. */
 export async function establishAnonSession(page: Page, origin?: string): Promise<string> {
   await page.goto(origin ? `${origin}/` : "/");
   const cookies = await page.context().cookies();
@@ -192,32 +137,11 @@ export async function establishAnonSession(page: Page, origin?: string): Promise
   return cookie.value;
 }
 
-// ---- Playwright navigation helpers -------------------------------------------------------
 
-/** Finds the live (non-detached) frame whose URL matches `src` — same origin and path, Phase
- * 6 onward IGNORING the query string. `previewFrame` (views.ts) mints a fresh view grant
- * (`?g=...`, view-grant.ts) on every single render of the frame route, including a re-click
- * on the SAME sidebar entry for the SAME app id — so the src captured before a reload is
- * guaranteed to differ from the reloaded iframe's src in its `g` value alone. Matching on
- * origin+path (not the full string) is what makes "wait for the SAME app to reappear after a
- * reload" (B5/H3/H5's pattern) still findable.
- * `page.frames()` is the only way in — the preview iframe is genuinely cross-origin from the
- * studio page, so `frameLocator`/raw `Frame` objects are how this suite reaches inside it
- * (see tests-frontend.md's Harness section). Picking the LAST matching, non-detached frame
- * guards against grabbing a stale reference right after a re-click swaps in a fresh iframe
- * for the same app.
- *
- * `opts.excludeFrame`: pass the PREVIOUS `Frame` object when reloading the same app (the
- * "click the sidebar entry again" pattern). Confirmed live as a genuine, not merely
- * theoretical, race: right after the click, `page.frames()` can still return the OLD frame —
- * same origin+path, `isDetached()` not yet flipped, and (since it is momentarily still fully
- * alive) it PASSES the liveness check below too. Returning it looks correct and is not: the
- * browser is mid-navigation, and that exact object detaches a moment later, throwing "Frame
- * was detached" out of whatever the caller does with it next (B5, H3 — this reproduced
- * reliably under full-suite load, rarely in isolation, which is this race's signature).
- * Excluding the known-stale object by identity is what actually closes the window rather
- * than narrowing it: the loop keeps polling until a genuinely NEW frame object exists and
- * independently passes its own liveness check.
+/**
+ * Finds the live frame by origin and path, ignoring the query: previewFrame mints a new view grant (?g) on every render. Pass excludeFrame
+ * when reloading the same app: right after the click, page.frames() can still return the old, about-to-detach frame, which passes the
+ * liveness check (reproduced under full-suite load). Excluding it by identity closes the race.
  */
 export async function waitForFrameBySrc(
   page: Page,
@@ -258,18 +182,10 @@ export async function waitForFrameBySrc(
   );
 }
 
-/** Navigates home, clicks the sidebar entry whose label contains `prompt`, and returns the
- * resulting preview frame once it has fully loaded. For seeded (already-complete) rows —
- * every case in security.spec.ts and app-data.spec.ts — where "fully loaded" is a fast,
- * well-defined state to wait for. See `submitPrompt` below for the streaming-generation
- * variant, which deliberately does NOT wait for load.
- *
- * `origin` is optional: omit it for the suite's shared default server (relies on
- * playwright.config.ts's `baseURL`, `http://localhost:3000`) — every seeded-row case in
- * security.spec.ts, app-data.spec.ts, and settings.spec.ts's session-credential cases.
- * Pass an explicit origin for a test-owned isolated server pair (progressive.spec.ts's C1
- * is the one seeded case that still runs there, alongside that file's C2-C8) — see
- * global-setup.ts's header comment for why some cases need their own server entirely. */
+/**
+ * Opens home, clicks the sidebar entry and returns the loaded preview frame, for seeded (complete) rows. origin is optional: omit it for
+ * the shared server, pass it for an isolated one.
+ */
 export async function openSidebarApp(
   page: Page,
   prompt: string,
@@ -284,17 +200,10 @@ export async function openSidebarApp(
   return { frame, src };
 }
 
-/** Submits a fresh prompt through the home page's form and returns the new generation's id
- * and preview frame — WITHOUT waiting for the frame to finish loading, since a streaming
- * generation this suite is about to drive by hand (C2-C8, E1-E4/E6/E8, G9) may deliberately
- * never close its response until the test says so. Callers assert on frame content directly
- * (locators poll the live DOM regardless of whether the underlying request has finished).
- *
- * `origin` is optional for the same reason as `openSidebarApp` above — every caller of this
- * function in practice passes one, since every case that drives a real generation by hand
- * uses its own isolated server pair (see global-setup.ts's header comment), but the default
- * (shared server, relative navigation) is kept for symmetry and in case a future case needs
- * it without an isolated stack of its own. */
+/**
+ * Submits a prompt and returns the new id and frame WITHOUT waiting for load: a hand-driven streaming generation may stay open on purpose.
+ * Assert on frame content instead (locators poll the live DOM).
+ */
 export async function submitPrompt(
   page: Page,
   prompt: string,
@@ -312,7 +221,6 @@ export async function submitPrompt(
   return { id: match[1]!, frame, src };
 }
 
-// ---- Fake-provider plan/fill script builders ---------------------------------------------
 
 /** A well-formed planner response (`===TITLE===` ... sections), matching
  * packages/generator/src/section-parser.ts + planner.ts's `parsePlan`. */
@@ -341,15 +249,11 @@ ${slotsBlock}${dataBlock}
 `;
 }
 
-/** One `===SLOT id===` marker line, matching packages/generator/src/slot-stream.ts's
- * `MARKER` — send this, then the slot's HTML, then the next marker (or `finish()`/flush) to
- * close it. */
 export function slotMarker(id: string): string {
   return `===SLOT ${id}===\n`;
 }
 
-/** A reusable two-slot shell + matching slot specs, shared by every progressive/error-state
- * case that just needs "a plan with two ordinary regions" rather than anything bespoke. */
+/** A reusable two-region shell and specs for progressive/error-state cases. */
 export const SHELL_2_SLOTS = `<div data-slot="alpha"></div><div data-slot="beta"></div>`;
 export const SLOTS_2 = [
   { id: "alpha", height: 300, spec: "First region" },

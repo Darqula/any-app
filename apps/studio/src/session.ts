@@ -3,13 +3,8 @@ import { createSession, getSession, deleteSession } from "@any-app/store";
 import type { Owner } from "@any-app/store";
 
 const COOKIE = "anyapp_session";
-// SameSite=Lax, deliberately NOT Strict. Strict is not sent on a
-// cross-site top-level navigation, and a shared /apps/:id link opened from Slack or email is
-// exactly that — so `currentOwner` would see no cookie, mint an anonymous session, and its
-// Set-Cookie would REPLACE the recipient's real one. Clicking a shared link would sign you
-// out. The generated-app CSRF that Strict looks like it defends against is same-site anyway
-// (<id>.apps.example.com -> example.com), so Strict never blocked it; index.ts's
-// Sec-Fetch-Site guard is what does.
+// Lax, not Strict: Strict is not sent on a cross-site navigation, so opening a shared link would mint a
+// fresh anonymous session and replace the recipient's real cookie. The Sec-Fetch-Site guard covers CSRF.
 const COOKIE_ATTRS = "HttpOnly; SameSite=Lax; Path=/; Max-Age=31536000";
 
 function cookieValue(req: Request): string | undefined {
@@ -24,12 +19,8 @@ function setCookie(res: Response, id: string): void {
 }
 
 /**
- * The caller's identity, creating an anonymous session on first visit.
- *
- * The cookie is set with NO `Domain` attribute, which makes it host-only on
- * `localhost:3000`. That is load-bearing: generated apps live on
- * `<id>.apps.localhost`, a SUBDOMAIN of the studio's host, so a `Domain=localhost` cookie
- * would be sent to every generated app. Do not add one.
+ * The caller's identity, creating an anonymous session on first visit. The cookie has no Domain attribute:
+ * generated apps are subdomains of the studio's host and must not receive it.
  */
 export async function currentOwner(req: Request, res: Response): Promise<Owner> {
   const existing = cookieValue(req);
@@ -46,11 +37,7 @@ export async function currentOwner(req: Request, res: Response): Promise<Owner> 
   return { kind: "anon", sessionId: id };
 }
 
-/**
- * Issues a NEW session id for a user and drops the old one. Rotation, not mutation: reusing
- * the pre-authentication id is session fixation — an attacker who plants a known cookie value
- * before sign-in would hold a valid signed-in session afterwards.
- */
+/** A new session id on sign-in, dropping the old one: reusing it would allow session fixation. */
 export async function signInAs(
   res: Response,
   userId: string,

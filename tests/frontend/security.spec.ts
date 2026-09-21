@@ -1,16 +1,7 @@
 /**
- * B1-B10 — security invariants. Every case here runs against a seeded row (no model) except
- * B10, which needs one real edit round trip — the edit route is the one call site that is
- * actually session-aware, so it uses a session-scoped BYOK credential pointed at a fake
- * provider created right here in this file's own process (no server restart needed — see
- * server-control.ts's header comment for why edits, unlike a fresh generation, can use a
- * session credential at all).
- *
- * B3/B4/B6/B7/B8/B9's attack code runs via `frame.evaluate()` rather than a baked-in
- * `<script>` — it executes just as much inside the frame's real origin/sandbox context
- * either way (Playwright's CDP evaluation is subject to the same cross-origin restrictions
- * the frame's own inline scripts would face), and it is far easier to parameterise per test
- * (e.g. B7/B8 need another app's id baked in, known only after that app is seeded).
+ * B1-B10: security invariants. All use seeded rows except B10, which needs one real edit round trip through a session-scoped credential
+ * (the edit route is the one session-aware call site). Attack code runs through frame.evaluate(), under the same restrictions as an inline
+ * script and easier to parameterise.
  */
 import { readFile } from "node:fs/promises";
 import { test, expect } from "@playwright/test";
@@ -33,10 +24,7 @@ const { databaseUrl, appTokenSecret } = JSON.parse(await readFile(HANDOFF_PATH, 
 };
 
 test.describe("B — security invariants", () => {
-  // B1 and B2 are written to check BOTH properties (per-app origin AND allow-same-origin
-  // together) so a regression in EITHER half takes BOTH tests red, not just the one whose
-  // "own" property broke — see .docs/tests-frontend.md: allow-same-origin is only safe
-  // because the origin is per-app, and either half alone looks perfectly reasonable.
+  // B1 and B2 each check both halves (per-app origin and allow-same-origin) so a regression in either turns both red: either alone looks fine.
   test("B1 — preview iframe src host is the per-app origin, never studio's own (paired with B2)", async ({ page }) => {
     const prompt = `B1-${Date.now()}`;
     const sessionId = await establishAnonSession(page);
@@ -77,7 +65,7 @@ test.describe("B — security invariants", () => {
   });
 
   test("B3 — a generated app reads document.cookie: empty, even after a studio session cookie exists", async ({ page }) => {
-    await page.goto("/"); // sets anyapp_session on localhost:3000
+    await page.goto("/");
     const cookies = await page.context().cookies("http://localhost:3000");
     const sessionCookie = cookies.find((c) => c.name === "anyapp_session");
     expect(sessionCookie).toBeTruthy();
@@ -218,14 +206,7 @@ test.describe("B — security invariants", () => {
     expect(result.hasId).toBe(true);
   });
 
-  // Was `test.fixme` while testing-review.md's S10 stood: homePage()'s inline <script> wrote
-  // its route regex as a literal inside a template literal, where `\/` is not a real escape
-  // sequence — the backslashes were dropped on the way out, the served line became a `//`
-  // comment, and the resulting syntax error killed the parse of the WHOLE block. That left
-  // anyappFrameFor / anyappApplyEdit / anyappBeforeEdit all undefined on every homepage load,
-  // so this case's premise (an edit's postMessage reaching the frame) could not happen at
-  // all. views.ts now builds that regex with `new RegExp(...)`, which needs no backslash and
-  // so cannot regress the same way; this case is live again and is what pins it.
+  // Pins homePage's inline script using new RegExp: a regex literal loses its backslashes in the template literal and kills the whole block.
   test('B10 — an applied edit\'s postMessage names the app\'s exact origin, never "*"', async ({ page }) => {
     const fake = await startFakeProvider();
     try {
@@ -237,19 +218,8 @@ test.describe("B — security invariants", () => {
         content: { [slotId]: "<p>original</p>" },
       }, sessionId);
 
-      // Instrumented on the STUDIO (parent) side, not inside the frame. The property under
-      // test is the `targetOrigin` argument the parent passes, and that call goes through a
-      // *cross-origin* WindowProxy: patching `window.postMessage` inside the frame cannot
-      // see it, because a cross-origin WindowProxy only ever exposes the original native
-      // `postMessage`, never an own-property override made on the frame's own global. (An
-      // earlier version of this case did exactly that and could never have passed — the
-      // messages arrive, `__lastPostMessage` just stays undefined.) Listening for `message`
-      // inside the frame does not work either: `event.origin` is the *sender's* origin, and
-      // delivery alone cannot tell an exact targetOrigin apart from "*", which also
-      // delivers. So wrap the getter the parent actually calls through.
-      //
-      // addInitScript, not evaluate: this has to survive the `page.goto("/")` below and be
-      // in place before htmx swaps in the response that calls anyappApplyEdit().
+      // Instrumented on the studio (parent) side: the targetOrigin is an argument of a call through a cross-origin WindowProxy, which patching inside the
+      // frame cannot see, and delivery cannot tell an exact origin from "*". addInitScript survives the goto and is in place before the swap.
       await page.addInitScript(() => {
         const sent: { data: unknown; origin: string }[] = [];
         (window as unknown as { __sentPostMessages: unknown[] }).__sentPostMessages = sent;
@@ -278,9 +248,7 @@ test.describe("B — security invariants", () => {
 
       await openSidebarApp(page, prompt);
 
-      // The edit route (unlike a fresh generation — see B9/H5's contrast, and this task's
-      // report) is reached directly by the browser, so it DOES see this session's cookie
-      // and its saved credential.
+      // The edit route is reached directly by the browser, so it sees this session's cookie and saved credential (a fresh generation does not).
       await page.goto("/settings");
       await page.selectOption('#cred-form select[name="provider"]', "openai");
       await page.fill('#cred-form input[name="apiKey"]', "test-key-b10");
@@ -301,9 +269,7 @@ test.describe("B — security invariants", () => {
       await page.click('#edit-form button[type="submit"]');
       await expect(page.locator("#edit-result")).toContainText("Updated");
 
-      // The applied edit's own push (type "slot-content"), not anyappBeforeEdit's earlier
-      // "slot-pending" — both go through the same pinned-origin path, but this case is
-      // specifically about the one carrying the edit result.
+      // The applied edit's push (slot-content), not the earlier slot-pending.
       const sent = await page.evaluate(
         () =>
           (window as unknown as { __sentPostMessages: { data: { type?: string }; origin: string }[] })

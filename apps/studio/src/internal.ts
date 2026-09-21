@@ -65,12 +65,8 @@ export function internalRouter(studioOrigin: string): Router {
       return;
     }
 
-    // No cookie reaches this route — it is a server-to-server call from the sandbox, never
-    // the browser directly (see architecture.md decision #10). The view grant is the only
-    // signal about who is looking and what they may do: `mode: "rw"` only when studio's
-    // frame route (which DOES know the viewer) decided this viewer is the app's owner; every
-    // other case — a shared visitor, a missing/invalid grant — is treated as `"ro"`.
-    // Private apps additionally 404 outright without a valid grant for this exact id.
+    // Server-to-server from the sandbox: no cookie. The view grant is the only signal of who is looking:
+    // "rw" only for the owner, everything else is "ro"; a private app 404s without a valid grant.
     const grantParam = typeof req.query.g === "string" ? req.query.g : "";
     const grantResult = grantParam
       ? verifyViewGrant(grantParam, requireEnv("APP_TOKEN_SECRET"))
@@ -84,24 +80,15 @@ export function internalRouter(studioOrigin: string): Router {
       return;
     }
 
-    // An expired-but-well-signed grant for THIS app is a different
-    // situation from no grant at all — it used to fall through to the same `mode: "ro"`
-    // default, so an owner's tab left open past VIEW_GRANT_TTL_MS with the page never
-    // reloaded would silently start answering read-only to its own writes on an unlisted/
-    // public app, with nothing on screen to explain why. (A private app can't reach this
-    // branch — it already 404'd above, which is visible and reads as an error.) Surface it
-    // instead of guessing.
+    // An expired grant is surfaced rather than treated as "ro", which would silently downgrade an owner's open tab.
     if (forThisApp && grantResult.status === "expired") {
       res.setHeader("Content-Type", "text/html; charset=utf-8");
       res.setHeader("Cache-Control", "no-store");
-      // Set here too, not only after this early return —
-      // this used to be the one HTML response the studio sent without it.
+      // Set here too: this early return would otherwise send the one HTML response without it.
       res.setHeader("X-Content-Type-Options", "nosniff");
       res.send(
         DOCTYPE_AND_PADDING +
-          // Owner-shaped advice ("open this app again") is wrong for a shared visitor, who
-          // has no any-app of their own to go back to — their only route back is the link
-          // they were sent. Phrased to work for both.
+          // Worded for shared visitors too: "open this app again" is wrong for someone who only has the link.
           `<p style="font:15px system-ui;padding:24px">This preview link has expired. ` +
           `Reload the page you got this link from, or ask its owner for a new one.</p>`,
       );
@@ -116,15 +103,12 @@ export function internalRouter(studioOrigin: string): Router {
     res.setHeader("X-Content-Type-Options", "nosniff");
 
     if (generation.status === "complete" && generation.document) {
-      // The stored document carries APP_TOKEN_PLACEHOLDER, never a live token (Phase 6 step
-      // 7) — the same row is replayed to every viewer, and viewers get different modes.
+      // The stored document carries APP_TOKEN_PLACEHOLDER, never a live token: viewers of one row get different modes.
       res.send(withAppToken(generation.document, appToken));
       return;
     }
 
-    // Enforced before claimForGeneration: no point locking the row for a generation attempt
-    // that is about to be refused, and a reload must not be able to slip past the cap by
-    // retrying before the row is claimed.
+    // Before claiming the row, so a reload cannot slip past the cap by retrying before the claim.
     if (generation.owner_id) {
       const limit = await monthlyLimitFor(generation.owner_id);
       if (limit !== null && (await billableTokensThisMonth(generation.owner_id)) >= limit) {
@@ -135,9 +119,7 @@ export function internalRouter(studioOrigin: string): Router {
       }
     }
 
-    // Claim the row before generating. Without this, a reload mid-generation — which is
-    // not an edge case, it is what anyone does when a generation looks stuck — starts a
-    // second, concurrent call for the same id.
+    // Claim before generating: a reload mid-generation would otherwise start a second concurrent call.
     if (!(await claimForGeneration(id))) {
       res.send(
         DOCTYPE_AND_PADDING +
@@ -152,20 +134,9 @@ export function internalRouter(studioOrigin: string): Router {
     const ac = new AbortController();
     req.on("close", () => ac.abort());
 
-    // Credentials resolved once up front — `resolve()` throws before any HTTP call if a
-    // role's configured provider has no credential anywhere.
-    //
-    // No cookie reaches this route — it is a server-to-server call from
-    // the sandbox, never the browser directly — so there is no session to read. An earlier
-    // version of this line called `currentOwner(req, res)` anyway, which (on a cookie-less
-    // request) always took the create-a-session branch: one throwaway `insert into sessions`
-    // row per generation attempt, never read again, plus a `Set-Cookie` on an internal
-    // response (harmless only because the sandbox never forwards upstream headers). Worse
-    // than the wasted row: it meant a signed-in user's own BYOK credential could never be
-    // found here even though `generation.owner_id` names exactly whose key to look for — so
-    // a real generation on a user's own key was billed to them as if the platform paid for
-    // it. The row already knows who owns it; derive Owner from THAT, not from a request that
-    // structurally cannot carry one.
+    // Resolved once up front (throws before any HTTP call if a role has no credential).
+    // Owner comes from the row: this request has no cookie, and currentOwner() on it minted a throwaway session
+    // and never found the owner's own key (so BYOK generations were billed as platform).
     const owner: Owner = generation.owner_id
       ? { kind: "user", userId: generation.owner_id, sessionId: "" }
       : { kind: "anon", sessionId: generation.session_id ?? "" };
@@ -187,15 +158,10 @@ export function internalRouter(studioOrigin: string): Router {
       throw error;
     }
 
-    // Collected across the whole generation (planner, then fill — sequential or parallel)
-    // and written once at the end, win or lose — packages/generator must not write to the
-    // database, so it only emits via onUsage; this route persists. See usage.ts's ordering
-    // invariant: a call that throws (e.g. TruncationError) still reaches onUsage before the
-    // throw in both adapters, so it is captured here regardless of how the generation ends.
+    // Collected across the whole generation and written once at the end, win or lose. The generator only emits
+    // via onUsage and does not touch the database.
     const usageEvents: UsageEvent[] = [];
-    // Captured into a plain local, not read as `generation.owner_id` inside the closure
-    // below — `generation`'s null-check narrowing does not survive into a nested function
-    // body, since TS can't prove the closure only runs after the check above.
+    // A plain local: TS narrowing of `generation` does not reach the closure below.
     const generationOwnerId = generation.owner_id;
     function collector(role: string, resolved: Resolved): (usage: UsageInfo) => void {
       return (usage) => {
@@ -222,12 +188,8 @@ export function internalRouter(studioOrigin: string): Router {
 
     try {
       try {
-        // --- Plan -------------------------------------------------------------------
-        // The doctype goes out immediately, before planning even starts — undici's ~300s
-        // inactivity timeout does not care that we have a good reason to be quiet, and a
-        // reasoning-heavy planner model can take that long. The heartbeat comment is
-        // live-only noise: it is never folded into `flat` below, because a replay of a
-        // *finished* generation has no planning wait to fill.
+        // Plan: the doctype goes out at once, before planning starts, because undici's ~300s inactivity timeout
+        // counts silence. The heartbeat comment is live-only and never stored.
         res.flushHeaders();
         res.write(DOCTYPE_AND_PADDING);
         const heartbeat = setInterval(() => res.write("<!-- planning -->\n"), 15_000);
@@ -235,9 +197,7 @@ export function internalRouter(studioOrigin: string): Router {
         let plan;
         let rawPlannerResponse: string | undefined;
         try {
-          // `onRawResponse` fires with the exact provider text before `parsePlan` is even
-          // attempted (planner.ts), so it is populated here whenever the call reached a
-          // response at all — including the case below where `parsePlan` then throws.
+          // Fires with the raw text before parsePlan, so it is set even when parsing then throws.
           plan = await planApp(
             generation.prompt,
             plannerCred,
@@ -251,10 +211,7 @@ export function internalRouter(studioOrigin: string): Router {
           );
         } catch (error) {
           if (isAbortError(error)) throw error;
-          // Scrubbed even though this is a console line, not a stored or rendered one — a
-          // raw provider error can quote a credential back (confirmed historically; see
-          // scrub.ts), and `secrets` is already in hand here regardless of which provider
-          // actually threw.
+          // Scrubbed even in a console line: a provider error can quote the credential.
           console.warn(`generation ${id}: planning failed, falling back to linear:`, safeMessage(error, secrets));
           await capturePlannerFailure(id, error, rawPlannerResponse, secrets);
           await runLinearFallback(id, generation.prompt, fillCred, res, ac.signal, collector("linear", fillResolved));
@@ -263,26 +220,17 @@ export function internalRouter(studioOrigin: string): Router {
           clearInterval(heartbeat);
         }
 
-        // --- Shell ---------------------------------------------------------------------
-        // Always the placeholder — see renderShellHead's doc comment. The live bytes going
-        // to THIS viewer get the real, per-viewer token substituted in immediately before
-        // the write; the stored document (below, at persist time) keeps the placeholder.
+        // Shell: always the placeholder token. This viewer's live bytes get their real token substituted just
+        // before the write; the stored document keeps the placeholder.
         res.write(withAppToken(renderShellHead(plan, studioOrigin), appToken));
 
-        // --- Fill ------------------------------------------------------------------
-        // Two modes, switchable via LLM_FILL_MODE without a code change, specifically so
-        // parallel fan-out output can be compared against Phase 3.5's single coherent call —
-        // one call can make every region agree by construction, N calls cannot.
-        // Defaults to sequential, not the plan's literal "parallel" default — Phase 4's own
-        // measurement found parallel slower and ~5.6x more completion tokens on this
-        // project's model (see .docs/open-problems.md). A fresh clone should not silently run
-        // the mode the phase concluded is currently a regression.
+        // Fill: LLM_FILL_MODE switches modes without a code change, to compare parallel fan-out with one coherent call.
+        // Defaults to sequential: parallel measured slower and ~5.6x the tokens on this model.
         const fillMode = (process.env.LLM_FILL_MODE ?? "sequential").toLowerCase();
         let filled: FilledApp;
 
         if (fillMode === "sequential") {
-          // Unchanged from Phase 3.5: one call, slots land in plan order, any failure here
-          // fails the whole document (caught by the outer catch below, same as before).
+          // One call, slots land in plan order; any failure fails the whole document (outer catch).
           const slotStream = createSlotStream();
           for await (const chunk of streamFill(generation.prompt, plan, fillCred, ac.signal, id, collector("fill", fillResolved))) {
             const out = slotStream.push(chunk);
@@ -331,20 +279,9 @@ export function internalRouter(studioOrigin: string): Router {
 
         res.write(SHELL_TAIL);
 
-        // --- Persist ----------------------------------------------------------------
-        // Before ending the response, not after: ending it first would let `req`'s `close`
-        // event fire and flip `ac.signal.aborted` to true, so a database failure right here
-        // would be misread as the viewer having disconnected — discarding a generation that
-        // actually succeeded instead of reporting the real error.
-        //
-        // `renderFullHead` is the same function editing uses (edits.ts) — one producer of
-        // "the document" either way. `plan` carries the decomposed form both read. Always
-        // the placeholder token — see renderShellHead's doc comment.
-        //
-        // No streamed-vs-rendered consistency check here anymore (Phase 3's `flat`/
-        // `document !== flat`) — completion order means the parallel path's live bytes and
-        // `renderDocument`'s plan-ordered output are no longer expected to match, and that is
-        // correct: swap() has always been order-independent.
+        // Persist: before ending the response, since ending it fires `close` and would misread a database failure
+        // as the viewer leaving. renderFullHead is what edits use too. No streamed-vs-rendered comparison
+        // any more: swap() is order-independent, so completion order need not match plan order.
         const document = renderDocument(filled, (p) => renderFullHead(p, studioOrigin), SHELL_TAIL);
         await markCompleteWithPlan(id, document, filled);
         const regions = filled.slots.length;
@@ -356,9 +293,7 @@ export function internalRouter(studioOrigin: string): Router {
         res.end();
       } catch (error) {
         if (isAbortError(error)) {
-          // The viewer is gone and the socket is dead — there is nothing left to write.
-          // A half-written document must never be saved as complete; put the row back so a
-          // later request can retry it from scratch.
+          // The viewer is gone; a half-written document must not be saved as complete. Put the row back for retry.
           await resetForRetry(id);
           return;
         }
@@ -378,26 +313,8 @@ export function internalRouter(studioOrigin: string): Router {
 }
 
 /**
- * Diagnostic-only capture of a failed planner call, so a `PlanError` can be read back after
- * the fact instead of only surviving as one scrubbed line in the server's console output
- * (the gap this closes — see `.docs/open-problems.md`'s sweep history: `PlanError` moved
- * between the last two sweeps and answering "why" needed a separate paid probe run because
- * the sweep itself threw the raw response away).
- *
- * Gated behind `ANYAPP_PLANNER_RAW_DIR`, unset by default. This is a deliberate choice among
- * three considered: (1) logging the raw response unconditionally is simplest but dumps whole
- * model responses into normal server output on every failure — too noisy for `npm run dev`;
- * (2) persisting it on the `generations` row makes it permanently reachable but conflates
- * diagnostic data with product data and grows a row for a case the row does not otherwise
- * need to describe (the row already correctly reflects the *linear* result that was actually
- * served); (3) an env var that only a diagnostic run sets — chosen — keeps production
- * silent (this whole function is a no-op unless the var is set, so `npm run dev` behavior is
- * byte-for-byte unchanged) while making the exact failing text recoverable from disk right
- * next to the run that produced it. `tests/quality/runner.ts` sets this var to the current
- * run's artifact directory; see `tests/quality/README.md`.
- *
- * Never throws — a failure to write this diagnostic file must not turn a recoverable
- * planning failure (which still has a working linear-fallback path) into a hard failure.
+ * Diagnostic only: saves the raw text of a failed planner call when ANYAPP_PLANNER_RAW_DIR is set (a no-op
+ * otherwise), so a PlanError can be diagnosed later. Never throws.
  */
 async function capturePlannerFailure(
   id: string,
@@ -406,11 +323,7 @@ async function capturePlannerFailure(
   secrets: string[],
 ): Promise<void> {
   const dir = process.env.ANYAPP_PLANNER_RAW_DIR;
-  // `raw` is only populated when the provider call actually returned text that `parsePlan`
-  // then rejected (planner.ts's `onRawResponse` fires before `parsePlan` is attempted) — so
-  // this also naturally skips network/abort failures that never reached a response, not just
-  // errors of the wrong type. The `PlanError` check documents that intent explicitly rather
-  // than relying on `raw`'s absence alone.
+  // raw exists only when the provider returned text that parsePlan then rejected; the PlanError check states that.
   if (!dir || raw === undefined || !(error instanceof PlanError)) return;
   try {
     await mkdir(dir, { recursive: true });
@@ -427,11 +340,8 @@ async function capturePlannerFailure(
 }
 
 /**
- * Phase 1's single-call path, kept as the fallback for when planning fails or returns
- * something unparseable. A worse app beats a red banner.
- *
- * The doctype and `res.flushHeaders()` already happened in the caller (see the heartbeat
- * comment above) — this continues the same response, it does not start a new one.
+ * Single-call fallback when planning fails: a worse app beats a red banner.
+ * It continues the same response, whose doctype and headers were already sent.
  */
 async function runLinearFallback(
   id: string,

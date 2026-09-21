@@ -1,16 +1,6 @@
 /**
- * The opencode.ai "zen" gateway started rejecting every request with a 400 on 2026-09-07
- * unless it carries a stable `x-opencode-session` header (see .docs/open-problems.md's
- * "the gateway started requiring x-opencode-session" entry, and CLAUDE.md's provider
- * section). This file proves the fix: both adapters send the header on every request they
- * make, the id is the caller's `conversationId` when given, the id is REUSED across every
- * call in one conversation rather than regenerated per request, and a call with no
- * conversation in scope (credential validation) still always carries a header — via a
- * stable per-process fallback, never a fresh id.
- *
- * Same fixture/pattern as provider-adapters.test.ts (G-suite): the fake HTTP server records
- * every request's headers, and the real adapters (imported by relative path, same
- * justification as that file) are run against it.
+ * The opencode.ai gateway 400s without x-opencode-session. Both adapters must send it on every request, use the caller's
+ * conversationId, REUSE it across a conversation, and fall back to a stable per-process id when none is given. Same pattern as the G-suite.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -44,9 +34,6 @@ async function collect(gen: AsyncGenerator<string>): Promise<string[]> {
   return out;
 }
 
-// -----------------------------------------------------------------------------------------
-// Unit: providers/session.ts's own pure logic
-// -----------------------------------------------------------------------------------------
 
 test("session.ts — resolveConversationId returns the given id when present", () => {
   assert.equal(resolveConversationId("gen-123"), "gen-123");
@@ -69,9 +56,6 @@ test("session.ts — conversationHeaders always sets both x-opencode-session and
   assert.equal(withoutId["User-Agent"], PROVIDER_USER_AGENT);
 });
 
-// -----------------------------------------------------------------------------------------
-// Integration: the real adapters actually send it, on every call shape
-// -----------------------------------------------------------------------------------------
 
 test("OpenAI — completeText sends x-opencode-session and a project User-Agent, not the SDK default", async (t) => {
   const fake = await startFakeProvider();
@@ -135,9 +119,6 @@ test("both adapters — a request with NO conversationId still carries the heade
   );
 });
 
-// -----------------------------------------------------------------------------------------
-// The core design requirement: STABLE across a conversation, never a fresh id per request
-// -----------------------------------------------------------------------------------------
 
 test("OpenAI — the same conversationId is reused, byte-identical, across planner-shaped, fill-shaped, and edit-shaped calls", async (t) => {
   const fake = await startFakeProvider();

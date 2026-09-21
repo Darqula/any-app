@@ -1,41 +1,8 @@
 /**
- * Inlined into every generated document. Must stay dependency-free and parse cleanly in an
- * old parser — it is a string, not a module, and nothing bundles it.
- *
- * Three jobs:
- *
- *  - A <script> parsed via the *fragment*-parsing algorithm (`element.innerHTML = ...`,
- *    which the postMessage edit path below uses to turn `msg.html` into a template) has its
- *    "already started" flag set at parse time and will never auto-execute once moved into
- *    the document — that is standard HTML behaviour. (A <script> the *document* parser put
- *    inside a <template> — the initial-fill path's `swap()` — does NOT have that flag set,
- *    and DOES run on its own the moment its content is moved into the live document.) The
- *    two paths are genuinely different, and `fill()` is told which one it has via its third
- *    argument: re-running an *already-executed* script is not harmless, it is a second
- *    execution — chart libraries throw ("Canvas is already in use"), and the silent cases
- *    (listeners bound twice, data writes issued twice, timers started twice) are worse.
- *    Measured in testing-review.md's S16 (S6 first established the two paths' HTML mechanics;
- *    S16 found the previous "run rerunScripts unconditionally, it's harmless" call wrong).
- *    So: `swap()` passes `needsRerun: false` (insertion alone already ran it) and the
- *    postMessage handler passes `needsRerun: true` (the fragment's scripts are marked
- *    already-started and need the recreate-to-reset-the-flag trick). Regression guard: D11
- *    in tests/frontend/swap-runtime.spec.ts asserts exactly-once on both paths.
- *  - Slot content lands long after the shell script ran, so the shell cannot bind to it
- *    directly. Every fill fires a `slot:ready` event the shell can listen for. The detail
- *    carries both `id` and `element`; `element` looks redundant next to an id that already
- *    identifies the slot, but generated shell scripts demonstrably reach for it directly
- *    (`e.detail.element.querySelector(...)`) — two apps in the 2026-09-07 sweep threw
- *    "Cannot read properties of undefined" and lost their whole shell script when it was
- *    missing. Handing over the element the runtime already has is cheaper than making every
- *    shell re-resolve an id itself. Regression guard: testing-review.md S15, D10 in
- *    tests/frontend/swap-runtime.spec.ts.
- *  - The generation response closes when generation ends, so later edits arrive by
- *    postMessage from the studio page instead.
- *
- * `studioOrigin` is baked in and checked on every message. Without that check any page that
- * embeds a preview URL could inject markup into it. That is low-impact today, because the
- * frame runs on an opaque origin — it stops being low-impact the moment locked decision #8
- * gives apps real per-app origins with storage.
+ * Inlined into every generated document, so it must stay dependency-free: it is a string, not a module.
+ * Fills slots (running slot scripts exactly once: swap() and the postMessage path differ), fires
+ * slot:ready with { id, element }, and applies edits from the studio via postMessage, checked
+ * against studioOrigin.
  */
 export function swapRuntime(studioOrigin: string): string {
   return `
@@ -59,13 +26,10 @@ export function swapRuntime(studioOrigin: string): string {
     slot.replaceChildren(fragment);
     slot.classList.remove("anyapp-skeleton");
     slot.style.minHeight = "";
-    // needsRerun is false for swap()'s <template>-sourced fragment: the document parser
-    // never marked its scripts "already started", so the replaceChildren() above already
-    // ran them once. It is true for the postMessage path below, whose fragment came from
-    // innerHTML and genuinely needs the recreate-to-reset-the-flag trick. See the doc
-    // comment above (S16) — calling rerunScripts on both, unconditionally, was the bug.
+    // A <template> fragment (swap) runs its scripts on insertion; an innerHTML fragment (postMessage path)
+    // marks them already started, so only that one needs them recreated. Rerunning both runs scripts twice.
     if (needsRerun) rerunScripts(slot);
-    // \`element\` is not redundant with \`id\` — see the doc comment above (S15/D10).
+    // element looks redundant next to id, but generated shell scripts read e.detail.element directly.
     document.dispatchEvent(
       new CustomEvent("slot:ready", { detail: { id: slot.id.slice(5), element: slot } })
     );

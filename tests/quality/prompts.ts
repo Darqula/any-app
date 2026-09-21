@@ -1,28 +1,6 @@
 /**
- * The fixed set of prompts driven by the section-F quality sweep (`.docs/tests-backend.md`
- * F1-F8, `.docs/tests-frontend.md` F1-F9). Fixed on purpose — comparing pass rates over time
- * (or between fill modes) only means something if the prompts are held constant. Add a new
- * prompt only with a deliberate reason, never to chase a rate up.
- *
- * Each prompt is tagged so `checks-rendered.ts` knows which frontend checks apply to it:
- *   - "interactive": F8 ("state visibly changes on interaction") is meaningful here. Left off
- *     prompts where "click things and see if the text changed" would be a coin flip rather
- *     than a real signal (a pure content/reading app has no state to change).
- *   - "form": exercises F4 (click-everything) against real input+submit flows, not just
- *     buttons/links.
- *   - "data": expected to produce a DATA section / collections, so it also exercises the
- *     data-runtime inlining (`renderShellHead`) as a side effect, even though this sweep does
- *     not assert on the data API itself (that is backend section K, already covered).
- *   - "dense": deliberately asks for enough simultaneous content that F2/F3 (no horizontal
- *     overflow at 375px / 1440px) have something to actually catch — a single-card app can't
- *     overflow no matter how broken the CSS is.
- *
- * Ten prompts, chosen so the set as a whole exercises every F case at least once:
- *   F4 (click everything)   -> every prompt has buttons or links
- *   F8 (interactive)        -> counter, timer, todo, expense-tracker, kanban (5 tagged)
- *   forms                   -> contact-form, todo, expense-tracker, weather (4 tagged)
- *   list/data-shaped        -> todo, notes, expense-tracker, recipe-browser, kanban (5 tagged)
- *   visually dense (F2/F3)  -> dashboard, recipe-browser, kanban (3 tagged)
+ * The fixed prompts of the section-F sweep. Fixed so pass rates stay comparable over time and between fill modes: add one only deliberately.
+ * Tags choose the applicable rendered checks: interactive (F8), form (F4 with real inputs), data (collections), dense (F2/F3 overflow).
  */
 
 export interface QualityPrompt {

@@ -12,10 +12,8 @@ export function slotRoster(plan: AppPlan, self: string): string {
 }
 
 /**
- * Streams internally and buffers, rather than returning a plain completion. Two reasons:
- * a long region can outrun a non-streaming request timeout, and buffering is required
- * anyway — a <template> has to be contiguous in the response, so a slot cannot be emitted
- * until it is whole.
+ * Streams and buffers: a long region can outrun a non-streaming timeout, and a <template> must be
+ * contiguous in the response.
  */
 export async function fillSlot(
   provider: Provider,
@@ -25,11 +23,8 @@ export async function fillSlot(
   plan: AppPlan,
   slot: SlotSpec,
   signal?: AbortSignal,
-  // The generation id — see planner.ts's planApp for the full doc comment. Appended last
-  // (after `signal`), and optional, so existing positional call sites that stop at `signal`
-  // (or earlier) keep compiling unchanged.
+  // The generation id; appended last so existing call sites keep compiling.
   conversationId?: string,
-  // Phase 6 step 8 — see planApp's matching parameter.
   onUsage?: (usage: UsageInfo) => void,
 ): Promise<string> {
   let raw = "";

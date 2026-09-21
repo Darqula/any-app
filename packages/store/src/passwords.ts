@@ -9,13 +9,8 @@ const scryptAsync = promisify(scrypt) as (
 ) => Promise<Buffer>;
 
 /**
- * N=2^15, r=8 needs 128*N*r = 33,554,432 bytes — just over Node's 32MB default `maxmem`, so
- * scrypt THROWS rather than degrading, and the error text names neither the parameter nor the
- * limit. This is the single most likely way to lose an afternoon in this step.
- *
- * The async form, never `scryptSync`: at these parameters it occupies a core for ~100ms, and
- * this process is simultaneously streaming generations to browsers. Blocking the event loop
- * there is exactly the stall the whole architecture exists to avoid.
+ * N=2^15, r=8 needs ~33.5MB, just over Node's 32MB default maxmem, which makes scrypt throw with an
+ * unhelpful message. Async form only: scryptSync would block the event loop for ~100ms.
  */
 const PARAMS = { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
 const KEYLEN = 64;
@@ -41,13 +36,8 @@ export async function verifyPassword(password: string, stored: string): Promise<
 
   const salt = Buffer.from(parts[4]!, "base64");
   const expected = Buffer.from(parts[5]!, "base64");
-  // `Buffer.from(x, "base64")` silently drops invalid characters rather than throwing, so a
-  // corrupt field (e.g. all-punctuation) decodes to a zero-length buffer instead of failing
-  // here — and scrypt is happy to produce a zero-length key for `keylen: 0`, which would make
-  // the comparison below `timingSafeEqual(<empty>, <empty>)`, i.e. true, for ANY password. A
-  // field that decoded to (near-)nothing is a corrupt row, not a zero-length password hash.
-  // Range check, not `=== KEYLEN`: the parameters travel with the hash so KEYLEN can be
-  // raised later without invalidating every existing row.
+  // Reject fields that decode to (near) nothing: Buffer.from("base64") drops bad characters, and an empty key
+  // would make timingSafeEqual pass for any password. A range check, so KEYLEN can be raised later.
   if (salt.length < 16 || expected.length < 32) return false;
 
   const actual = await scryptAsync(password, salt, expected.length, {

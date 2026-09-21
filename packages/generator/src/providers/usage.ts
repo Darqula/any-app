@@ -11,14 +11,7 @@ export interface UsageInfo {
   cacheWriteTokens?: number;
 }
 
-/**
- * Logs token consumption for one call. Not part of the plan's `Provider` interface — that
- * interface only yields/returns text — but losing this would be a real regression: it is
- * the only way to know what a generation actually cost without cross-referencing a
- * provider dashboard after the fact, established as a permanent fixture back in Phase 2/3
- * (see .docs/open-problems.md). Each adapter calls this internally with whatever usage
- * shape its own SDK response carries, normalized to `UsageInfo` first.
- */
+/** Logs one call's token usage (the only way to see a generation's cost without a dashboard). */
 export function logUsage(
   label: string,
   providerId: ProviderId,

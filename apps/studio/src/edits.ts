@@ -32,14 +32,8 @@ import { beginEdit } from "./activity";
 import { recordMessage } from "./conversation";
 
 /**
- * Guards against a slot edit that came back as a diff-shaped fragment instead of the whole
- * region — confirmed live: asked to "add a small icon before the Search label" against a
- * multi-part filter bar, the model returned only `<label>...</label><input ...>`, silently
- * dropping every other control (including one a *previous* edit had just added). The prompt
- * already says "output the new HTML for that region and nothing else" and "this is an edit,
- * not a rewrite" — neither stopped it. A length-ratio heuristic is not a correctness proof,
- * but replacing a real region with an obvious fragment is worse than asking the user to
- * rephrase or retry, so this is a floor, not a tuned threshold.
+ * Rejects a slot edit that came back as a fragment: models have dropped every other control in a region.
+ * A length floor, not a tuned threshold.
  */
 function looksTruncated(before: string, after: string): boolean {
   return before.length > 200 && after.length < before.length * 0.3;
@@ -60,12 +54,7 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
 
     const owner = await currentOwner(req, res);
 
-    // internal.ts checks this before a fresh generation, but an edit
-    // costs one or two model calls too (plus a whole fillSlot on the placeholder-recovery
-    // branch) and was previously not checked here at all — an account over its cap could not
-    // start a new generation but could still issue unlimited edits. Scoped to the EDITOR, not
-    // the app's owner: the person spending the tokens is the one whose allowance it is, and
-    // this route is only ever reachable by the owner anyway (see the getFilledApp check below).
+    // Edits cost tokens too, so the monthly cap applies to the editor, as it does to generations.
     if (owner.kind === "user") {
       const limit = await monthlyLimitFor(owner.userId);
       if (limit !== null && (await billableTokensThisMonth(owner.userId)) >= limit) {
@@ -74,9 +63,7 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
       }
     }
 
-    // Owner-scoped — editing an app you don't own is the same class of bug as listing it in
-    // your sidebar (see .docs/impl-phase-6.md step 2). A non-owner (including a shared
-    // unlisted/public viewer) gets the same 404 a nonexistent app would.
+    // Owner-scoped: a non-owner gets the same 404 as a missing app.
     const loaded = await getFilledApp(id, owner);
     if (!loaded) {
       res.status(404).type("html").send(editProblem("This app cannot be edited yet."));
@@ -87,15 +74,11 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
     const ac = new AbortController();
     req.on("close", () => ac.abort());
 
-    // Same reasoning as internal.ts: resolve every role this request might touch up front,
-    // both to fail fast on a missing credential and to have the secrets ready for scrubbing
-    // if a later provider error needs to be shown or stored.
+    // Resolve the roles up front: fail fast, and have the secrets ready for scrubbing.
     const routerCred = await credentialForRole("router", owner);
     const editCred = await credentialForRole("edit", owner);
-    // Deliberately NOT resolving "fill" here too, even though the placeholder-recovery
-    // branch below needs it: doing so eagerly would make every edit — including a plain CSS
-    // edit that never touches a placeholder — fail if the fill role alone is misconfigured.
-    // It's resolved (and its secrets folded in) only where it's actually used.
+    // "fill" is resolved lazily, only for placeholder recovery, so a misconfigured fill role does not
+    // break every edit.
     let routerResolved: Resolved;
     let editResolved: Resolved;
     let secrets: string[];
@@ -111,9 +94,7 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
       throw error;
     }
 
-    // Same "generator emits, studio persists" split as internal.ts — see usage.ts's ordering
-    // invariant. `owner.userId` is null for an anonymous editor, which `recordUsage` accepts
-    // (it just never counts toward any account's cap).
+    // The generator emits usage, the studio persists it. Anonymous editors record with a null owner.
     const usageEvents: UsageEvent[] = [];
     function collector(role: string, resolved: Resolved): (usage: UsageInfo) => void {
       return (usage) => {
@@ -131,22 +112,15 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
       };
     }
 
-    // Ended in the `finally` below, AFTER the usage write — the delete route refuses an app
-    // that is mid-edit, and an edit's usage rows carry a generation_id foreign key, so letting
-    // a delete land between the model call and that write would make it fail and the tokens
-    // never count against the monthly cap.
+    // Ended in the finally, after the usage write: a delete in between would fail that write and skip the cap.
     const endEdit = beginEdit(id);
-    // The follow-up is part of the conversation from the moment it is accepted, not when it
-    // succeeds — a failed edit still leaves "you asked X" followed by why it did not happen.
-    // `chosen` is only what the dropdown said; an auto-routed edit's target is not known yet.
+    // Recorded when accepted, not on success, so a failed edit still shows what was asked.
     await recordMessage(id, { role: "user", kind: "edit", target: chosen || null, body: instruction });
-    /** Records an edit failure in the conversation, then answers the request with it. */
     async function problem(status: number, message: string): Promise<void> {
       await recordMessage(id, { role: "assistant", kind: "error", target: chosen || null, body: message });
       res.status(status).type("html").send(editProblem(message));
     }
     try {
-      // An explicit dropdown choice skips the router call entirely.
       let target;
       if (chosen === "css") {
         target = { kind: "css" as const };
@@ -154,11 +128,7 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
         // "@" cannot begin a region id (SLOT_ID_PATTERN), so this can never collide with one.
         target = { kind: "shell" as const };
       } else if (chosen) {
-        // The router's own answer is checked against plan.slots (edit-router.ts); a
-        // hand-crafted POST with an unknown id must be checked the same way here, or it
-        // writes an orphan key into `content` that renderDocument never renders and the
-        // swap runtime never finds a slot for — a version bump and a paid model call for
-        // no visible effect.
+        // An unknown region id would write an orphan key into content and cost a model call for nothing.
         if (!filled.slots.some((s) => s.id === chosen)) {
           await problem(400, `Unknown region "${chosen}".`);
           return;
@@ -172,9 +142,7 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
       if (target.kind === "css") {
         const before = filled.css;
         const after = await regenerateCss(instruction, filled, editCred, ac.signal, id, collector("edit-css", editResolved));
-        // A truncated CSS edit is the riskier half of this guard, not an afterthought: a
-        // short stylesheet does not damage one region like a short slot does, it unstyles
-        // the whole app — and it would be saved before anyone sees it.
+        // A truncated stylesheet unstyles the whole app and would be saved before anyone sees it.
         if (looksTruncated(before, after)) {
           console.warn(
             `edit ${id}: css rewrite came back as ${after.length} chars against ${before.length} before — looks like a fragment, not a full stylesheet. Discarding.`,
@@ -182,11 +150,8 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
           await problem(502, "That came back as a fragment, not the whole stylesheet. Try rephrasing, or try again.");
           return;
         }
-        // An identical stylesheet means the model declined (the CSS prompt tells it to return
-        // it untouched when the request needs a new control or behaviour) or the request was
-        // already satisfied. Either way nothing changed, so do not save a new version or claim
-        // "Updated styling." — that message on a no-op is exactly what made a failed "add a dark
-        // theme switch" look like it had worked.
+        // An identical stylesheet means the model declined or the request was already met. Say so; do not
+        // save a version or report an update.
         if (after.trim() === before.trim()) {
           await problem(
             422,
@@ -198,9 +163,7 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
       } else if (target.kind === "shell") {
         const before = filled.shell;
         const raw = await regenerateShell(instruction, filled, editCred, ac.signal, id, collector("edit-shell", editResolved));
-        // Region placeholders must survive exactly (see checkShellEdit); a frame that loses or
-        // duplicates one loses or duplicates a whole region, and it would be saved before
-        // anyone saw it.
+        // Regions must survive the rewrite, or a whole region is lost or duplicated.
         const checked = checkShellEdit(filled, raw);
         if (!checked.ok) {
           console.warn(`edit ${id}: shell rewrite rejected: ${checked.problem}`);
@@ -218,10 +181,7 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
         next.shell = checked.shell;
       } else {
         const before = filled.content[target.id] ?? "";
-        // A placeholder is missing content, not content to edit — regenerateSlot would hand
-        // the model an apology paragraph and its own prompt's "this is an edit, not a
-        // rewrite" rule, which argues for keeping that paragraph intact. Fill it from
-        // scratch instead, the same way the original generation would have.
+        // A placeholder is missing content, not content to edit: fill it from scratch.
         const slot = filled.slots.find((s) => s.id === target.id);
         const after = isSlotErrorPlaceholder(before) && slot
           ? await (async () => {
@@ -251,9 +211,6 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
           await problem(502, "That came back as a fragment, not the whole region. Try rephrasing, or try again.");
           return;
         }
-        // Nothing changed: not saved, not reported as an update. Found live — asked to remove a
-        // caption that lives in the page frame, the router picked the nearest region three times
-        // and each edit "succeeded" (new version, "Updated status-bar.") while changing nothing.
         if (after.trim() === before.trim()) {
           await problem(
             422,

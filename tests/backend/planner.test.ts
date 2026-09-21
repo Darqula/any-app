@@ -1,13 +1,4 @@
-/**
- * A4 — parsePlan.
- * Spec: .docs/tests-backend.md section A4. Target: packages/generator/src/planner.ts.
- *
- * `parsePlan` was module-private (no `export`) and unreachable from any import path — see
- * S4 in .docs/testing-review.md. Fixed by adding `export`; visibility only, no behaviour
- * change. These cases were already hand-verified against `parsePlan`'s actual behaviour via
- * a throwaway probe when they were written skipped, so uncommenting them is not a guess —
- * confirmed green against the fix below.
- */
+/** A4: parsePlan (exported only for these tests). */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parsePlan } from "../../packages/generator/src/planner";
@@ -24,10 +15,7 @@ test("A4.1 — well-formed plan: AppPlan with slots in shell order, not SLOTS or
 });
 
 test("A4.2 — slot in SHELL missing from SLOTS: included with default height 200 and a default spec", () => {
-  // Mirrors A4.3 exactly (one slot too many there, one slot too few here) rather than an
-  // entirely-empty SLOTS section — see testing-review.md S5 for why: a totally-empty SLOTS
-  // body is indistinguishable from a response truncated right after the marker, and a
-  // fixture that happens to trigger that reading is not what this case is meant to cover.
+  // Mirrors A4.3 (one slot too few) rather than an empty SLOTS section, which looks like a response truncated after the marker.
   const raw =
     "===TITLE===\nMy App\n===CSS===\nbody{}\n" +
     '===SHELL===\n<div data-slot="a"></div><div data-slot="b"></div>\n===SLOTS===\na|300|Spec for A\n';
@@ -43,7 +31,7 @@ test("A4.3 — slot in SLOTS missing from SHELL: dropped, the shell is the sourc
     "===TITLE===\nMy App\n===CSS===\nbody{}\n" +
     '===SHELL===\n<div data-slot="a"></div>\n===SLOTS===\na|200|A\nb|200|B\n';
   const plan = parsePlan(raw);
-  assert.deepEqual(plan.slots.map((s) => s.id), ["a"]); // "b" never rendered, so dropped
+  assert.deepEqual(plan.slots.map((s) => s.id), ["a"]);
 });
 
 test('A4.4 — invalid slot id ("Timer", "1x", 40 chars): skipped, no throw', () => {
@@ -51,7 +39,7 @@ test('A4.4 — invalid slot id ("Timer", "1x", 40 chars): skipped, no throw', ()
     "===TITLE===\nMy App\n===CSS===\nbody{}\n" +
     '===SHELL===\n<div data-slot="foo"></div>\n===SLOTS===\n' +
     "Timer|200|Bad\n1x|200|Bad\n" + "a".repeat(40) + "|200|Bad\nfoo|300|Good\n";
-  const plan = parsePlan(raw); // must not throw
+  const plan = parsePlan(raw);
   assert.deepEqual(plan.slots, [{ id: "foo", height: 300, spec: "Good" }]);
 });
 
@@ -94,17 +82,12 @@ test("A4.7c — non-div placeholder (<span>) parses fine", () => {
 });
 
 test("A4.7d — a data-slot element with real content inside it: sanitized and kept, NOT rejected (deterministic safety net)", () => {
-  // REVERSAL, deliberate: this used to be guard 3's PlanError case — the tolerant scan
-  // correctly does not match this as a complete placeholder, but rejecting the whole plan
-  // over it discarded the entire shell/slots architecture for content that was always going
-  // to be overwritten by the fill call anyway. sanitizePlaceholders (slots.ts) now strips
-  // "<p>x</p>" deterministically before the unmatched-attribute check runs, so this parses
-  // fine — see slots.ts's doc comment on sanitizePlaceholders for the full argument, and
-  // A4.15/A4.16 below for the narrower cases that must still throw.
+  // Deliberate reversal: content in a placeholder used to be a PlanError. sanitizePlaceholders now strips it, since fill overwrites it anyway.
+  // A4.15/A4.16 cover the cases that must still throw.
   const raw =
     "===TITLE===\nMy App\n===CSS===\nbody{}\n" +
     '===SHELL===\n<div data-slot="a"></div><div data-slot="chart"><p>x</p></div>\n===SLOTS===\na|200|A\nchart|200|Chart\n';
-  const plan = parsePlan(raw); // must NOT throw
+  const plan = parsePlan(raw);
   assert.deepEqual(plan.slots.map((s) => s.id), ["a", "chart"]);
   assert.ok(!plan.shell.includes("<p>x</p>"), "the stripped content must not survive into the returned plan");
   assert.ok(plan.shell.includes('<div data-slot="chart"></div>'), "the element itself is kept, just emptied");
@@ -133,15 +116,12 @@ test("A4.14b — onDiagnostic omitted: parsePlan behaves exactly as with a callb
   const raw =
     "===TITLE===\nMy App\n===CSS===\nbody{}\n" +
     '===SHELL===\n<div data-slot="a">x</div>\n===SLOTS===\na|200|A\n';
-  const plan = parsePlan(raw); // no second argument at all — must not throw
+  const plan = parsePlan(raw);
   assert.equal(plan.shell, '<div data-slot="a"></div>');
 });
 
 test("A4.15 — nested data-slot element inside content: PlanError survives (a different, worse problem than guard 3)", () => {
-  // The stripper deliberately refuses to touch this case (slots.ts's sanitizePlaceholders
-  // doc comment) — silently deleting the outer element would also delete the distinct "b"
-  // region nested inside it, which is not something the fill call was ever going to
-  // overwrite back into existence. Must keep failing loudly.
+  // The stripper refuses this on purpose: deleting the outer element would also delete the distinct nested "b" region. Must keep failing loudly.
   const raw =
     "===TITLE===\nMy App\n===CSS===\nbody{}\n" +
     '===SHELL===\n<div data-slot="a"><div data-slot="b"></div>text</div>\n===SLOTS===\na|200|A\nb|200|B\n';
@@ -202,13 +182,7 @@ test("A4.12 — DATA with an invalid collection name (P5): that line skipped, th
   assert.deepEqual(plan.collections, [{ name: "todos", description: "valid one" }]);
 });
 
-// Sanity check on shared regexes actually reachable without the blocked import, so this
-// file is not *purely* documentation: SLOT_ID_PATTERN and COLLECTION_PATTERN are exported
-// from @any-app/protocol and are exactly what would make A4.4/A4.11/A4.12 pass or fail
-// inside parsePlan's own validation. This does not substitute for testing parsePlan itself
-// (the orchestration — defaulting, clamping, dedupe, PlanError-throwing — lives entirely
-// inside the unreachable function body) but it does confirm the underlying validation the
-// spec's examples rely on behaves as assumed above.
+// Sanity check on the shared regexes reachable without parsePlan. It confirms the validation A4.4/A4.11/A4.12 rely on, not parsePlan itself.
 test("A4 sanity — SLOT_ID_PATTERN / COLLECTION_PATTERN reject the ids the skipped cases assume they reject", async () => {
   const { SLOT_ID_PATTERN, COLLECTION_PATTERN } = await import("@any-app/protocol");
   assert.equal(SLOT_ID_PATTERN.test("Timer"), false);

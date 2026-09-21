@@ -1,17 +1,7 @@
 /**
- * Orchestrates the section-F generated-app quality sweep: N real prompts x the fill modes
- * requested, against a real provider, on a scratch database that is always dropped.
- *
- * This is a REPORT, not a test suite — see `tests/quality/README.md`. It exits 0 whenever the
- * sweep ran to completion, no matter the pass rates, and non-zero only when the harness
- * itself is broken (server wouldn't start, DB unreachable, provider auth failed, or the
- * runner was invoked without authorization to spend real money).
- *
- * Usage (see README.md for the full contract):
- *   node --import tsx tests/quality/runner.ts --yes
- *   node --import tsx tests/quality/runner.ts --yes --prompts=1 --modes=sequential
- *
- * ANYAPP_QUALITY_RUN=1 in the environment is equivalent to --yes.
+ * Orchestrates the section-F sweep: fixed prompts x fill modes against a real provider on a scratch database. A REPORT, not a test suite: it exits 0
+ * whenever the sweep completes and non-zero only when the harness is broken or unauthorised (--yes or ANYAPP_QUALITY_RUN=1).
+ * See tests/quality/README.md.
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -40,7 +30,6 @@ const { Pool } = pg;
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ARTIFACTS_ROOT = path.join(here, "artifacts");
 
-// --- CLI -----------------------------------------------------------------------------------
 
 interface CliOptions {
   authorized: boolean;
@@ -104,8 +93,7 @@ function printCostBanner(opts: CliOptions, providerEnv: Record<string, string>):
   console.log("=".repeat(78));
 }
 
-// --- .env reading (never sets process.env — see harness/db.ts's readSuperuserDatabaseUrl for
-// the same pattern and why) ------------------------------------------------------------------
+// Reads .env without setting process.env (as harness/db.ts).
 
 function readProviderEnv(): Record<string, string> {
   const envPath = path.join(REPO_ROOT, ".env");
@@ -123,20 +111,15 @@ function readProviderEnv(): Record<string, string> {
   return out;
 }
 
-// --- Harness-level failure detection --------------------------------------------------------
 
-/** Patterns that mean "the provider rejected our credentials" or "no credential is
- * configured at all" — a broken *harness* (misconfigured .env, expired key), not a bad
- * generation. See the task brief: "provider auth failed" is explicitly a harness-break
- * example, not data to fold into a pass rate. */
+/** Credentials rejected or missing: a broken harness, not a bad generation. */
 function looksLikeAuthFailure(text: string): boolean {
   return /no credential configured|unauthorized|invalid[_ ]api[_ ]key|incorrect api key|\b401\b|authentication ?fail/i.test(
     text,
   );
 }
 
-/** A raw transport failure (server process died, port unreachable) rather than any kind of
- * application-level response — also a harness break, not a per-generation data point. */
+/** A dead server or unreachable port: also a harness break, not a data point. */
 function looksLikeTransportFailure(error: unknown): boolean {
   const msg = error instanceof Error ? error.message : String(error);
   return /ECONNREFUSED|ECONNRESET|fetch failed|socket hang up|net::ERR_|ERR_CONNECTION_/i.test(msg);
@@ -144,7 +127,6 @@ function looksLikeTransportFailure(error: unknown): boolean {
 
 class HarnessBrokenError extends Error {}
 
-// --- One generation --------------------------------------------------------------------------
 
 interface DriveResult {
   id: string;
@@ -202,13 +184,7 @@ async function loadGenerationRow(databaseUrl: string, id: string): Promise<Gener
   }
 }
 
-/**
- * Reads back the raw-planner-failure capture `internal.ts`'s `capturePlannerFailure` writes
- * under `ANYAPP_PLANNER_RAW_DIR` (this run's own `runOutDir` — see `runMode`) when a
- * `PlanError` fired for this generation. Absent for the common case (planning succeeded), so
- * this is a plain best-effort read, not an assertion — a missing file just means no PlanError
- * happened, which is most generations.
- */
+/** Reads the raw planner capture internal.ts writes under ANYAPP_PLANNER_RAW_DIR. Absent means no PlanError; best-effort. */
 async function readPlannerFailure(
   runOutDir: string,
   id: string,
@@ -224,14 +200,8 @@ async function readPlannerFailure(
 }
 
 /**
- * Writes the studio/sandbox children's captured stdout+stderr to `<runOutDir>/studio-<mode>.log`
- * / `sandbox-<mode>.log` — previously this went nowhere useful once the process exited, which
- * is exactly why a moved `PlanError`, a usage line, or a stack trace could only be recovered by
- * spending on a second run. `servers.logs()` is a rolling buffer capped at 1000 chunks
- * (`tests/harness/proc.ts`) — a very chatty run can lose its oldest lines, same limitation the
- * existing C15/H5 backend tests already live with; still far more than "nowhere" for the
- * common case of a handful of prompts per mode. Best-effort: a write failure here must not
- * abort the sweep.
+ * Writes the studio and sandbox logs beside the report, so a moved PlanError or usage line can be found without a second paid run.
+ * The buffer is capped at 1000 chunks. Best-effort.
  */
 async function writeServerLogs(mode: FillMode, servers: RunningServers, runOutDir: string): Promise<void> {
   try {
@@ -245,7 +215,6 @@ async function writeServerLogs(mode: FillMode, servers: RunningServers, runOutDi
   }
 }
 
-// --- One mode's worth of the sweep ------------------------------------------------------------
 
 async function runMode(
   mode: FillMode,
@@ -269,10 +238,7 @@ async function runMode(
         ...providerEnv,
         LLM_FILL_MODE: mode,
         INTERNAL_SECRET: internalSecret,
-        // Makes internal.ts's capturePlannerFailure write every PlanError's raw response
-        // (plus its reason) into this run's own artifact directory — see that function's
-        // doc comment for why this is opt-in via env var rather than unconditional logging.
-        // Only this sweep sets it; a plain `npm run dev` never does.
+        // Points internal.ts's planner-failure capture at this run's directory; only the sweep sets it.
         ANYAPP_PLANNER_RAW_DIR: runOutDir,
       },
     });
@@ -341,12 +307,7 @@ async function runMode(
         await onRecord(record);
       }
     } finally {
-      // Studio/sandbox stdout+stderr, captured by `startServers` in-memory the whole run
-      // (see servers.ts's `logs()` doc comment) — written out here so a run's server logs
-      // sit beside its report.json and screenshots instead of vanishing with the process.
-      // Written before `stop()` (though `logs()` would still work after — it's just an
-      // in-memory array on an object this closure still holds) so a failure in `stop()`
-      // itself can't skip it.
+      // Written before stop(), so a failing stop cannot skip it.
       await writeServerLogs(mode, servers, runOutDir);
       await servers.stop();
     }
@@ -355,7 +316,6 @@ async function runMode(
   }
 }
 
-// --- Post-sweep sanity: no scratch databases left behind --------------------------------------
 
 async function warnIfScratchDatabasesSurvived(): Promise<void> {
   const superuserUrl = readSuperuserDatabaseUrl();
@@ -377,7 +337,6 @@ async function warnIfScratchDatabasesSurvived(): Promise<void> {
   }
 }
 
-// --- Entry point -------------------------------------------------------------------------------
 
 async function main(): Promise<void> {
   const opts = parseArgs(process.argv.slice(2));

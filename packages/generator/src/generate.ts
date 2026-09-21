@@ -7,26 +7,15 @@ import type { UsageInfo } from "./providers/usage";
 export { RefusalError, TruncationError } from "./providers/types";
 
 /**
- * Streams the HTML body of a generated app, chunk by chunk.
- * Does not include the doctype — the caller writes that first.
- *
- * This is Phase 1's single-call path, kept as the fallback for when planning fails. It
- * reuses the "fill" role's provider/model/budget rather than having its own — the task
- * shape (write a whole document's worth of HTML in one call) is the same order of size as
- * fill's, and it would otherwise need its own `LLM_LINEAR_*` env vars for a path that only
- * runs when something else has already gone wrong.
- *
- * `signal`, when given, aborts the underlying request — used so a viewer disconnecting
- * stops the call instead of paying for a generation nobody is watching.
+ * Single-call path, the fallback when planning fails. Streams the HTML body without
+ * the doctype. Reuses the fill role's provider, model and budget. `signal` stops the spend when the
+ * viewer disconnects.
  */
 export async function* streamApp(
   prompt: string,
   credential: ProviderCredential | null,
   signal?: AbortSignal,
-  // See planApp's matching parameter — the generation id, shared across the whole app's
-  // conversation.
   conversationId?: string,
-  // Phase 6 step 8 — see planApp's matching parameter.
   onUsage?: (usage: UsageInfo) => void,
 ): AsyncGenerator<string> {
   const stripFence = createFenceStripper();

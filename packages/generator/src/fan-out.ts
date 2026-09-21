@@ -1,7 +1,6 @@
 /**
- * Yields results in completion order. Tasks must never reject — a rejection would take the
- * Promise.race with it and lose every other pending task. Callers wrap failures into a
- * result value instead; see `fillAllSlots`.
+ * Yields in completion order. Tasks must never reject: a rejection would abort the race and lose
+ * every other pending task.
  */
 export async function* asCompleted<T>(tasks: Promise<T>[]): AsyncGenerator<T> {
   const pending = new Map<number, Promise<{ index: number; value: T }>>();
@@ -15,13 +14,8 @@ export async function* asCompleted<T>(tasks: Promise<T>[]): AsyncGenerator<T> {
 }
 
 /**
- * Bounds concurrency to `limit` without losing completion-order streaming. A simpler
- * "run `worker` over `items` with at most `limit` in flight" helper is tempting here, but it
- * only resolves once every item is done, which silently destroys completion-order streaming
- * the moment `items.length > limit` — exactly the case the cap exists for. Every task
- * starts immediately instead (so `asCompleted` can race all of them by real completion
- * time, including queueing delay), while a semaphore gates how many are actually doing
- * work — i.e. calling the provider — at once.
+ * Every task starts at once (so completion order is real) while a semaphore bounds concurrent work.
+ * A "worker over items" helper would resolve only at the end and lose completion-order streaming.
  */
 export function limitConcurrency(limit: number): <T>(fn: () => Promise<T>) => Promise<T> {
   let active = 0;

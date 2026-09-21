@@ -1,39 +1,7 @@
 /**
- * S13 probe (`.docs/testing-review.md`) — two cheap, independently-runnable tiers that each
- * isolate one half of S13's prompt fix, instead of paying for a full 20-generation quality
- * sweep to answer a question only half of which a full sweep would even isolate. See
- * `tests/quality/README.md`'s "S13 probe" section for the one-paragraph version and when to
- * reach for this instead of `runner.ts`.
- *
- * Tier 1 (`--tier1`): one real PLANNER call per prompt, no fill at all. Measures: of every
- * slot placeholder in the returned shell, how many carry at least one class? Baseline
- * (independently measured, 2026-09-06 sweep): 10 of 49 (20%).
- *
- * Tier 2 (`--tier2`): real FILL calls only, no planner spend — plans are reconstructed from
- * the saved 2026-09-06 sweep artifacts (`probe-reconstruct.ts`). Measures: does the returned
- * content wrap itself in a single element carrying a planner-defined class? Baseline (this
- * file's own replay over the saved artifacts, no provider call — see `--dry-run`): 28 of 49
- * (57%).
- *
- * A `--tier2 --limit=12` run on 2026-09-07 printed that corpus-wide 28/49 next to a 12-slot
- * result and read as a 57%->17% improvement; the true, paired figure for those same 12 slots
- * was 3->2 (inconclusive, with two slots flipping the wrong way). Two fixes came out of that:
- * (1) any subset run now reports a PAIRED before/after over exactly the slots it covers, with
- * the corpus-wide number printed only as clearly-labelled background, plus an explicit
- * wrapped<->unwrapped flip count in both directions; (2) `--only-wrapped` restricts Tier 2 to
- * slots whose saved content was already wrapped — the only slots the fix can move — with the
- * exact selection printed, deterministically, before any spend. `--limit`'s sampling also
- * changed from raw (alphabetical, mode-clustering) file order to a deterministic
- * mode-interleaved, round-robin order — see `deterministicSlotOrder`'s comment for why.
- *
- * `--dry-run` proves the whole pipeline (CLI parsing, `parsePlan`, the wrapped-root
- * measurement reused from `checks-doc.ts`, disk writes, reporting) against a stub provider —
- * no network, no cost. See that function for exactly what it checks and how the expected
- * numbers are asserted, not just printed.
- *
- * **Real runs cost real money** — same cost guard convention as `runner.ts`: refuses to spend
- * without `--yes` (or `ANYAPP_PROBE_RUN=1`), and always prints the planned call count and
- * which tier(s) first.
+ * S13 probe: two cheap tiers instead of a full sweep. Tier 1 = one real planner call per prompt, counting placeholders that carry a class.
+ * Tier 2 = real fill calls over plans reconstructed from saved sweep artifacts, counting wrapped fills. Subset runs report a paired
+ * before/after. Real runs cost money: --yes or ANYAPP_PROBE_RUN=1.
  */
 import { mkdir, writeFile } from "node:fs/promises";
 import { readFileSync, readdirSync } from "node:fs";
@@ -42,9 +10,7 @@ import { fileURLToPath } from "node:url";
 import { resolve, roleConfig, fillSlot, NoCredentialError } from "@any-app/generator";
 import type { Provider } from "@any-app/generator";
 import type { AppPlan, SlotSpec, FilledApp } from "@any-app/protocol";
-// Deep imports: neither is part of @any-app/generator's public `exports` (only "." ->
-// src/index.ts). Same established convention as tests/backend/fake-provider.test.ts and
-// tests/backend/fan-out.test.ts — a relative filesystem import, not a production-code change.
+// Deep imports (not in the package exports), as in the backend tests.
 import { PLANNER_PROMPT } from "../../packages/generator/src/planner-prompt";
 import { parsePlan } from "../../packages/generator/src/planner";
 import type { PlanDiagnostic } from "../../packages/generator/src/planner";
@@ -71,17 +37,10 @@ import type { StubScript } from "./probe-stub";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ARTIFACTS_ROOT = path.join(here, "artifacts");
-/** The one saved sweep the task brief names for Tier 2's reconstructed plans — overridable
- * via `--artifacts=DIR` for a future saved run, but this is the baseline every number in this
- * file's header comment is measured against. */
+/** The saved sweep Tier 2 reconstructs; overridable with --artifacts. */
 const DEFAULT_TIER2_ARTIFACTS_DIR = path.join(ARTIFACTS_ROOT, "2026-09-06T17-31-26-174Z");
 
-/** The four documents (of the 2026-09-06 sweep) whose placeholders already carried the
- * region's own class BEFORE any S13 prompt change — confirmed by direct inspection (the
- * model volunteered a styling-hook class on its own, the same behaviour
- * `packages/protocol/src/slots.ts`'s tolerant-placeholder-scan comment describes). Task brief:
- * "use those as-is" — Tier 2 does not synthesize a class onto any placeholder in these four,
- * even for a slot inside them that (like `analytics-dashboard`'s `recent-orders`) has none. */
+/** Four documents whose placeholders already carried the region's class before any S13 change; used as-is, never synthesised. */
 const ALREADY_B_SHAPED_FILES = new Set([
   "parallel-analytics-dashboard.html",
   "parallel-kanban-board.html",
@@ -95,7 +54,6 @@ interface ProviderConfig {
   maxTokens: number;
 }
 
-// --- CLI -------------------------------------------------------------------------------------
 
 interface CliOptions {
   tier1: boolean;
@@ -104,10 +62,7 @@ interface CliOptions {
   authorized: boolean;
   count: number;
   limit: number | null;
-  /** Restricts Tier 2 to slots whose saved content was already wrapped before the fix — the
-   * only slots the fix can demonstrate anything on (a slot that started unwrapped can only
-   * stay flat or regress). See `deterministicSlotOrder` for how selection order interacts
-   * with this. */
+  /** Only slots that were already wrapped can show the fix working: an unwrapped one can only stay flat or regress. */
   onlyWrapped: boolean;
   artifactsDir: string;
   outDir: string;
@@ -156,14 +111,8 @@ function usage(): void {
   );
 }
 
-// --- Tier 1: prompt selection ------------------------------------------------------------------
 
-/**
- * Deterministic, and always includes `contact-form` (S13's reproduction case) regardless of
- * `count`. `contact-form` goes first; the remaining `count - 1` slots are filled from
- * `QUALITY_PROMPTS` in its own fixed array order, skipping `contact-form` itself — so the
- * same `count` always selects the same prompts, run to run.
- */
+/** Deterministic; contact-form (S13's reproduction) always comes first, the rest in fixed array order. */
 export function selectTier1Prompts(count: number): QualityPrompt[] {
   const contactForm = QUALITY_PROMPTS.find((p) => p.id === "contact-form");
   if (!contactForm) {
@@ -173,7 +122,6 @@ export function selectTier1Prompts(count: number): QualityPrompt[] {
   return [contactForm, ...rest.slice(0, Math.max(0, count - 1))].slice(0, Math.max(1, count));
 }
 
-// --- Tier 1: execution + reporting -------------------------------------------------------------
 
 interface Tier1SlotResult {
   id: string;
@@ -185,10 +133,7 @@ interface Tier1PromptResult {
   rawPath: string;
   parseError: string | null;
   slots: Tier1SlotResult[] | null;
-  /** `parsePlan`'s onDiagnostic callback firing — currently only ever
-   * "stripped-placeholder-content" (see planner.ts's PlanDiagnostic). Recorded so a probe run
-   * can count how often the deterministic-strip safety net actually fires, separate from
-   * whether the plan went on to parse cleanly. */
+  /** parsePlan's onDiagnostic events (currently only stripped placeholder content), so a run can count how often the safety net fires. */
   diagnostics: PlanDiagnostic[];
 }
 
@@ -206,9 +151,7 @@ async function runTier1(
       label: "probe:planner",
     });
 
-    // Always write the raw response to disk FIRST — .docs/open-problems.md's Q2 lesson: a
-    // failing planner response must be captured raw before anything else is attempted, or a
-    // parse failure loses the only evidence of what the model actually said.
+    // Write the raw response FIRST: a parse failure must not lose the only evidence.
     const rawPath = path.join(outDir, `tier1-${prompt.id}.raw.txt`);
     await mkdir(outDir, { recursive: true });
     await writeFile(rawPath, raw, "utf8");
@@ -260,7 +203,6 @@ function printTier1Report(results: Tier1PromptResult[], label: string): { totalS
   return { totalSlots, withClass };
 }
 
-// --- Tier 2: job planning (pure reconstruction — no provider calls) ---------------------------
 
 interface Tier2SlotJob {
   doc: ReconstructedDoc;
@@ -273,10 +215,7 @@ interface Tier2SlotJob {
 interface Tier2Job {
   docs: ReconstructedDoc[];
   skipped: { file: string; reason: string }[];
-  /** Every slot in the corpus, in the deterministic selection order (see
-   * `deterministicSlotOrder`), BEFORE `--only-wrapped` or `--limit` are applied. Kept so the
-   * selection report (`printTier2Selection`) can state exactly which slots a filter/limit
-   * excluded, not just how many. */
+  /** Every slot in selection order, before --only-wrapped or --limit, so the report can say what was excluded. */
   orderedSlotJobs: Tier2SlotJob[];
   /** `orderedSlotJobs` after `--only-wrapped` (identical to it when the flag is off). */
   eligibleSlotJobs: Tier2SlotJob[];
@@ -289,22 +228,8 @@ interface Tier2Job {
 }
 
 /**
- * Fix 3 (2026-09-07 incident): `loadArtifactDocs` returns documents sorted alphabetically by
- * filename, which puts every `parallel-*` document before every `sequential-*` one (ASCII
- * 'p' < 's'). A raw-file-order `--limit` therefore drains one fill mode almost entirely before
- * touching the other at all — exactly what produced the all-`parallel-*` (and mostly only 2-3
- * documents') sample that made a `--limit=12` run unreadable as a corpus signal.
- *
- * Rather than randomizing (which would make a run non-reproducible and impossible to state
- * ahead of time), this reorders deterministically in two passes: first, documents are
- * interleaved by fill mode (alternating parallel/sequential rather than draining one mode
- * first); second, slots are taken round-robin across THAT document order (one slot from each
- * document per round, rather than draining one document's several slots before moving to the
- * next). The result: any prefix of this order — which is exactly what `--limit` takes — is a
- * reproducible sample spread across both fill modes and as many distinct documents/prompts as
- * the requested size allows, instead of an accident of ASCII sort order. `buildTier2Job`'s
- * caller always prints the exact slots this produces (`printTier2Selection`) before any spend,
- * so nobody has to trust this description either.
+ * Interleaves documents by fill mode, then takes slots round-robin across documents, so any --limit prefix is a reproducible sample of
+ * both modes and many prompts (raw file order put every parallel-* before every sequential-*).
  */
 function deterministicSlotOrder(docs: ReconstructedDoc[], perDocSlotJobs: Map<string, Tier2SlotJob[]>): Tier2SlotJob[] {
   const byMode = new Map<FillModeName, ReconstructedDoc[]>();
@@ -397,12 +322,7 @@ function slotJobKey(j: Tier2SlotJob): string {
   return `${j.doc.file}::${j.slot.id}`;
 }
 
-/**
- * Fix 2/3 (task brief): prints exactly which slots this run covers and which it excludes, and
- * why — deterministically, before any spend, so a reader never has to assume a subset run
- * speaks for the corpus. Called for both `--dry-run` and real invocations, before the cost
- * banner and the `--yes` gate.
- */
+/** Prints exactly which slots the run covers and excludes, before any spend. */
 function printTier2Selection(job: Tier2Job): void {
   console.log("\nTier 2 slot selection (deterministic — see deterministicSlotOrder's comment in probe.ts):");
   console.log(
@@ -443,7 +363,6 @@ function printTier2Selection(job: Tier2Job): void {
   }
 }
 
-// --- Tier 2: execution + reporting --------------------------------------------------------------
 
 interface Tier2SlotResult {
   doc: string;
@@ -495,14 +414,8 @@ function pct(n: number, d: number): number {
 }
 
 /**
- * Fix 1 (2026-09-07 incident): a subset run must never be reported next to the corpus-wide
- * baseline as if that were the comparison — that reads as a 57%->17% improvement when the
- * true, paired figure for the tested slots was 3->2 (inconclusive, two slots regressing). The
- * corpus-wide number is now printed once, explicitly labelled "background only", and the
- * headline comparison is always PAIRED: the same slot set's own before/after, plus how many
- * slots flipped each direction — a net figure alone hides a regression the way this incident's
- * did. Returns the computed numbers (not just prints them) so `--dry-run` can assert on them
- * directly, and returns `null` when `results` is `null` (baseline-only — before any spend).
+ * A subset run is reported PAIRED (same slots, before/after, flips in both directions); the corpus-wide figure is background only.
+ * Returns the numbers so --dry-run can assert on them.
  */
 function printTier2Report(job: Tier2Job, results: Tier2SlotResult[] | null, label: string): Tier2ReportStats | null {
   console.log(`\n--- Tier 2 report (${label}) ---`);
@@ -552,11 +465,8 @@ function printTier2Report(job: Tier2Job, results: Tier2SlotResult[] | null, labe
   return { pairedBefore, pairedTotal: results.length, pairedAfter, flipToUnwrapped, flipToWrapped };
 }
 
-// --- Dry run: small test helper -------------------------------------------------------------
 
-/** Runs `fn` with `console.log` captured (still visible on the console afterward — the caller
- * re-prints the captured lines), so a dry-run self-check can assert the report's actual
- * printed text (e.g. "does the REGRESSION marker appear"), not just its returned numbers. */
+/** Runs fn with console.log captured (and still shown), so the dry-run can assert on the printed report. */
 function captureConsole<T>(fn: () => T): { result: T; lines: string[] } {
   const lines: string[] = [];
   const orig = console.log;
@@ -571,22 +481,10 @@ function captureConsole<T>(fn: () => T): { result: T; lines: string[] } {
   }
 }
 
-// --- Dry run: stub-provider self-test -----------------------------------------------------------
 
 /**
- * Exercises the entire path — CLI plumbing aside — against a stub provider. No network, no
- * `resolve()`, no real credential needed. Covers every case the task brief lists as a minimum:
- * a planner response with classes on every placeholder, one with none, one that fails
- * `parsePlan`, a fill response that wraps, and one that does not — then asserts the resulting
- * numbers explicitly (not just prints them), and separately replays Tier 2's baseline
- * measurement over the REAL saved artifacts (still no provider call) to confirm it reproduces
- * 28 of 49.
- *
- * Also covers the three paths added after the 2026-09-07 misread: a subset run (`--limit=12`)
- * reporting a PAIRED baseline instead of the corpus-wide one, the `--only-wrapped` filter
- * (expected to select exactly 28 slots — the corpus-wide wrapped count), and a synthetic
- * regression case (one slot forced unwrapped -> WRAPPED) proving the regression marker
- * actually appears in the printed output, not just in a returned number.
+ * Exercises the whole path against a stub provider, with no network, and asserts the numbers: wrap/no-wrap fills, an unparseable plan, the paired
+ * subset report, --only-wrapped selecting 28 slots, a forced regression showing its marker, and the real saved artifacts reproducing 28 of 49.
  */
 async function runDryRun(opts: CliOptions): Promise<void> {
   console.log("=".repeat(78));
@@ -650,9 +548,7 @@ async function runDryRun(opts: CliOptions): Promise<void> {
       job.wrappedBeforeCount === 28 && job.totalSlotsInCorpus === 49,
     );
 
-    // Stub fillSlot: alternate wrapped/unwrapped per slot, in job order — guarantees the
-    // scripted set covers both required cases regardless of how many slots are in play, and
-    // makes the expected "after" count exactly computable (ceil(n/2) wrapped).
+    // Alternates wrapped and unwrapped per slot, so the expected "after" is computable (ceil(n/2)) and both cases are covered.
     const scripts: StubScript[] = job.slotJobs.map((j, idx) => {
       if (idx % 2 === 0) {
         const anyDefinedClass = [...j.defined][0] ?? "stub-defined-class";
@@ -674,7 +570,6 @@ async function runDryRun(opts: CliOptions): Promise<void> {
     check("at least one stub response measured as NOT wrapped", results.some((r) => !r.wrappedAfter));
     check("PAIRED total equals the number of slots this run actually covered", stats?.pairedTotal === job.slotJobs.length);
 
-    // --- Fix 1 demo: a subset run must report a PAIRED baseline, never the corpus-wide one ---
     console.log("\n  Dry-run self-check (subset run reports a PAIRED baseline, not the corpus-wide one):");
     const subsetJob = buildTier2Job(opts.artifactsDir, 12, false);
     const subsetPairedBefore = subsetJob.slotJobs.filter((j) => j.wrappedBefore).length;
@@ -698,7 +593,6 @@ async function runDryRun(opts: CliOptions): Promise<void> {
       subsetLines.some((l) => l.includes("PAIRED baseline") && l.includes("12 slot(s)")),
     );
 
-    // --- Fix 2 demo: --only-wrapped selects exactly the corpus's already-wrapped slots ---
     console.log("\n  Dry-run self-check (--only-wrapped filter):");
     const filterJob = buildTier2Job(opts.artifactsDir, null, true);
     printTier2Selection(filterJob);
@@ -711,7 +605,6 @@ async function runDryRun(opts: CliOptions): Promise<void> {
       filterJob.eligibleSlotJobs.length === filterJob.wrappedBeforeCount,
     );
 
-    // --- Fix 2 demo: an unwrapped -> WRAPPED regression must be impossible to miss ---
     console.log("\n  Dry-run self-check (regression surfacing — 'impossible to miss', not just readable line-by-line):");
     const wrappedExample = job.orderedSlotJobs.find((j) => j.wrappedBefore);
     const unwrappedExample = job.orderedSlotJobs.find((j) => !j.wrappedBefore);
@@ -746,7 +639,6 @@ async function runDryRun(opts: CliOptions): Promise<void> {
   if (!allOk) process.exitCode = 1;
 }
 
-// --- Real-run cost guard + banner ---------------------------------------------------------------
 
 function safeRoleConfig(role: "planner" | "fill"): { provider: string; model: string; maxTokens: number } | null {
   try {
@@ -783,7 +675,6 @@ function printCostBanner(
   console.log("=".repeat(78));
 }
 
-// --- Entry point ------------------------------------------------------------------------------
 
 async function main(): Promise<void> {
   const opts = parseArgs(process.argv.slice(2));
@@ -799,13 +690,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Loads .env into process.env once, same file runner.ts's readProviderEnv() reads — but
-  // unlike that function (which deliberately never touches its OWN process.env, only a
-  // spawned child's), this probe calls resolve()/roleConfig() in-process, and both read
-  // process.env directly (see packages/generator/src/resolve.ts). There is no spawned server
-  // here for a mutated process.env to leak into, so loading it directly is the correct
-  // (and only) way to make a real run work — same call already used by
-  // packages/store/src/env.ts's loadEnv().
+  // Loads .env into process.env: unlike runner.ts, this calls resolve()/roleConfig() in-process, and there is no child for it to leak into.
   try {
     process.loadEnvFile(path.join(REPO_ROOT, ".env"));
   } catch {

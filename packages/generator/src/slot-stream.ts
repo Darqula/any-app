@@ -1,13 +1,8 @@
 /**
- * Rewrites the fill call's sectioned output into browser-ready HTML as it streams.
- *
- * `===SLOT x===` becomes `<template id="c-x">`, and the next marker (or the end of the
- * stream) closes it and emits `<script>swap("x")</script>`. Content inside a <template> is
- * parsed but not rendered, so slot bytes can be forwarded as they arrive with no
- * server-side buffering — the slot appears the moment its swap call is parsed.
- *
- * Markers can be split across chunks, so text is held back to the last newline and only
- * complete lines are examined.
+ * Rewrites the fill call's sectioned output into browser-ready HTML while it streams:
+ * `===SLOT x===` opens <template id="c-x">, the next marker or the end closes it and emits swap("x").
+ * Template content is not rendered, so bytes are forwarded as they arrive. Markers can straddle
+ * chunks, so only complete lines are examined.
  */
 import { slotOpen, slotClose } from "@any-app/protocol";
 

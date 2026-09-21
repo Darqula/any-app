@@ -18,16 +18,8 @@ import {
 } from "@any-app/records";
 
 /**
- * The entire query surface: equality on a top-level key (repeatable, ANDed), `limit`, and an
- * opaque `cursor`. No `$or`, no ranges, no regex, no nested paths, no sort key — every one of
- * those is a reasonable thing to want and every one of them is an unindexed scan the moment a
- * model writes it. See .docs/impl-phase-5.md step 5: the API is deliberately exactly as wide
- * as `records_data_idx` (a jsonb_path_ops GIN index) can serve.
- *
- * `where[key]=value` arrives, via express's query parser, as `req.query.where` being an
- * object of string values — anything that arrives as an array or nested object under `where`
- * (e.g. `where[a][b]=1` or a repeated `where[a]=1&where[a]=2`) is dropped rather than
- * threaded through, which is what keeps this a flat equality filter and nothing richer.
+ * The whole query surface: top-level equality (ANDed), limit, opaque cursor. Nothing wider, since anything more
+ * is an unindexed scan. Arrays and nested objects under `where` are dropped.
  */
 function parseWhere(query: unknown): Record<string, string | number | boolean> {
   const raw = (query as Record<string, unknown> | undefined) ?? {};
@@ -39,10 +31,7 @@ function parseWhere(query: unknown): Record<string, string | number | boolean> {
   return where;
 }
 
-// `where[done]=true` arrives as the string "true", which does not match the stored boolean
-// `true` under jsonb containment (`@>` is type-sensitive). Coerce the obvious cases here so
-// a filter that looks right to whoever wrote it actually matches. See
-// .docs/impl-phase-5.md's troubleshooting section.
+// Query strings are text; coerce true/false/numbers so filters match stored jsonb values (containment is type-sensitive).
 function coerceWhereValue(value: string): string | number | boolean {
   if (value === "true") return true;
   if (value === "false") return false;
@@ -61,9 +50,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * The data API, mounted at `/data` on the sandbox origin. Every route is scoped by `appId`
- * from `res.locals`, set by the auth middleware below from the verified token — never from
- * the URL, the host, or the request body. See .docs/architecture.md's data-API rules.
+ * The data API, mounted at /data. Every route is scoped by appId from the verified token, never from the URL,
+ * host or body.
  */
 export function dataRouter(secret: string, appOriginTemplate: string): Router {
   const router = Router();
@@ -82,9 +70,7 @@ export function dataRouter(secret: string, appOriginTemplate: string): Router {
     }
     const { appId, mode } = verified;
 
-    // Defence in depth, not the authorization check. `appId` above already decided scope;
-    // this only catches an app calling with a token that is not its own, which should be
-    // impossible now that origins are per-app and would mean something upstream is broken.
+    // Defence in depth, not authorisation: appId already decided scope.
     const expectedHost = new URL(appOriginTemplate.replace("{id}", appId)).host;
     if (req.headers.host !== expectedHost) {
       console.warn(`data: token for ${appId} presented on host ${req.headers.host}`);
@@ -92,10 +78,7 @@ export function dataRouter(secret: string, appOriginTemplate: string): Router {
       return;
     }
 
-    // A shared (non-owner) viewer's token is read-only (Phase 6 step 7) — a public app's data
-    // is world-readable via its own link, and that must not also mean world-writable. `app_id`
-    // still comes from the token and from nothing else; this only narrows what the verified
-    // token may do.
+    // A shared viewer's token is read-only: a public app's data must not also be world-writable.
     const isWrite = req.method !== "GET";
     if (mode === "ro" && isWrite) {
       res.status(403).json({ error: "this token is read-only" });
@@ -112,13 +95,8 @@ export function dataRouter(secret: string, appOriginTemplate: string): Router {
     next();
   });
 
-  // Validated once per param, not once per route (Phase 5 review S2 folded the previous
-  // five copies of the collection check into this). `:collection` fails 400 — it's a name
-  // the caller chose and got wrong. `:id` fails 404, not 400 or a raw DB error — a malformed
-  // id and an id that's simply never existed should look identical from the outside; both
-  // used to reach `where ... and id = $3` against a uuid column unvalidated, which failed as
-  // a Postgres `invalid input syntax for type uuid` error instead (see the error handler
-  // below for why that no longer becomes a stack trace in the response either).
+  // Validated once per param. A bad :collection is a 400; a bad :id is a 404, so it looks like one that never
+  // existed (a malformed uuid would otherwise fail inside Postgres).
   router.param("collection", (req, res, next, collection: string) => {
     if (!COLLECTION_PATTERN.test(collection)) {
       res.status(400).json({ error: "invalid collection name" });
@@ -189,12 +167,7 @@ export function dataRouter(secret: string, appOriginTemplate: string): Router {
     }
     const record = await updateRecord(res.locals.appId, collection, id, req.body);
     if (!record) {
-      // Zero rows back is ambiguous by design (see updateRecord's doc comment) — a cheap
-      // existence check is what turns it into the right status: the record was never there
-      // (404), or it was, and merging in this patch would have pushed it over
-      // MAX_RECORD_BYTES (413). Each PATCH body is already capped at that same size by
-      // express.json (see MAX_RECORD_BYTES above), but the merge is cumulative — that limit
-      // bounds one request, not the row it lands on.
+      // Zero rows back is ambiguous: missing (404) or the merge would exceed MAX_RECORD_BYTES (413).
       const existing = await getRecord(res.locals.appId, collection, id);
       if (!existing) {
         res.status(404).json({ error: "not found" });
@@ -230,24 +203,14 @@ export function dataRouter(secret: string, appOriginTemplate: string): Router {
     res.status(204).end();
   });
 
-  // Terminal error handler (Phase 5 review S2). Express 5 forwards a rejected async route
-  // handler's promise to error-handling middleware automatically; without one of our own,
-  // that lands on Express's default handler, which writes a stack trace — absolute file
-  // paths, internal frames — straight into the response body whenever NODE_ENV isn't
-  // "production" (nothing in this repo sets it, so this project runs in that mode by
-  // default). Recognized as error middleware by its arity (4 params), not its name.
+  // Terminal handler, so Express's default never writes a stack trace into the response (NODE_ENV is unset here).
   router.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
     if (res.headersSent) {
       next(err);
       return;
     }
     console.error("data API error:", err);
-    // A 4xx is a statement about the *request* (e.g. express.json's own
-    // PayloadTooLargeError, .status === 413, when a body exceeds MAX_RECORD_BYTES) and is
-    // safe to pass through as-is; only 5xx needs to stay opaque so nothing internal (a
-    // stack trace, a driver error string) leaks into the response body. See
-    // testing-review.md S2 — this used to collapse every forwarded error to 500, including
-    // ones that already knew their own correct status.
+    // A 4xx describes the request and is passed through (e.g. 413); a 5xx stays opaque.
     const status = (err as { status?: unknown; statusCode?: unknown }).status ??
       (err as { statusCode?: unknown }).statusCode;
     if (typeof status === "number" && status >= 400 && status < 500) {

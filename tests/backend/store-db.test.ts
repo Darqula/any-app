@@ -1,23 +1,7 @@
 /**
- * B1–B12 — store and database. Spec: .docs/tests-backend.md section B.
- * Target: packages/store/src/{generations,migrate}.ts, against a real, migrated scratch
- * Postgres database (packages/store/migrations/*.sql via harness/db.ts's createScratchDatabase()).
- *
- * All twelve cases share ONE scratch database, created once for the whole file (see the
- * top-level `before`/`after` below) rather than one per test — deliberate, per the README's
- * carve-out ("not a shared top-level before/after unless a whole file's cases genuinely
- * share one scratch database on purpose"): every case here exercises the same store layer
- * against the same schema, and per-test isolation is achieved by giving each test its own
- * fresh `generations` row via `createGeneration`, not by paying for a fresh migrate() child
- * process (several seconds each) twelve times over.
- *
- * `@any-app/store` is imported dynamically, inside `before`, AFTER `process.env.DATABASE_URL`
- * is pointed at the scratch database — `packages/store/src/db.ts` builds its `Pool` from
- * `requireEnv("DATABASE_URL")` at module scope, so a static top-level import (which ESM
- * hoists and evaluates before any of this file's own code runs) would bind to whatever
- * `DATABASE_URL` happened to be in `process.env` first, not our scratch database. See the
- * README's "Module-scope side effects" obstacle and harness/db.ts's own doc comment for the
- * same trap from the other direction (why db.ts never imports `@any-app/store` at all).
+ * B1-B12: store and database, against a real migrated scratch database. The file shares one database on
+ * purpose (a migrate child process per case would cost seconds each); each case gets its own generations row. @any-app/store is imported
+ * dynamically in `before`, after DATABASE_URL is set, because its pool is built at module scope.
  */
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -42,11 +26,7 @@ before(async () => {
 });
 
 after(async () => {
-  // Close the store's own singleton pool before dropping the database — see the README's
-  // "cleanup-order trap": a pool still open when drop() runs gets an unsolicited
-  // pg_terminate_backend, which fires the pool's "error" event and crashes the process if
-  // nothing is listening. Doing both here, in order, in one place sidesteps the ordering
-  // question entirely rather than relying on t.after() registration order.
+  // Close the store's pool before drop(): drop() terminates backends, and an open pool then crashes on its unhandled "error" event.
   await store.pool.end();
   await scratch.drop();
 });
@@ -67,27 +47,15 @@ test("B1 — migrate() run twice: second run is a no-op, each file appears once 
 });
 
 /**
- * B2 — a failing migration: the transaction rolls back and the file is not recorded.
- *
- * Drives the REAL `migrate()` against a throwaway migrations directory in the OS temp dir.
- * This was previously only a contract check (the same begin/insert/commit sequence hand-run
- * against Postgres, which proved Postgres's atomicity but not that `migrate.ts` still
- * contained the try/catch) because `migrationsDir` was a module-scope constant derived from
- * `import.meta.url`, and the only alternative was writing a deliberately-broken `.sql` into
- * the real, shared `packages/store/migrations/` — where every concurrent
- * `createScratchDatabase()` would have picked it up. `migrate()` now takes an optional
- * directory (testing-review.md S7), so the real function can be pointed somewhere private.
- *
- * The good file is applied first and must survive; the bad one must leave nothing behind —
- * neither its own half-applied table nor a `schema_migrations` row.
+ * B2 — a failing migration rolls back and is not recorded. Drives the real migrate() against a private temp directory,
+ * so no broken .sql lands in the shared migrations that concurrent scratch databases apply.
+ * The good file must survive; the bad one leaves neither its table nor a schema_migrations row.
  */
 test("B2 — a failing migration rolls back and is not recorded, while earlier files stay applied", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "anyapp-b2-"));
   try {
     await writeFile(path.join(dir, "001_b2_good.sql"), "create table b2_good (id int);", "utf8");
-    // Two statements in one file: the first succeeds, the second fails on the duplicate
-    // name. That is what makes this a rollback test and not just an "it threw" test — the
-    // table created by the first statement must be gone too.
+    // Two statements: the first succeeds, the second fails on a duplicate name, so the first's table must be rolled back too.
     await writeFile(
       path.join(dir, "002_b2_broken.sql"),
       "create table b2_should_not_survive (id int);\ncreate table b2_should_not_survive (id int);",
@@ -135,11 +103,8 @@ test("B3 — claimForGeneration on a pending row: returns true, status becomes s
 });
 
 /**
- * B4 — the regression test for review finding F1. Two genuinely concurrent connections (via
- * `Promise.all`, which issues both `claimForGeneration` calls before either resolves — the
- * pool hands out two separate physical connections for two concurrent queries) racing on one
- * row: exactly one must return true. A sequential pair of `await`s would pass even against
- * the old non-atomic (select-then-update) code, which is exactly the trap this avoids.
+ * B4 — Promise.all issues both claims before either resolves, on two physical connections; exactly one must win.
+ * Sequential awaits would pass even against the old select-then-update code.
  */
 test("B4 — two claimForGeneration calls in parallel on one row: exactly one returns true", async () => {
   const gen = await store.createGeneration("b4 test", OWNER);
@@ -151,13 +116,7 @@ test("B4 — two claimForGeneration calls in parallel on one row: exactly one re
   assert.equal(row?.status, "streaming");
 });
 
-/**
- * B4 verification (not a spec case on its own): proves the Promise.all-concurrent-race
- * methodology used above actually has teeth, by racing a deliberately non-atomic "old style"
- * claim (read status, sleep to widen the race window, then write) against itself on a fresh
- * row on the SAME database. If this methodology could not catch a non-atomic implementation,
- * B4 passing would tell us nothing. It does catch it: both calls win the race below.
- */
+/** B4 verification: the same methodology races a deliberately non-atomic claim and both callers win, proving the test can catch a regression. */
 test("B4 verification — the same race methodology catches a deliberately non-atomic twin", async () => {
   const gen = await store.createGeneration("b4 buggy twin", OWNER);
 
@@ -244,12 +203,7 @@ test("B11 — markCompleteWithPlan: stores document and plan; plan round-trips t
   assert.deepEqual(row?.plan, plan);
 });
 
-/**
- * B12 — owner-scoped from Phase 6 (impl-phase-6.md's known casualty table): the case now
- * asserts newest-first WITHIN one owner, and that a second owner's rows never leak into the
- * first owner's list — the exact leak step 2 exists to close (`listRecentGenerations` used to
- * be global).
- */
+/** B12 — owner-scoped: newest first within one owner, and another owner's rows never appear. */
 test("B12 — listRecentGenerations: newest first within one owner, respects the limit, and never returns another owner's rows", async () => {
   const b12Owner: Owner = { kind: "anon", sessionId: "b12-owner-a" };
   const otherOwner: Owner = { kind: "anon", sessionId: "b12-owner-b" };

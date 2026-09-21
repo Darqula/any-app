@@ -24,10 +24,8 @@ export async function createUser(email: string, password: string): Promise<User 
 }
 
 /**
- * Null on a wrong email OR a wrong password — never say which.
- *
- * The dummy verify on the unknown-email path is deliberate: without it, an unknown email
- * returns in ~1ms and a known one in ~100ms, which is a working account-enumeration oracle.
+ * Null for a wrong email or a wrong password, never saying which. The dummy verify for an unknown email
+ * removes the ~1ms vs ~100ms account-enumeration oracle.
  */
 const DUMMY_HASH = "scrypt$32768$8$1$AAAAAAAAAAAAAAAAAAAAAA==$" + "A".repeat(88);
 

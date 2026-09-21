@@ -1,21 +1,9 @@
 import { defineConfig, devices } from "@playwright/test";
 
 /**
- * The frontend suite owns the real origins (localhost:3000 / *.apps.localhost:3001) — see
- * the README. It must never run concurrently with the backend suite (ephemeral ports) or
- * with `npm run dev` (same ports, real dev database).
- *
- * Two projects, chained by `dependencies`, to guarantee a run order Playwright's default
- * (alphabetical-by-file) discovery doesn't: `foundation` — smoke.spec.ts, studio-ui.spec.ts,
- * swap-runtime.spec.ts, data-runtime.spec.ts — assumes the shared server's database starts
- * genuinely empty (A1's "No apps yet" case, in both smoke.spec.ts and studio-ui.spec.ts,
- * only makes sense the very first time anything queries `listRecentGenerations()`). Every
- * other spec file seeds rows into that same shared database, some of them dozens per run,
- * so `foundation` has to finish first or A1 is checking a database several other files have
- * already populated. `dependencies` is what makes that ordering real instead of incidental:
- * Playwright runs `foundation` to completion (both files, in their own alphabetical order,
- * within one worker) before starting `rest`, in the same process, no matter how the two
- * project's own file lists sort against each other.
+ * Owns the real origins (localhost:3000 and *.apps.localhost:3001): never run it with the backend suite or `npm run dev`.
+ * Two chained projects: `foundation` (smoke, studio-ui, swap-runtime, data-runtime) needs an empty database for A1's "No apps yet", and must
+ * finish before `rest`, whose files seed rows into the same database.
  */
 export default defineConfig({
   testDir: ".",

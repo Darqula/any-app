@@ -1,10 +1,4 @@
-/**
- * A3 — parseSections.
- * Spec: .docs/tests-backend.md section A3. Target: packages/generator/src/section-parser.ts.
- *
- * `parseSections` IS re-exported from @any-app/generator's index.ts, so this file imports
- * it by package name rather than by relative path.
- */
+/** A3: parseSections. Re-exported by the package index. */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseSections } from "@any-app/generator";

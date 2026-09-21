@@ -1,8 +1,4 @@
-/**
- * Proves the frontend harness works end to end against a real Chromium. Not part of the
- * real frontend suite (see .docs/tests-frontend.md for that) — this is case A1 against a
- * scratch database that legitimately has zero generations, no seeding required.
- */
+/** Proves the frontend harness works against a real Chromium: case A1 on an empty scratch database. Not part of the real suite. */
 import { test, expect } from "@playwright/test";
 
 test("fresh load, no generations: empty state, no iframe (A1)", async ({ page }) => {

@@ -1,11 +1,6 @@
 /**
- * Design tokens and base rules shared by every studio page (home, settings, share page).
- * Light is the default; dark follows the OS via `prefers-color-scheme` — no toggle, no stored
- * preference, so there is nothing to get out of sync. Every component rule in views.ts reads
- * a token from here instead of a hex value, which is what keeps the two themes from drifting.
- *
- * The generated-app iframe is deliberately NOT themed: it is its own document (its own
- * origin, its own CSS) and keeps an opaque white canvas in both themes — see `.preview`.
+ * Tokens and base rules shared by every studio page. Dark follows the OS via prefers-color-scheme (no toggle,
+ * nothing stored). Component rules use tokens, not hex values. The generated-app iframe is not themed.
  */
 export const THEME_CSS = `
   :root {

@@ -7,14 +7,7 @@ import { pool } from "./db";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const defaultMigrationsDir = path.resolve(here, "../migrations");
 
-/**
- * `migrationsDir` is a parameter, not a hard-coded constant, purely so the rollback behaviour
- * below can be tested (testing-review.md S7): proving "a failing migration rolls back and is
- * not recorded" needs a deliberately-broken `.sql` file in the applied set, and the only
- * alternative was writing one into the real, shared `packages/store/migrations/` — which
- * every concurrent `createScratchDatabase()` would then pick up. Defaults to the real
- * directory, so no call site changes.
- */
+/** migrationsDir is a parameter only so rollback can be tested without touching the shared directory. */
 export async function migrate(migrationsDir: string = defaultMigrationsDir): Promise<void> {
   await pool.query(`
     create table if not exists schema_migrations (

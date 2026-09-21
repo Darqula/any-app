@@ -1,26 +1,9 @@
 /**
- * Scratch database lifecycle. See the README for the full contract; the short version:
- *
- *   const scratch = await createScratchDatabase();
- *   // scratch.databaseUrl        — superuser connection to a fresh anyapp_test_<rand> db,
- *   //                               already migrated
- *   // scratch.sandboxDatabaseUrl — the restricted anyapp_sandbox_test role's connection to
- *   //                               that same database, already verified restricted
- *   await scratch.drop();         // drops the database; never drops the role
- *
- * Why migrate() runs in a *child process* rather than being imported here directly: this
- * file can be called more than once per test process (once per scratch database), but
- * `@any-app/store`'s `pool` is a top-level `const pool = new Pool({ connectionString:
- * requireEnv("DATABASE_URL") })` — a singleton bound to whichever `DATABASE_URL` was in
- * `process.env` the *first* time that module graph was evaluated. Node's ESM cache is keyed
- * by resolved file URL, and cache-busting the entry specifier (`?t=...`) does NOT bust its
- * relatively-imported dependencies — confirmed empirically: `./db` still resolves to the
- * exact same cached module the second time, so a second in-process import of `@any-app/store`
- * silently reuses the *first* scratch database's pool instead of pointing at the new one.
- * A child process sidesteps this entirely: `packages/store/src/migrate-cli.ts` (the same
- * entry `npm run migrate` already uses) gets a fresh `DATABASE_URL` and a fresh process
- * every time. Everything else in this file uses `pg` directly, for the same reason — no
- * `@any-app/store` or `@any-app/records` singleton anywhere in this module.
+ * Scratch database lifecycle (contract in tests/README.md):
+ *   const scratch = await createScratchDatabase();   // scratch.databaseUrl (superuser), scratch.sandboxDatabaseUrl (restricted role)
+ *   await scratch.drop();                             // drops the database, never the role
+ * migrate() runs in a child process because @any-app/store's pool is a module-scope singleton that ESM cannot re-import
+ * fresh. Everything else here uses pg directly.
  */
 import pg from "pg";
 import { readFileSync, existsSync } from "node:fs";
@@ -38,18 +21,11 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(here, "..", "..");
 const MIGRATE_CLI = path.join(REPO_ROOT, "packages", "store", "src", "migrate-cli.ts");
 
-/**
- * Cluster-global, fixed dev role. The restricted role is genuinely cluster-global in
- * Postgres (roles aren't per-database) while the *grant* is per-database, so this file
- * creates the role once, idempotently, and grants it fresh on every scratch database. Never
- * dropped by `drop()` — only the database is.
- */
+/** Cluster-global role (roles are not per-database); the grant is per-database. Created once, never dropped. */
 export const SANDBOX_TEST_ROLE = "anyapp_sandbox_test";
 const SANDBOX_TEST_ROLE_PASSWORD = "anyapp-sandbox-test-scratch-pw";
 
-/** Reads the *superuser* `DATABASE_URL` out of the real repo-root `.env`, without ever
- * setting it (or anything else from that file) on `process.env` — this process may create
- * several scratch databases and must not accumulate real secrets in its own environment. */
+/** Reads the superuser DATABASE_URL without putting it on process.env, so real secrets do not accumulate. */
 export function readSuperuserDatabaseUrl(): string {
   const envPath = path.join(REPO_ROOT, ".env");
   if (!existsSync(envPath)) {
@@ -127,9 +103,7 @@ async function ensureSandboxTestRole(superuserUrl: string): Promise<void> {
   });
 }
 
-/** Fails loudly if `anyapp_sandbox_test` can reach anything but `records` on this database —
- * see CLAUDE.md and impl-phase-5.md step 3. A later agent's whole security section (backend
- * case K22) depends on this actually being true, so this is a hard throw, not a warning. */
+/** Hard failure if the sandbox role can reach anything but `records`: backend case K22 depends on it. */
 async function verifyRoleIsRestricted(sandboxUrl: string): Promise<void> {
   await withClient(sandboxUrl, async (client) => {
     // Must succeed — this is the one table the role exists to reach.
@@ -162,10 +136,7 @@ export async function createScratchDatabase(): Promise<ScratchDatabase> {
 
   const databaseUrl = withDatabase(superuserRootUrl, dbName);
 
-  // Run the project's own migrate() against the new database, out-of-process — see the
-  // file-level doc comment for why. Isolated scratch cwd + a written .env, exactly like
-  // servers.ts, so this never depends on (or can be confused by) the real repo .env even
-  // though DATABASE_URL is also passed directly and — see the README — wins regardless.
+  // Out-of-process migrate with an isolated cwd and .env (as servers.ts), independent of the repo's .env.
   const migrateCwd = await mkdtemp(path.join(tmpdir(), "anyapp-migrate-"));
   try {
     await writeFile(path.join(migrateCwd, ".env"), `DATABASE_URL=${databaseUrl}\n`, "utf8");
@@ -185,9 +156,7 @@ export async function createScratchDatabase(): Promise<ScratchDatabase> {
 
   async function drop(): Promise<void> {
     await withClient(superuserRootUrl, async (client) => {
-      // Terminate anything still connected (a just-stopped server's pool can take a moment
-      // to release its sockets) so DROP DATABASE doesn't fail with "database is being
-      // accessed by other users".
+      // Terminate leftover connections, or DROP DATABASE fails with "being accessed by other users".
       await client.query(
         `select pg_terminate_backend(pid) from pg_stat_activity where datname = $1 and pid <> pg_backend_pid()`,
         [dbName],

@@ -1,11 +1,6 @@
 /**
- * A1 — createFenceStripper, A2 — stripTrailingFence / createTrailingFenceGuard.
- * Spec: .docs/tests-backend.md section A1/A2. Target: packages/generator/src/fence-stripper.ts.
- *
- * `createFenceStripper` is not re-exported from @any-app/generator's index.ts (only
- * `stripTrailingFence` and `createTrailingFenceGuard` are) — see index.ts's export list.
- * It IS exported from its own module, though, so a relative import reaches it without
- * touching any production file. Reported as a finding in the final summary.
+ * A1/A2: createFenceStripper, stripTrailingFence and createTrailingFenceGuard. createFenceStripper is not re-exported
+ * by the package index, so it is imported by relative path.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -22,7 +17,6 @@ function runStripper(chunks: string[]): string {
   return out;
 }
 
-// ---- A1 ----
 
 test("A1.1 — plain HTML, one chunk: output is byte-identical to input", () => {
   const input = "<html><body>Hi</body></html>";
@@ -76,9 +70,7 @@ test("A1.6 — property: any input, any chunking, concatenated output loses no n
     return chunks;
   }
 
-  // Fixed documents: with a leading fence, without one, and one that legitimately opens
-  // with two backticks that are not a fence — the three shapes the state machine branches
-  // on.
+  // Three shapes the state machine branches on: leading fence, none, and two backticks that are not a fence.
   const documents = [
     '```html\n<div class="a">Hello</div>\n<p>World `backticks` inline</p>\n```\n',
     '<div class="plain">No fence here at all, just ordinary HTML content that is long ' +
@@ -110,7 +102,6 @@ test("A1.6 — property: any input, any chunking, concatenated output loses no n
   }
 });
 
-// ---- A2 ----
 
 test("A2.1 — document ending </html>\\n``` : fence and surrounding whitespace removed", () => {
   assert.equal(stripTrailingFence("<html>hi</html>\n```"), "<html>hi</html>");
@@ -149,13 +140,8 @@ test("A2.5 — guard: push output + flush output equals input minus the trailing
 });
 
 test("A2.6 — guard: fence preceded by >16 chars of whitespace documents the known limit", () => {
-  // holdBack (16) only ever holds back the LAST 16 bytes seen so far. When the trailing
-  // fence is preceded by more whitespace than that, the leading portion of that whitespace
-  // has already been emitted as ordinary content by the time enough bytes have arrived to
-  // know a fence is coming — so it is never available to be stripped. This is a known,
-  // accepted limit (documented in tests-backend.md's A2.6), not a bug to fix: the result is
-  // some stray trailing whitespace, not a leaked ``` marker (the marker itself, being the
-  // very last 3 bytes, is always within the held-back window and does get stripped).
+  // holdBack only holds the last 16 bytes, so whitespace before the fence beyond that has already been emitted. A known, accepted limit
+  // (A2.6): stray trailing whitespace, never a leaked ``` marker.
   const content = "<div>Content</div>";
   const doc = content + " ".repeat(20) + "```";
 

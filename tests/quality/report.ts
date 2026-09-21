@@ -1,10 +1,4 @@
-/**
- * Turns the raw per-generation results the runner accumulates into the two outputs the task
- * asks for: a readable stdout table, and a JSON file that can be diffed run over run.
- *
- * This module never runs anything and never decides pass/fail — it only aggregates
- * `CheckResult`s that `checks-doc.ts`/`checks-rendered.ts` already produced.
- */
+/** Aggregates the runner's per-generation results into a stdout table and a diffable JSON file. Never runs anything or decides pass/fail. */
 import { writeFile } from "node:fs/promises";
 import type { CheckResult } from "./checks-doc";
 import { F8_MODIFIER_DIAGNOSTIC_ID, F_WRAPPED_ROOT_DIAGNOSTIC_ID, F_DOUBLED_CLASS_DIAGNOSTIC_ID } from "./checks-doc";
@@ -13,28 +7,18 @@ import { FORM_SUBMIT_DIAGNOSTIC_ID } from "./checks-rendered";
 export type FillMode = "sequential" | "parallel";
 
 export interface GenerationRecord {
-  /** The generation's database id, when the drive got far enough to obtain one — lets a
-   * reader correlate this record with the `planner-fail-<id>.json` capture (see
-   * `plannerFailure` below) and with server log lines. `null` only when `attemptError` fired
-   * before an id was ever minted. */
+  /** The generation's database id, for correlating with planner-fail-<id>.json and server logs; null if it failed before one existed. */
   id: string | null;
   promptId: string;
   mode: FillMode;
   /** Wall-clock ms for the generation call itself (POST + drive-to-completion). */
   generationMs: number | null;
-  /** Set when the whole generation attempt threw before any checks could run — network
-   * failure, DB error, unexpected exception. The generation still counts in the totals; every
-   * check for it is recorded as an "error" row rather than silently omitted (requirement 5:
-   * partial results must survive one bad generation, not silently shrink the denominator). */
+  /** Set when the attempt threw before checks ran. Every check is then recorded as an "error" row, so one bad generation does not shrink the denominator. */
   attemptError: string | null;
   docChecks: CheckResult[];
   renderedChecks: CheckResult[];
   artifacts: { screenshot: string | null; html: string | null } | null;
-  /** Set when this generation's planner call threw a `PlanError` — read back from the file
-   * `internal.ts`'s `capturePlannerFailure` wrote under `ANYAPP_PLANNER_RAW_DIR` (which
-   * `runner.ts` points at this run's own artifact directory). `reason` is also folded into
-   * F4's `detail` in `docChecks`; `rawPath` is kept separate (not inlined) so the raw model
-   * response doesn't bloat `report.json` — read it directly when diagnosing. */
+  /** The PlanError reason and the path of the raw capture; the raw response stays out of report.json. */
   plannerFailure: { reason: string; rawPath: string } | null;
 }
 
@@ -56,14 +40,7 @@ interface CaseTally {
   error: number;
 }
 
-/**
- * Tallies `CheckResult`s into per-id pass/fail/skip/error counts, restricted to `idFilter` —
- * this is what keeps the spec's F1-F8 table and the non-spec diagnostic table (see
- * `DOC_DIAGNOSTIC_CASE_IDS` below) from bleeding into each other even though both draw from
- * the same `docChecks` array on `GenerationRecord`. A result whose id isn't in `idFilter` is
- * silently skipped here, not because it doesn't matter, but because this function is called
- * once per table and each call only owns the ids that belong in that table.
- */
+/** Tallies per-id counts restricted to idFilter, so the F1-F8 table and the diagnostic tables never bleed into each other. */
 function tallyChecks(
   records: GenerationRecord[],
   mode: FillMode,
@@ -100,22 +77,9 @@ function tallyChecks(
 
 const DOC_CASE_IDS = ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8"];
 const RENDERED_CASE_IDS = ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8"];
-/**
- * Non-spec diagnostics that ride along on `GenerationRecord.docChecks` but must never be
- * counted toward, or displayed inside, the spec's F1-F8 pass-rate table — see
- * `checks-doc.ts`'s `checkF8ModifierDiagnostic` for what this one measures and why it exists
- * as a diagnostic rather than a spec case. Deliberately kept as its own list rather than
- * folded into `DOC_CASE_IDS`: that list is also what the `attemptError` fallback above uses to
- * decide which ids get a hard "error" mark, and mixing a diagnostic into it would make it
- * silently start looking like a ninth spec case everywhere `DOC_CASE_IDS` is read.
- */
+/** Non-spec diagnostics on docChecks, kept apart from DOC_CASE_IDS (which also drives the attemptError fallback) so they never look like a ninth case. */
 const DOC_DIAGNOSTIC_CASE_IDS = [F8_MODIFIER_DIAGNOSTIC_ID, F_WRAPPED_ROOT_DIAGNOSTIC_ID, F_DOUBLED_CLASS_DIAGNOSTIC_ID];
-/**
- * Non-spec diagnostics riding along on `GenerationRecord.renderedChecks` — same reasoning as
- * `DOC_DIAGNOSTIC_CASE_IDS` above, kept as its own list so it never bleeds into
- * `RENDERED_CASE_IDS`'s F1-F8 pass-rate table. See `checks-rendered.ts`'s
- * `checkFormSubmitDiagnostic` (S13) for what this one measures.
- */
+/** Same for renderedChecks: kept apart from RENDERED_CASE_IDS. */
 const RENDERED_DIAGNOSTIC_CASE_IDS = [FORM_SUBMIT_DIAGNOSTIC_ID];
 
 function rate(t: CaseTally): string {

@@ -1,21 +1,7 @@
 /**
- * J6–J14 — fan-out retry and failure handling. Spec: .docs/tests-backend.md section J.
- * Target: packages/generator/src/parallel-fill.ts (`fillAllSlots`, and its unexported
- * internals `fillSlotWithRetry`/`prewarm`), plus apps/studio/src/internal.ts's parallel
- * branch for J10/J11. Continues fan-out.test.ts (J1–J5, asCompleted/limitConcurrency).
- *
- * `LLM_FILL_MODE` defaults to "sequential" (see CLAUDE.md) — every case here sets it
- * explicitly via env, never relying on a default.
- *
- * FINDING: `fillSlotWithRetry` (the function J6–J9 are nominally "of") is not exported —
- * not even from its own module (`parallel-fill.ts` exports only `SlotResult` and
- * `fillAllSlots`; `fillSlotWithRetry` and `prewarm` have no `export` keyword at all, unlike
- * `fan-out.ts`'s `asCompleted`/`limitConcurrency`, which fan-out.test.ts already reaches by
- * relative import). There is no seam to import it directly without a production code change.
- * J6–J9 are therefore driven through `fillAllSlots` (the one exported entry point) with a
- * single-slot plan, scripting the fake provider to make that slot's calls fail/succeed/empty
- * exactly as each case describes — this exercises the real `fillSlotWithRetry` code by
- * construction, just not in isolation from `fillAllSlots`'s thin wrapper around it.
+ * J6-J14: fan-out retry and failure handling, plus the parallel branch of internal.ts for J10/J11.
+ * Continues fan-out.test.ts. LLM_FILL_MODE defaults to sequential, so every case sets it explicitly.
+ * fillSlotWithRetry and prewarm are not exported, so J6-J9 run through fillAllSlots with a single-slot plan.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -82,10 +68,6 @@ async function drain(gen: AsyncGenerator<SlotResult>): Promise<SlotResult[]> {
   return out;
 }
 
-// -----------------------------------------------------------------------------------------
-// J6–J9 — fillSlotWithRetry, via fillAllSlots with a single-slot plan (< 3 slots, so no
-// pre-warm complicates the queue — see J12 below for that behaviour on its own).
-// -----------------------------------------------------------------------------------------
 
 test("J6 — first call fails, second succeeds: one retry, failed:false", async (t) => {
   const fake = await startFakeProvider();
@@ -126,10 +108,8 @@ test("J8 — first call returns an empty string (after fence-stripping): retried
   t.after(() => fake.close());
   await withEnv(fillEnv(fake), async () => {
     const plan = planWithSlots(1);
-    // A stream that emits real (non-empty) text, so the OpenAI adapter's own
-    // "no content -> RefusalError" check never fires — the failure here is fillSlot's OWN
-    // post-processing (fence-stripping) reducing real streamed text down to "", which is a
-    // different code path from J7's provider-level error/RefusalError case.
+    // Real, non-empty text (so the adapter's no-content check does not fire) that fence-stripping reduces to "": fillSlot's own post-processing,
+    // not the provider-level RefusalError of J7.
     fake.queueStream({ chunks: ["```html\n```"], finish: "stop" });
     fake.queueStream({ chunks: ["<p>real content</p>"], finish: "stop" });
 
@@ -164,9 +144,6 @@ test("J9 — an abort mid-call throws rather than returning a placeholder", asyn
   });
 });
 
-// -----------------------------------------------------------------------------------------
-// J12 — no pre-warm below 3 slots
-// -----------------------------------------------------------------------------------------
 
 test("J12 — pre-warm is not called with fewer than 3 slots", async (t) => {
   const fake = await startFakeProvider();
@@ -188,9 +165,6 @@ test("J12 — pre-warm is not called with fewer than 3 slots", async (t) => {
   });
 });
 
-// -----------------------------------------------------------------------------------------
-// J13 — a pre-warm that throws RefusalError("empty response") is a success
-// -----------------------------------------------------------------------------------------
 
 test("J13 — a pre-warm that throws RefusalError('empty response') is treated as success (log, not warn); the fan-out proceeds", async (t) => {
   const fake = await startFakeProvider();
@@ -240,16 +214,13 @@ test("J13 — a pre-warm that throws RefusalError('empty response') is treated a
   });
 });
 
-// -----------------------------------------------------------------------------------------
-// J14 — exact call count
-// -----------------------------------------------------------------------------------------
 
 test("J14 — a whole parallel run makes exactly slots.length + 1 provider calls (fan-out plus one pre-warm)", async (t) => {
   const fake = await startFakeProvider();
   t.after(() => fake.close());
   await withEnv(fillEnv(fake), async () => {
     const plan = planWithSlots(4);
-    fake.queueComplete({ text: "ok" }); // prewarm
+    fake.queueComplete({ text: "ok" });
     for (let i = 0; i < 4; i++) fake.queueStream({ chunks: [`<p>${i}</p>`], finish: "stop" });
 
     const results = await drain(fillAllSlots("an app", plan, null, 4));
@@ -259,25 +230,11 @@ test("J14 — a whole parallel run makes exactly slots.length + 1 provider calls
   });
 });
 
-// -----------------------------------------------------------------------------------------
-// J10 / J11 — route-level: through the real /internal/generations/:id/stream, LLM_FILL_MODE
-// = parallel, against the real database.
-//
-// LLM_FILL_CONCURRENCY is pinned to "1" for both — see the comment inline for why: it makes
-// the fake provider's FIFO queue line up deterministically with plan order (4 near-
-// simultaneous connections racing to be "next" in the queue is a real non-determinism this
-// case has no reason to fight), while still exercising the real parallel code path
-// (LLM_FILL_MODE=parallel, the real `fillAllSlots`, the real route branch) — concurrency
-// level and code path are independent knobs.
-// -----------------------------------------------------------------------------------------
+// J10/J11: through the real internal stream route with LLM_FILL_MODE=parallel, against the real database.
+// LLM_FILL_CONCURRENCY=1 makes the fake's FIFO queue line up with plan order (concurrent connections racing for the next script would be
+// non-deterministic) while still using the real parallel code path: concurrency and code path are independent knobs.
 
-// `visibility: 'unlisted'`, not the column's own `'private'` default (Phase 6) — J10/J11 hit
-// `/internal/generations/:id/stream` directly with only the internal secret, no view grant,
-// and the internal route now 404s a private app without one (see internal.ts). This helper
-// never goes through the real ownership-tracking POST /generations route, so there is no
-// real owner to mint a grant for in the first place; marking the row unlisted sidesteps the
-// grant requirement entirely, which is correct here since these cases are about the fan-out
-// fill path, not the sharing/visibility model.
+// visibility 'unlisted', not the private default: these cases call the internal route with no view grant, and no real owner exists to mint one.
 async function insertPendingGeneration(databaseUrl: string, prompt: string): Promise<string> {
   const pool = new Pool({ connectionString: databaseUrl });
   try {
@@ -364,13 +321,13 @@ test("J10 — route: one slot of four fails twice, the row still completes with 
   });
   t.after(() => servers.stop());
 
-  fake.queueComplete({ text: PLAN_4_SLOTS }); // planner
+  fake.queueComplete({ text: PLAN_4_SLOTS });
   fake.queueComplete({ text: "ok" }); // pre-warm (4 slots >= 3)
-  fake.queueStream({ chunks: ["<p>A ok</p>"], finish: "stop" }); // a
+  fake.queueStream({ chunks: ["<p>A ok</p>"], finish: "stop" });
   fake.queueError({ status: 500, retryable: false }); // b attempt 1
   fake.queueError({ status: 500, retryable: false }); // b attempt 2 -> placeholder
-  fake.queueStream({ chunks: ["<p>C ok</p>"], finish: "stop" }); // c
-  fake.queueStream({ chunks: ["<p>D ok</p>"], finish: "stop" }); // d
+  fake.queueStream({ chunks: ["<p>C ok</p>"], finish: "stop" });
+  fake.queueStream({ chunks: ["<p>D ok</p>"], finish: "stop" });
 
   const id = await insertPendingGeneration(scratch.databaseUrl, "four region app");
   const res = await fetch(`${servers.studioOrigin}/internal/generations/${id}/stream`, {
@@ -410,11 +367,11 @@ test("J11 — route: every slot fails, the row ends failed with 'every region fa
   });
   t.after(() => servers.stop());
 
-  fake.queueComplete({ text: PLAN_3_SLOTS }); // planner
+  fake.queueComplete({ text: PLAN_3_SLOTS });
   fake.queueComplete({ text: "ok" }); // pre-warm (3 slots >= 3)
   for (let i = 0; i < 3; i++) {
-    fake.queueError({ status: 500, retryable: false }); // attempt 1
-    fake.queueError({ status: 500, retryable: false }); // attempt 2
+    fake.queueError({ status: 500, retryable: false });
+    fake.queueError({ status: 500, retryable: false });
   }
 
   const id = await insertPendingGeneration(scratch.databaseUrl, "three region app, all failing");

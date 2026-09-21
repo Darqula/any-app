@@ -12,7 +12,7 @@ export interface Generation {
   prompt: string;
   status: GenerationStatus;
   document: string | null;
-  /** The decomposed shell + slots + content. Written in Phase 2, read from Phase 3. */
+  /** The decomposed shell + slots + content, used by edits. */
   plan: unknown | null;
   error: string | null;
   /** Bumped on every successful edit. The optimistic-lock key for `saveEditedApp`. */
@@ -40,12 +40,7 @@ export async function createGeneration(prompt: string, owner: Owner): Promise<Ge
   return rows[0]!;
 }
 
-/**
- * Unscoped. The ONLY caller is the internal stream route, which is reached from the sandbox
- * and has no session to scope by — it authorizes with the view grant and `visibility`
- * instead (see apps/studio/src/internal.ts and view-grant.ts). Never call this from a studio
- * route that acts on behalf of a specific signed-in browser.
- */
+/** Unscoped: only the internal stream route (no session; authorised by view grant) may call this. */
 export async function getGeneration(id: string): Promise<Generation | null> {
   const { rows } = await pool.query<Generation>(
     `select ${GENERATION_COLUMNS} from generations where id = $1`,
@@ -55,13 +50,8 @@ export async function getGeneration(id: string): Promise<Generation | null> {
 }
 
 /**
- * Atomically claims a row for generation. Returns false if it is already `streaming`
- * (someone else is generating it right now) or already `complete`, so the caller never
- * starts a second concurrent call for the same id — e.g. a reload mid-generation.
- *
- * A row stuck in `streaming` from a crashed process is deliberately NOT reclaimed here.
- * That needs either a manual reset or a future sweeper keyed on `updated_at`; silently
- * reclaiming it would risk two calls racing on a merely-slow one.
+ * Atomically claims a row. False if already streaming or complete. A row stuck in `streaming` after
+ * a crash is deliberately not reclaimed (a sweeper would need care not to race a slow call).
  */
 export async function claimForGeneration(id: string): Promise<boolean> {
   const { rowCount } = await pool.query(
@@ -73,10 +63,8 @@ export async function claimForGeneration(id: string): Promise<boolean> {
 }
 
 /**
- * Puts a generation back in `pending` so a later request can retry it. Used when the
- * viewer disconnects mid-stream — a half-written document must never be saved as
- * `complete`, and leaving the row in `streaming` would make `claimForGeneration` refuse
- * every retry.
+ * Back to `pending` after a disconnect: a half-written document must not be saved as complete,
+ * and `streaming` would make claimForGeneration refuse every retry.
  */
 export async function resetForRetry(id: string): Promise<void> {
   await pool.query(
@@ -94,11 +82,7 @@ export async function markComplete(id: string, document: string): Promise<void> 
   );
 }
 
-/**
- * Same as `markComplete`, plus the decomposed plan (shell + slots + per-slot content) for
- * Phase 3 to read back and edit. `document` stays the flat assembled HTML so the replay
- * path never has to know the difference between a Phase 1 and a Phase 2 row.
- */
+/** Also stores the decomposed plan for edits. `document` stays flat so replay ignores the difference. */
 export async function markCompleteWithPlan(
   id: string,
   document: string,
@@ -147,8 +131,7 @@ export interface LoadedApp {
   version: number;
 }
 
-/** Reads the decomposed app back for its owner, or null if the row is not theirs, predates
- *  Phase 2, or is malformed. */
+/** Reads the decomposed app back for its owner, or null if the row is not theirs, has no plan or is malformed. */
 export async function getFilledApp(id: string, owner: Owner): Promise<LoadedApp | null> {
   const { sql, param } = ownerFilter(owner, 2);
   const { rows } = await pool.query<{ plan: unknown; version: number }>(
@@ -157,21 +140,14 @@ export async function getFilledApp(id: string, owner: Owner): Promise<LoadedApp 
   );
   const row = rows[0];
   if (!row || !isFilledApp(row.plan)) return null;
-  // A row written before Phase 5 has no `collections` key at all — plan is JSONB and every
-  // app generated before this phase predates the field. Default it here so the first edit
-  // of a pre-Phase-5 app does not throw on `plan.collections.map`. Same class of bug as
-  // Phase 3's `document !== flat`: a field added to a persisted shape is a migration of
-  // *reads*, even when the column itself never changed.
+  // Older rows lack `collections`: a field added to persisted JSONB needs a default on read.
   const filled: FilledApp = { ...row.plan, collections: row.plan.collections ?? [] };
   return { filled, version: row.version };
 }
 
 /**
- * Writes an edited app back, but only if nobody else edited it in the meantime AND it still
- * belongs to this owner. The model call sits between reading the app and writing it, and
- * that call takes seconds. Holding a transaction open across it would pin a connection for
- * the whole round trip, so concurrency is handled optimistically instead: the write fails if
- * the version moved (or ownership doesn't match), and the caller tells the user to retry.
+ * Optimistic concurrency: fails if the version moved or ownership changed, because holding a transaction
+ * across a multi-second model call would pin a connection.
  */
 export async function saveEditedApp(
   id: string,
@@ -191,19 +167,8 @@ export async function saveEditedApp(
 }
 
 /**
- * Copies the PLAN, never the DOCUMENT.
- *
- * `generations.document` embeds the data runtime's app-token placeholder (Phase 6 step 7) —
- * copying it verbatim would be harmless token-wise (the placeholder carries no app identity),
- * but the document is still re-rendered rather than copied so a fork always reflects the
- * CURRENT renderer (`renderDocument` is the single producer of a document; a fork is one
- * more caller, not an exception) and so `forked_from`/ownership land atomically with content
- * that is unambiguously the fork's own row.
- *
- * `renderDocumentFor` takes only `filled`, not the fork's new id: that is correct, not an
- * oversight — the id would only matter to embed a live app
- * token, and the document never carries one any more (it carries the placeholder, same as
- * every other render). Don't add the parameter back to "look more complete".
+ * Copies the plan, never the document, so a fork always uses the current renderer and lands atomically.
+ * renderDocumentFor takes no id on purpose: documents carry a placeholder, never a live token.
  */
 export async function forkGeneration(
   source: Generation,
@@ -230,33 +195,20 @@ export async function forkGeneration(
 
 export type DeleteResult = "deleted" | "missing" | "busy";
 
-/** A `streaming` row this old is assumed to belong to a crashed process (see
- *  `claimForGeneration`'s note: such rows are never reclaimed), so it stays deletable —
- *  otherwise a crash would leave an app the owner can never remove. Longer than any real
- *  generation, which is bounded by the provider timeouts. */
+/** A streaming row this old is assumed to belong to a crashed process and stays deletable. */
 const STALE_STREAMING_INTERVAL = "15 minutes";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * Deletes an app and its `records` rows, for its owner only. "missing" covers both "no such
- * app" and "not yours", like every other owner-scoped lookup here.
- *
- * A generation that is actively streaming is refused ("busy"), not deleted. Its usage events
- * are only written at the very end (`recordUsage` in internal.ts) and carry a
- * `generation_id` foreign key: delete the row mid-stream and that insert fails, so a user
- * could start a generation, delete it, and have its tokens never count against the monthly
- * cap. `usage_events` and `forked_from` both use `on delete set null`, so a completed
- * generation's accounting and its remixes survive the delete.
- *
- * `records` has no foreign key to `generations` (the sandbox's restricted role can touch
- * that table and nothing else), so its rows are removed explicitly, in the same transaction.
+ * Deletes an app and its records, for its owner only ("missing" also means "not yours").
+ * Refuses a live generation ("busy"): its usage write, keyed to this row, would fail and dodge the monthly cap.
+ * records has no foreign key (restricted role), so it is deleted explicitly in the same transaction.
  */
 export async function deleteGeneration(
   id: string,
   owner: Owner,
-  /** For work the database cannot see, e.g. a follow-up edit running in the studio process —
-   *  it leaves `status` at `complete`, but its usage write has the same foreign-key problem. */
+  /** For work the database cannot see, such as a follow-up edit (it leaves status at `complete`). */
   isBusy: (id: string) => boolean = () => false,
 ): Promise<DeleteResult> {
   if (!UUID_RE.test(id)) return "missing";

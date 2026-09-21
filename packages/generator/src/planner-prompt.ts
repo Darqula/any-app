@@ -1,39 +1,8 @@
 /**
- * S13 (.docs/testing-review.md): the SHELL section's placeholder rule and `fill-prompt.ts` /
- * `fill-slot-prompt.ts`'s "write only what goes inside" rule are two halves of one contract —
- * the placeholder element IS the region (may carry the region's own class), and the fill call
- * writes only its children, never a wrapper of its own. Changing one half without the other
- * reintroduces the bug in a different shape: skip this half and a class the fill call still
- * wraps in never reaches the element the shell script/CSS actually target (the original S13
- * failure); skip the fill half and a region's class lands twice, nested (doubled padding,
- * border, background). Edit both files together.
- *
- * A 5-prompt live probe (2026-09-07) confirmed the class half: 13/13 placeholders carried a
- * class, against a 20% baseline. But it also surfaced a second failure the first fix's wording
- * invited: with "give it a class and style/target it like any other element" stated before
- * "must stay empty," one placeholder came back with real content —
- * `<div data-slot="counter-display" class="counter-display">0</div>`. `slots.ts`'s tolerant
- * scan correctly refuses to match an element with non-whitespace content (a regex cannot
- * balance nested same-tag content), so the slot went unmatched and `parsePlan` threw
- * `PlanError` rather than silently accepting the bad shape. The SHELL section below was
- * restructured so "must stay empty" is its own sentence immediately after the placeholder
- * example — before the class/style invitation, not buried in a trailing clause after it — and
- * a two-word reminder ("still empty") was added right at the class example itself, since that
- * invitation is exactly where the model drifted. The class guidance's substance (may carry the
- * region's own class, targeted the same way as any other element) did not change. This
- * reordering is unverified against a live provider as of this writing.
- *
- * A 10-prompt probe (2026-09-08) found the reordering held for real content but not for a
- * loading state shaped like content: `analytics-dashboard` reproduced twice with
- * `<div class="loading-spinner">Loading chart...</div>` inside two placeholders — same
- * `PlanError`, same tolerant-scan rejection, new shape. The gap wasn't wording order; it was
- * that nothing told the model a loading state already exists. `renderSkeletons` (`slots.ts`)
- * replaces every placeholder with a sized `anyapp-skeleton` element (shimmer, `min-height`
- * from the slot's declared height) before the model's own markup ever runs, and `swap()`
- * strips that class the moment real content lands — writing a `Loading...` div is the model
- * filling a gap that isn't there. The "must stay empty" sentence now names the skeleton as
- * the reason for the rule, rather than adding a fourth sentence to the paragraph. Also
- * unverified against a live provider as of this writing.
+ * The SHELL placeholder rule and the fill prompts' "write only what goes inside" rule are two halves of one
+ * contract: edit planner-prompt, fill-prompt and fill-slot-prompt together.
+ * "Must stay empty" follows the placeholder example and names the auto-rendered skeleton, because models
+ * otherwise filled placeholders with content or a "Loading..." spinner, which failed the plan.
  */
 export const PLANNER_PROMPT = `You plan a single-page web app. You do NOT write its content — another pass does that. You produce the frame it drops into.
 

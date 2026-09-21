@@ -1,8 +1,6 @@
 /**
- * Section I — architecture guards (I1–I11). Cheap static/source-tree checks: no Postgres, no
- * spawned servers, no ports. See .docs/tests-backend.md's "I. Architecture guards" for the
- * prose behind each case, and CLAUDE.md's "Don't" list, which several of these cases enforce
- * directly.
+ * Section I: architecture guards (I1-I11). Static checks on the source tree: no Postgres, servers or ports.
+ * Several enforce the root CLAUDE.md "Don't" list.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -18,7 +16,6 @@ function readJson(relPath: string): Record<string, unknown> {
   return JSON.parse(read(relPath));
 }
 
-/** All `*.ts` files under a directory, recursively — used to grep whole source trees. */
 function walkTsFiles(dir: string): string[] {
   const abs = path.join(REPO_ROOT, dir);
   const out: string[] = [];
@@ -39,9 +36,6 @@ function dependsOn(pkg: Record<string, unknown>, name: string): boolean {
   return Object.prototype.hasOwnProperty.call(deps, name);
 }
 
-// ---------------------------------------------------------------------------------------
-// I1 / I2 — sandbox must not depend on, or import, @any-app/generator (holds provider keys)
-// ---------------------------------------------------------------------------------------
 
 test("I1 — apps/sandbox/package.json does not list @any-app/generator", () => {
   const pkg = readJson("apps/sandbox/package.json");
@@ -51,9 +45,7 @@ test("I1 — apps/sandbox/package.json does not list @any-app/generator", () => 
 test("I2 — apps/sandbox/src/** contains no import of @any-app/generator", () => {
   const files = walkTsFiles("apps/sandbox/src");
   assert.ok(files.length > 0, "expected to find sandbox source files");
-  // A real import/require specifier, not any mention of the string — a comment explaining
-  // *why* a file doesn't depend on a package (as apps/sandbox/src/index.ts does for
-  // @any-app/store, see I3b) would otherwise false-positive a plain substring match.
+  // Matches a real import/require specifier, not a mention: comments explain why a file does NOT depend on a package.
   const importSpecifier = /(?:from\s+|require\()\s*["']@any-app\/generator["']/;
   for (const file of files) {
     const content = read(file);
@@ -61,11 +53,7 @@ test("I2 — apps/sandbox/src/** contains no import of @any-app/generator", () =
   }
 });
 
-// ---------------------------------------------------------------------------------------
-// I3 — sandbox must not depend on @any-app/store AT ALL (not even for one export) — see
-// CLAUDE.md: importing a single named export off @any-app/store still evaluates
-// store/src/index.ts's module scope, which builds a privileged Postgres pool.
-// ---------------------------------------------------------------------------------------
+// The sandbox must not depend on @any-app/store at all: one import evaluates store's module scope, which builds a privileged pool.
 
 test("I3 — apps/sandbox/package.json does not list @any-app/store at all", () => {
   const pkg = readJson("apps/sandbox/package.json");
@@ -76,11 +64,7 @@ test("I3 — apps/sandbox/package.json does not list @any-app/store at all", () 
   );
 });
 
-// Belt and suspenders: even if the package.json rule ever slipped, no source file should
-// actually import the package. package.json is the enforceable, cheap check; this backs it.
-// Matches only a real import/require specifier — apps/sandbox/src/index.ts's own comments
-// deliberately *mention* "@any-app/store" (explaining why it no longer imports it), and a
-// plain substring match would flag prose, not code. See CLAUDE.md's Dependency rules.
+// Backs I3 at source level. Only real specifiers match, since index.ts's comments mention the package by name.
 test("I3b — apps/sandbox/src/** contains no import of @any-app/store", () => {
   const files = walkTsFiles("apps/sandbox/src");
   const importSpecifier = /(?:from\s+|require\()\s*["']@any-app\/store["']/;
@@ -90,9 +74,6 @@ test("I3b — apps/sandbox/src/** contains no import of @any-app/store", () => {
   }
 });
 
-// ---------------------------------------------------------------------------------------
-// I4 — no `compression` package anywhere. It buffers responses and breaks streaming.
-// ---------------------------------------------------------------------------------------
 
 test("I4 — no compression package anywhere in the repo", () => {
   const packageJsonPaths = [
@@ -111,8 +92,7 @@ test("I4 — no compression package anywhere in the repo", () => {
     assert.equal(dependsOn(pkg, "compression"), false, `${p} lists compression`);
   }
 
-  // And no source file requires/imports it directly (e.g. a stray `require("compression")`
-  // that bypassed package.json entirely because it resolved from a sibling's node_modules).
+  // And no source file imports it directly (e.g. a stray require resolved from a sibling's node_modules).
   const sourceDirs = ["apps/sandbox/src", "apps/studio/src", "packages/generator/src", "packages/protocol/src", "packages/records/src", "packages/store/src"];
   for (const dir of sourceDirs) {
     for (const file of walkTsFiles(dir)) {
@@ -121,14 +101,8 @@ test("I4 — no compression package anywhere in the repo", () => {
   }
 });
 
-// ---------------------------------------------------------------------------------------
-// I5 — the preview iframe's `sandbox` attribute must carry BOTH allow-scripts and
-// allow-same-origin, AND its src host must be derived per app. Tested as a unit on purpose:
-// an allow-same-origin frame on a *shared* origin is precisely the failure locked decision
-// #8 exists to prevent, and either half alone looks fine in isolation. This assertion is
-// deliberately inverted from an older version of the spec (allow-same-origin used to be
-// forbidden) — Phase 5 changed the posture on purpose; do not "correct" it back.
-// ---------------------------------------------------------------------------------------
+// Both sandbox flags together, with a per-app src host. allow-same-origin on a shared origin would let every app read every other's storage.
+// Inverted from an older spec on purpose: do not "correct" it back.
 
 test("I5 — preview iframe: allow-scripts + allow-same-origin together, src host derived per app", () => {
   const views = read("apps/studio/src/views.ts");
@@ -145,7 +119,7 @@ test("I5 — preview iframe: allow-scripts + allow-same-origin together, src hos
   assert.ok(
     tokens.includes("allow-same-origin"),
     "sandbox attribute must include allow-same-origin — required for a same-origin " +
-      "fetch(\"/data/...\") from inside the frame; only safe because origins are per-app (locked decision #8)",
+      "fetch(\"/data/...\") from inside the frame; only safe because origins are per-app",
   );
 
   // The src must be built from a per-app origin parameter, not a single hardcoded host —
@@ -171,9 +145,6 @@ test("I5 — preview iframe: allow-scripts + allow-same-origin together, src hos
   );
 });
 
-// ---------------------------------------------------------------------------------------
-// I6 — no provider SDK imported outside packages/generator/src/providers/
-// ---------------------------------------------------------------------------------------
 
 test("I6 — no provider SDK imported outside packages/generator/src/providers/", () => {
   const files = walkTsFiles("packages/generator/src").filter(
@@ -205,10 +176,6 @@ test("I6 — no provider SDK imported outside packages/generator/src/providers/"
   }
 });
 
-// ---------------------------------------------------------------------------------------
-// I7 — no route or view interpolates a raw credential; error persistence always goes
-// through the scrubber.
-// ---------------------------------------------------------------------------------------
 
 test("I7 — no route/view interpolates a raw credential into output", () => {
   const files = [
@@ -217,9 +184,7 @@ test("I7 — no route/view interpolates a raw credential into output", () => {
   ];
   for (const file of files) {
     const content = read(file);
-    // A raw apiKey (or a credential's .apiKey) spliced straight into a template literal —
-    // as opposed to being passed as a *secret to redact* into safeMessage/scrub, which is
-    // the one legitimate use (see settings.ts: safeMessage(error, [apiKey])).
+    // A raw apiKey spliced into a template literal, as opposed to passed as a secret to redact (settings.ts's safeMessage).
     assert.doesNotMatch(
       content,
       /\$\{[^}]*\bapiKey\b[^}]*\}/,
@@ -235,10 +200,7 @@ test("I7 — no route/view interpolates a raw credential into output", () => {
 
 test("I7b — error persistence (markFailed) always goes through safeMessage, never a raw error", () => {
   const internal = read("apps/studio/src/internal.ts");
-  // Every markFailed(id, X) call: X must either be a string literal (e.g. the static
-  // "every region failed to generate" message) or the `message` variable that this file
-  // assigns via `safeMessage(error, secrets)` immediately above its catch block — never
-  // `error.message` or `String(error)` handed to markFailed raw.
+  // Every markFailed(id, X): X is a string literal or `message` (built with safeMessage), never a raw error.
   const calls = [...internal.matchAll(/markFailed\(id,\s*([^)]+)\)/g)].map((m) => m[1]!.trim());
   assert.ok(calls.length > 0, "expected at least one markFailed call in internal.ts");
   for (const arg of calls) {
@@ -256,11 +218,7 @@ test("I7b — error persistence (markFailed) always goes through safeMessage, ne
   );
 });
 
-// ---------------------------------------------------------------------------------------
-// I8 — no Access-Control-Allow-Origin anywhere in the sandbox. The data API is same-origin
-// by construction; a CORS header would be a sign someone "fixed" a same-origin failure by
-// opening it up instead of adding allow-same-origin to the iframe.
-// ---------------------------------------------------------------------------------------
+// The data API is same-origin by construction: a CORS header would mean someone opened it up instead of fixing the iframe.
 
 test("I8 — no Access-Control-Allow-Origin anywhere in apps/sandbox/src", () => {
   for (const file of walkTsFiles("apps/sandbox/src")) {
@@ -272,10 +230,6 @@ test("I8 — no Access-Control-Allow-Origin anywhere in apps/sandbox/src", () =>
   }
 });
 
-// ---------------------------------------------------------------------------------------
-// I9 — app_id is only ever read from res.locals in data.ts, never from body/query/params/
-// a header.
-// ---------------------------------------------------------------------------------------
 
 test("I9 — apps/sandbox/src/data.ts reads app_id only from res.locals", () => {
   const content = read("apps/sandbox/src/data.ts");
@@ -295,9 +249,7 @@ test("I9 — apps/sandbox/src/data.ts reads app_id only from res.locals", () => 
   const assignments = [...content.matchAll(/res\.locals\.appId\s*=\s*([^;]+);/g)];
   assert.equal(assignments.length, 1, "expected exactly one res.locals.appId assignment");
   assert.equal(assignments[0]![1]!.trim(), "appId");
-  // Phase 6 step 7: verifyAppToken now also returns `mode` (rw/ro), so the appId is
-  // destructured out of its return value rather than assigned directly — same derivation,
-  // different literal shape.
+  // verifyAppToken now also returns mode, so appId is destructured from its result: same derivation, different shape.
   assert.match(
     content,
     /const \{ appId, mode \} = verified;/,
@@ -315,9 +267,6 @@ test("I9 — apps/sandbox/src/data.ts reads app_id only from res.locals", () => 
   assert.ok(handlerAppIdUses.length >= 2, "expected res.locals.appId to be both set and read");
 });
 
-// ---------------------------------------------------------------------------------------
-// I10 — no postMessage(..., "*") anywhere in views.ts; every call pins a target origin.
-// ---------------------------------------------------------------------------------------
 
 test("I10 — apps/studio/src/views.ts never postMessages to \"*\"", () => {
   const content = read("apps/studio/src/views.ts");
@@ -333,13 +282,8 @@ test("I10 — apps/studio/src/views.ts never postMessages to \"*\"", () => {
   }
 });
 
-// ---------------------------------------------------------------------------------------
-// I11 — the session cookie is set with no Domain attribute (host-only), so it cannot leak
-// to <id>.apps.localhost, a subdomain of the studio's own host — and carries SameSite=Lax,
-// not Strict (Strict is not sent on a cross-site top-level
-// navigation, which is exactly what opening a shared /apps/:id link from Slack or email is —
-// see session.ts's COOKIE_ATTRS comment).
-// ---------------------------------------------------------------------------------------
+// Host-only cookie (no Domain) so it cannot reach <id>.apps.localhost, and SameSite=Lax: Strict is not sent on a cross-site
+// navigation, which is what opening a shared link is.
 
 test("I11 — session cookie is set with no Domain attribute, and SameSite=Lax (not Strict)", () => {
   const content = read("apps/studio/src/session.ts");
@@ -352,21 +296,12 @@ test("I11 — session cookie is set with no Domain attribute, and SameSite=Lax (
     "session cookie must not carry a Domain attribute — it must stay host-only so it is " +
       "never sent to <id>.apps.localhost, a subdomain of the studio's own host",
   );
-  // Sanity: make sure this is really the cookie-setting line and not an empty match. Phase 6
-  // factored the shared `HttpOnly; SameSite=Lax; ...` attribute string out into its own
-  // `COOKIE_ATTRS` constant (three call sites now set this cookie: currentOwner, signInAs,
-  // signOut), so "HttpOnly" itself may live in that constant's own definition rather than
-  // inline in the `setHeader(...)` expression captured above — resolve it there too.
+  // Sanity: COOKIE_ATTRS holds the shared attribute string (currentOwner, signInAs and signOut all set it), so resolve it there too.
   const attrsMatch = /COOKIE_ATTRS\s*=\s*(["'`])([\s\S]*?)\1/.exec(content);
   const attrsExpr = attrsMatch ? attrsMatch[2]! : "";
   assert.match(cookieExpr + attrsExpr, /HttpOnly/i);
-  // SameSite=Strict is not sent on a cross-site top-level navigation,
-  // so a shared /apps/:id link opened from Slack or email would arrive with no cookie —
-  // currentOwner would then mint a fresh anonymous session and its Set-Cookie would REPLACE
-  // the recipient's real one, silently signing them out. Lax rides along on that navigation;
-  // the same-site generated-app CSRF that Strict looked like it was defending against is
-  // caught by index.ts's Sec-Fetch-Site/Origin guard instead (see M12). Assert both
-  // directions — this is the guard that keeps that from regressing back to Strict.
+  // Both directions: guards against regressing to Strict, which would sign recipients of a shared link out. Lax rides that navigation;
+  // index.ts's Sec-Fetch-Site/Origin guard covers CSRF (see M12).
   const combined = cookieExpr + attrsExpr;
   assert.match(combined, /SameSite=Lax/i, "session cookie must carry SameSite=Lax, not Strict");
   assert.doesNotMatch(

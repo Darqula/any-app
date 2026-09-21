@@ -1,9 +1,6 @@
 /**
- * Models are told not to wrap output in markdown fences, but occasionally do it anyway.
- * This filter drops an opening fence line before it reaches the browser.
- *
- * It holds back output only until it can tell whether the response opens with a fence,
- * which is at most a few characters, so it does not delay the first paint meaningfully.
+ * Drops an opening markdown fence line before it reaches the browser, holding output back only
+ * until it can tell whether the response opens with one.
  */
 export function createFenceStripper(): (chunk: string) => string {
   let decided = false;
@@ -35,15 +32,7 @@ export function stripTrailingFence(document: string): string {
   return document.replace(/\s*```\s*$/, "");
 }
 
-/**
- * Delays the tail of a stream by a small fixed window so a trailing markdown fence can be
- * detected and stripped before it ever reaches the browser, instead of only being cleaned
- * up when the saved document is replayed later (which made the fence visible on first
- * view and gone after reload — harmless, but a needless inconsistency).
- *
- * `holdBack` only needs to comfortably cover "```" plus a little surrounding whitespace;
- * it delays nothing but the very last few bytes of the whole response.
- */
+/** Holds back the last few bytes so a trailing fence is stripped on first view, not only on replay. */
 export function createTrailingFenceGuard(holdBack = 16): {
   push(chunk: string): string;
   flush(): string;

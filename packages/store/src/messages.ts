@@ -25,13 +25,8 @@ export interface NewMessage {
 }
 
 /**
- * Appends one message to an app's conversation. Ownership is NOT checked here — every caller
- * is server code that has already resolved the generation (the stream route, the edit route);
- * reading the log back is what is owner-gated, in the route.
- *
- * A generation deleted between the caller's check and this insert violates the foreign key;
- * that is reported to the caller like any other database error, and callers treat the log as
- * best-effort (see the studio's `recordMessage`).
+ * Ownership is checked by callers; only reading the log back is owner-gated. A deleted generation
+ * fails the foreign key, so callers treat the log as best-effort.
  */
 export async function appendMessage(generationId: string, message: NewMessage): Promise<void> {
   const body = message.body.length > MAX_MESSAGE_LENGTH
@@ -43,7 +38,6 @@ export async function appendMessage(generationId: string, message: NewMessage): 
   );
 }
 
-/** Messages for one app after `afterSeq` (0 = from the start), oldest first. */
 export async function listMessages(generationId: string, afterSeq = 0): Promise<Message[]> {
   const { rows } = await pool.query<Omit<Message, "seq"> & { seq: string }>(
     `select seq, role, kind, target, body, created_at from messages

@@ -1,10 +1,6 @@
 /**
- * E1-E8 — error and edge states. E5 and E7 run against seeded rows on the suite's shared
- * default server. E1-E4, E6, E8 need a real generation through the fake provider, so — same
- * as progressive.spec.ts's C2-C8 — this file spins up its OWN isolated scratch database,
- * fake provider, and studio/sandbox pair on ephemeral ports (see global-setup.ts's header
- * comment for why: a session-scoped BYOK credential cannot reach a fresh generation's
- * planner/fill, only the platform credential this isolated server is configured with can).
+ * E1-E8: error and edge states. E5 and E7 use seeded rows on the shared server; E1-E4, E6, E8 need a real generation through the fake provider,
+ * so this file runs its own isolated database, fake provider and server pair (see global-setup.ts).
  */
 import { readFile } from "node:fs/promises";
 import { test, expect } from "@playwright/test";
@@ -118,12 +114,8 @@ test.describe("E — error and edge states", () => {
       fake.queueComplete({ text: planText({ shell: SHELL_2_SLOTS, slots: SLOTS_2 }) });
       const handle = fake.queueStream(); // left open — the first request is still "in progress"
 
-      // `src`, not a hand-built `/preview/${id}` — it already carries the Phase 6 view grant
-      // (`?g=...`) `previewFrame` minted for the FIRST page's own iframe. The second page
-      // shares this context's cookie jar (`context.newPage()`, not a fresh browser context),
-      // but that cookie is host-only on studio's origin and never reaches the sandbox's — the
-      // grant in the URL is the only thing that authorizes this direct navigation to a
-      // (default-private) generation it does not own.
+      // `src` carries the view grant minted for the first page's iframe. The cookie is host-only on studio's origin and never reaches the sandbox,
+      // so the grant in the URL is what authorises this direct navigation to a private generation.
       const { src } = await submitPrompt(page, `E3-${Date.now()}`, servers.studioOrigin);
 
       const second = await context.newPage();
@@ -169,19 +161,9 @@ test.describe("E — error and edge states", () => {
       await expect(streamedFrame.locator(".anyapp-skeleton")).toHaveCount(0);
       const streamedShot = await streamedFrame.locator("body").screenshot();
 
-      // Replay the SAME, now-complete generation via a SECOND studio page — through the
-      // sidebar, the same way a real viewer would reopen it — rather than opening the
-      // sandbox's preview URL directly in a bare tab. That distinction turned out to
-      // matter for this comparison: opened directly, the "replay" page renders at the
-      // full browser viewport width, while the "streamed" one renders inside studio's
-      // iframe (narrower — studio's own grid layout reserves a 320px sidebar), so the
-      // same content wraps differently and a pixel comparison would never agree
-      // regardless of markup equivalence. Going through the sidebar on both sides puts
-      // them in the same iframe layout context, which is the actual thing this case
-      // means by "equivalent" (see .docs/tests-frontend.md: renderDocument emits slots in
-      // plan order while the live stream completes in completion order — Phase 4 dropped
-      // the old byte-identical guarantee on purpose, since swap() is order-independent;
-      // this checks that the resulting *rendering* still agrees, not the markup).
+      // Replay through the sidebar, like a real viewer, not the bare preview URL: opened directly it renders at full viewport width instead of inside
+      // the iframe, so the pixels would never match. Compares the rendering, not the markup (renderDocument emits in plan order, the live stream in
+      // completion order; swap() is order-independent).
       const replayPage = await context.newPage();
       const { frame: replayFrame } = await openSidebarApp(replayPage, prompt, servers.studioOrigin);
       await expect(replayFrame.locator(".anyapp-skeleton")).toHaveCount(0);
@@ -205,9 +187,7 @@ test.describe("E — error and edge states", () => {
       await expect(page.locator("#stage iframe")).toHaveCount(1);
 
       await page.close(); // the viewer closes the tab mid-generation
-      // Filters one specific, already-reported production error (see doc-builder.ts's
-      // isKnownStudioHomepageSyntaxBug) that fires on every studio homepage load,
-      // unrelated to this case's actual concern (the abandoned generation itself).
+      // Excludes the known studio-shell error (see doc-builder.ts).
       expect(consoleErrors.filter((e) => !isKnownStudioHomepageSyntaxBug(e))).toEqual([]);
 
       // Studio itself must still be responsive to a fresh request afterward.

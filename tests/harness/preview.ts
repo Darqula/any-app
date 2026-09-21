@@ -1,11 +1,6 @@
 /**
- * Extracts the generation id AND the Phase 6 view grant from a rendered iframe's `src`
- * attribute — `previewFrame` (apps/studio/src/views.ts) now emits
- * `/preview/<uuid>?g=<grant>"`, not just `/preview/<uuid>"`. Every case that hits
- * `/internal/generations/:id/stream` or `/preview/:id` directly (bypassing the browser,
- * which would otherwise carry the grant for you) needs the grant too — a real generation
- * defaults to `visibility: "private"`, and the internal route 404s a private app with no
- * valid grant for its exact id (see internal.ts and view-grant.ts).
+ * Extracts the generation id and the view grant from an iframe src. Cases that call the internal or preview routes
+ * directly need the grant, since a real generation is private.
  */
 export interface ExtractedPreview {
   id: string;
@@ -22,7 +17,6 @@ export function extractPreview(html: string): ExtractedPreview {
   return { id: match[1]!, grant: decodeURIComponent(match[2]!) };
 }
 
-/** `?g=<grant>`, ready to append to a URL. */
 export function grantQuery(grant: string): string {
   return `?g=${encodeURIComponent(grant)}`;
 }

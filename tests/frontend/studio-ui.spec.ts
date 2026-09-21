@@ -1,13 +1,6 @@
 /**
- * A1–A9 — studio UI. Needs the real servers/database (see global-setup.ts) but no model:
- * every case that needs an existing generation uses `seedGeneration()` rather than driving a
- * real one — see `.docs/tests-frontend.md`'s "Seeding instead of generating" and this task's
- * brief. A2/A3/A8/A9 are about the live submission path itself, so those go through the real
- * `POST /generations` form.
- *
- * A1 used to live in smoke.spec.ts (it still does, verbatim — see that file's own note); it
- * is repeated here too so this file is a complete, standalone A1–A9 set with one id per test
- * title, per this task's instructions.
+ * A1-A15: studio UI. Needs the real servers and database (global-setup.ts) but no model: existing generations are seeded. A2/A3/A8/A9/A13/A15 use
+ * the live POST /generations form. A1 also lives in smoke.spec.ts.
  */
 import { readFile } from "node:fs/promises";
 import pg from "pg";
@@ -48,12 +41,8 @@ async function promptsMatching(marker: string): Promise<string[]> {
 }
 
 /**
- * Phase 6 (impl-phase-6.md's known casualty table): the sidebar is now owner-scoped
- * (`listRecentGenerations(owner)`), so a row seeded with no `session_id` belongs to nobody
- * and never shows up for whichever fresh anonymous session this test's browser context gets.
- * Every case below that seeds a row and then expects to see it in the sidebar navigates once
- * FIRST to learn this page's real anonymous session id (the cookie value IS the session id —
- * see session.ts), seeds the row as that same session's own, then reloads.
+ * The sidebar is owner-scoped, so a row seeded with no session_id belongs to nobody. Load the page once to learn its anonymous session id (the
+ * cookie value), seed as that session, then reload.
  */
 async function establishAnonSession(page: Page): Promise<string> {
   await page.goto("/");
@@ -89,9 +78,7 @@ test.describe("A — studio UI", () => {
     await expect(page.locator("#stage iframe")).toHaveCount(0);
     expect(await countGenerations()).toBe(before);
 
-    // Whitespace-only: a non-zero length value satisfies native `required`, so this one
-    // actually reaches the server — internal.ts's `String(req.body.prompt ?? "").trim()`
-    // check is what has to reject it.
+    // Whitespace passes the browser's `required` check, so it reaches the server, which has to reject it.
     await page.fill('textarea[name="prompt"]', "   ");
     await page.click('button[type="submit"]');
     await page.waitForTimeout(300);
@@ -170,11 +157,7 @@ test.describe("A — studio UI", () => {
     await page.fill('textarea[name="prompt"]', promptB);
     await page.click('button[type="submit"]');
     await expect(page.locator("#stage iframe")).toHaveCount(1); // still exactly one — replaced, not stacked
-    // `toHaveCount(1)` above is trivially already true (the FIRST iframe already satisfies
-    // it) the instant this click fires, so it does not by itself wait for the SECOND
-    // response to actually land — reading `src` right after it can (and, since Phase 6 added
-    // a couple of real DB round trips to POST /generations, now reliably does) still see the
-    // stale first iframe. Wait for the attribute to actually change before reading it.
+    // toHaveCount(1) is already true for the first iframe, so wait for the src to change before reading it.
     await expect(page.locator("#stage iframe")).not.toHaveAttribute("src", srcA!);
     const srcB = await page.locator("#stage iframe").getAttribute("src");
 

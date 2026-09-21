@@ -380,7 +380,7 @@ reason it was given.
 ## Phase 6 — the sidebar became owner-scoped
 
 `listRecentGenerations`/`getFilledApp`/`saveEditedApp` are all owner-scoped now
-(impl-phase-6.md step 2), and `previewFrame` mints a fresh, single-use-looking view grant
+and `previewFrame` mints a fresh, single-use-looking view grant
 (`?g=...`) on every render of the frame route, including a re-click on the SAME sidebar entry.
 Two structural consequences for every existing seeded-row case, not just new ones:
 
@@ -395,7 +395,7 @@ Two structural consequences for every existing seeded-row case, not just new one
   though the app id does not — B5/H3/H5's "reload the same app, same iframe" pattern needed
   this loosened precisely because of that.
 
-No dedicated frontend accounts/sharing section (`I`) exists yet — impl-phase-6.md step 9's
+No dedicated frontend accounts/sharing section (`I`) exists yet — the planned
 "Frontend I — accounts and sharing" (sign-in flow, an unlisted link opened in a second browser
 context, remix from a shared link, a non-owner's write getting 403, `Referrer-Policy`) is
 covered at the backend/route level (`accounts.test.ts`'s M-series, `data-api.test.ts`'s

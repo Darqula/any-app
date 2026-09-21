@@ -1,17 +1,6 @@
 /**
- * H1–H11 — credentials and BYOK. Spec: .docs/tests-backend.md section H.
- * Target: packages/store/src/{credentials,crypto}.ts, apps/studio/src/settings.ts,
- * packages/generator/src/{resolve,scrub}.ts.
- *
- * H1, H2, H7, H8, H9 are pure store-layer cases and share ONE scratch database (see the
- * top-level `before`/`after`) for the same reason store-db.test.ts's B-series does — same
- * store layer, same schema, per-test isolation via distinct session ids/rows rather than a
- * fresh migrate() per case.
- *
- * H3, H4/H5, H6, H10, H11 are route-level: each spins up its own scratch database and its
- * own `startServers()` + fake provider, because they need a live studio process (settings
- * routes, or a full generation through `/internal/generations/:id/stream`). Each is fully
- * self-contained and cleaned up via `t.after`.
+ * H1-H11: credentials and BYOK. H1, H2, H7-H9 are store-level and share one scratch database; H3, H4/H5, H6, H10,
+ * H11 need a live studio, so each has its own database, servers and fake provider.
  */
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -57,10 +46,7 @@ const FILL_TEXT = `===SLOT alpha===
 <p>Beta content</p>
 `;
 
-/** Every H1/H2/H7/H8/H9 case below is deliberately anonymous — the store layer treats a
- *  signed-in user's `owner_id` and an anonymous `session_id` identically (see owner.ts's
- *  `ownerFilter`), so exercising the anon half of `Owner` here is sufficient; the
- *  user-scoped half is covered by ownership/sharing section M (impl-phase-6.md step 9). */
+/** All store-level cases are anonymous: the store treats owner_id and session_id alike (ownerFilter); the user half is covered by section M. */
 function anon(sessionId: string): Owner {
   return { kind: "anon", sessionId };
 }
@@ -71,9 +57,6 @@ function extractCookie(res: globalThis.Response): string {
   return setCookie.split(";")[0]!;
 }
 
-// -----------------------------------------------------------------------------------------
-// H1, H2, H7, H8, H9 — pure store layer, one shared scratch database
-// -----------------------------------------------------------------------------------------
 
 let scratch: ScratchDatabase;
 let store: typeof import("@any-app/store");
@@ -157,9 +140,6 @@ test("H9 — deleting a credential: a subsequent generation falls back or fails 
   assert.equal(afterDelete, null, "a deleted credential must read back as absent, not as a decrypt error or stale value");
 });
 
-// -----------------------------------------------------------------------------------------
-// H3 — route-level: never returns the key, only a mask + timestamp
-// -----------------------------------------------------------------------------------------
 
 test("H3 — GET /settings returns a mask and a validation timestamp, never the raw key", async (t) => {
   const scratch2 = await createScratchDatabase();
@@ -193,10 +173,6 @@ test("H3 — GET /settings returns a mask and a validation timestamp, never the 
   assert.match(html, /validated \d{4}-\d{2}-\d{2}/, "a validation timestamp must be shown");
 });
 
-// -----------------------------------------------------------------------------------------
-// H4 / H5 — the 401-echoes-the-key regression. Not hypothetical: a real 401 once wrote the
-// configured key verbatim into generations.error.
-// -----------------------------------------------------------------------------------------
 
 test("H4/H5 — a provider 401 whose message echoes the key never reaches generations.error or the console.error sink", async (t) => {
   const scratch2 = await createScratchDatabase();
@@ -219,7 +195,7 @@ test("H4/H5 — a provider 401 whose message echoes the key never reaches genera
   });
   t.after(() => servers.stop());
 
-  fake.queueComplete({ text: PLAN_TEXT }); // planner succeeds
+  fake.queueComplete({ text: PLAN_TEXT });
   // fill fails with a 401 whose message echoes the configured key verbatim — the exact
   // shape that actually happened during live testing (see CLAUDE.md/tests-backend.md).
   fake.queueError({
@@ -238,7 +214,7 @@ test("H4/H5 — a provider 401 whose message echoes the key never reaches genera
   const streamRes = await fetch(`${servers.studioOrigin}/internal/generations/${id}/stream${grantQuery(grant)}`, {
     headers: { "x-internal-secret": "test-internal-secret" },
   });
-  await streamRes.text(); // drain to completion
+  await streamRes.text();
 
   const pool = new Pool({ connectionString: scratch2.databaseUrl });
   let row: { status: string; error: string | null };
@@ -256,11 +232,7 @@ test("H4/H5 — a provider 401 whose message echoes the key never reaches genera
   assert.ok(row.error, "an error message must have been persisted");
   assert.equal(row.error!.includes(apiKey), false, "H4: generations.error must not contain the key");
 
-  // H5, observed rather than inferred: the studio child's own captured stdout+stderr. This
-  // used to be a substitute assertion (re-running `safeMessage` on a same-shaped message),
-  // because `RunningServers` did not expose the spawned process's output outside a failed
-  // health check. It does now — `servers.logs("studio")` — so the real console sink is
-  // checked directly.
+  // H5, observed rather than inferred: the studio child's captured stdout and stderr (servers.logs), checked directly for the credential.
   const studioLog = servers.logs("studio");
   assert.ok(
     studioLog.length > 0,
@@ -273,16 +245,11 @@ test("H4/H5 — a provider 401 whose message echoes the key never reaches genera
   );
   assert.equal(studioLog.includes(apiKey), false, "H5: the key must not reach console.error either");
 
-  // Kept alongside the live check: internal.ts feeds ONE value to both sinks
-  // (`const message = safeMessage(error, secrets)`), so pinning the function itself catches a
-  // regression in the shared scrubbing even if either sink's wiring changes.
+  // Kept beside the live check: internal.ts feeds one value to both sinks, so this pins the shared scrubbing even if the wiring changes.
   const scrubbed = safeMessage(new Error(`Incorrect API key provided: ${apiKey}`), [apiKey]);
   assert.equal(scrubbed.includes(apiKey), false, "safeMessage() — the function that feeds both sinks — must scrub the key");
 });
 
-// -----------------------------------------------------------------------------------------
-// H6 — invalid key rejected at save time, not persisted
-// -----------------------------------------------------------------------------------------
 
 test("H6 — saving an invalid key is rejected at save time by a cheap validation call, not persisted", async (t) => {
   const scratch2 = await createScratchDatabase();
@@ -313,9 +280,6 @@ test("H6 — saving an invalid key is rejected at save time by a cheap validatio
   assert.ok(html.includes("No credentials saved"), "a rejected credential must not have been persisted");
 });
 
-// -----------------------------------------------------------------------------------------
-// H10 — no CREDENTIAL_KEY, no boot
-// -----------------------------------------------------------------------------------------
 
 test("H10 — with no CREDENTIAL_KEY the server refuses to start rather than storing plaintext", async (t) => {
   const scratch2 = await createScratchDatabase();
@@ -335,9 +299,6 @@ test("H10 — with no CREDENTIAL_KEY the server refuses to start rather than sto
   );
 });
 
-// -----------------------------------------------------------------------------------------
-// H11 — a completed generation carries no credential substring
-// -----------------------------------------------------------------------------------------
 
 test("H11 — a completed generation's document and plan contain no credential substring", async (t) => {
   const scratch2 = await createScratchDatabase();

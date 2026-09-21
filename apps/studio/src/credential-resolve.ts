@@ -5,12 +5,7 @@ import type { Owner } from "@any-app/store";
 
 const ROLES: Role[] = ["planner", "fill", "edit", "router"];
 
-/**
- * Looks up the caller's stored credential for whichever provider a role is configured to
- * use — `roleConfig` decides the provider, this decides whether the subject (a signed-in
- * user or an anonymous session) has its own key for it. Returns null when there is none, in
- * which case `resolve()` (generator) falls back to the platform credential from `.env`.
- */
+/** The caller's stored credential for the provider a role uses, or null (resolve() then uses the platform key). */
 export async function credentialForRole(
   role: Role,
   owner: Owner,
@@ -21,10 +16,7 @@ export async function credentialForRole(
   return { provider, apiKey: stored.apiKey, baseUrl: stored.baseUrl ?? undefined };
 }
 
-/** One role that would fail right now — either for lack of a credential (`provider` is set,
- * the usual case) or because the role itself is misconfigured, e.g. no model at all
- * (`provider` is absent — `roleConfig()` throws before it can even report which provider it
- * was resolving for). Both render through the same home-page banner; see `message`. */
+/** A role that would fail now: no credential (provider set) or misconfigured, e.g. no model (provider absent). */
 export interface RoleProblem {
   role: Role;
   provider?: ProviderId;
@@ -32,16 +24,8 @@ export interface RoleProblem {
 }
 
 /**
- * Every role that would fail right now — checked the same way `resolve()` checks it
- * (owner credential, then platform `.env`), without making any HTTP call. Used to show a
- * banner before a generation is attempted, rather than letting someone discover the gap as
- * a failed generation or, worse, a 500 on the home page itself.
- *
- * `credentialForRole` is deliberately inside this `try`, not called ahead of it (testing-review.md
- * S3): it calls `roleConfig()`, which throws a plain `Error` — not `NoCredentialError` — when
- * a role has no model configured at all. That used to propagate straight out of this
- * function, out of `GET /`, and into a 500; now it is caught here alongside the credential
- * case and shown as the same kind of banner instead.
+ * Every role that would fail now, checked as resolve() does but without an HTTP call, for the home-page banner.
+ * credentialForRole stays inside the try: roleConfig() throws a plain Error for a role with no model.
  */
 export async function missingCredentials(owner: Owner): Promise<RoleProblem[]> {
   const missing: RoleProblem[] = [];

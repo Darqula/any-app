@@ -15,28 +15,9 @@ export class RoutingError extends Error {
 }
 
 /**
- * Found live (2026-09-21, same tic-tac-toe app, "Remove the ... caption"): the app's fixed
- * frame — page heading, subtitle/caption, footer, wrappers — is markup that belongs to no
- * region, and until then no edit could reach it. The router had only `css` and `slot <id>` to
- * choose from, so it picked the nearest region every time; that region's edit had nothing to
- * remove, saved a new version anyway, and reported "Updated status-bar." three times while the
- * caption stayed. `shell` is now a third answer, and the router is shown the frame markup so
- * it can tell where a piece of text actually lives.
- *
- * Found live (2026-09-21, a tic-tac-toe app, "Add a dark theme switch"): the old wording here
- * ended with "when a request could be either, prefer css". A request to ADD a control is
- * exactly the kind of thing that reads as visual ("theme", "switch"), so it was routed to the
- * stylesheet, which dutifully wrote light/dark theme rules "applied by the theme switch" — and
- * there was no switch, because a stylesheet cannot create an element or make anything happen.
- * The studio then reported "Updated styling." The tie-break was backwards for that whole class
- * of request: new controls and behaviour need a region's markup and script; only what is
- * already on the page can be restyled. The prompt now says so explicitly, and `css` is the
- * fallback only for a genuinely vague, purely visual request ("make it nicer").
- *
- * Known limit, deliberately not solved here: a request that needs BOTH (a dark-mode switch
- * needs the control AND theme rules in the stylesheet) still gets one target per edit. It is
- * routed to the region that holds the control, since that is the part that is missing; a
- * follow-up can then style it. Multi-target edits would be a bigger change to edits.ts.
+ * Routing history: an old "prefer css" tie-break sent "add a dark theme switch" to the stylesheet, and
+ * the frame (heading, caption, footer) belongs to no region, so it needs its own answer.
+ * Limit: a request needing both a control and its styling still gets one target.
  */
 const ROUTER_PROMPT = `You decide which part of a web app an edit request is about.
 
@@ -68,13 +49,9 @@ export async function routeEdit(
   // The generation id — see planApp's matching parameter. Edits reuse the same conversation
   // the app's own generation used, so a routed edit can still hit the cached prefix.
   conversationId?: string,
-  // Phase 6 step 8 — see planApp's matching parameter.
   onUsage?: (usage: UsageInfo) => void,
 ): Promise<EditTarget> {
-  // `regions` is stable across every routed edit against this app in one session — this is
-  // exactly the repeated-prefix shape confirmed live during Phase 3.5 testing (two router
-  // calls, identical system+context, cache_read_input_tokens stayed 0 — because context
-  // wasn't wired up yet; see open-problems.md). Only `instruction` is genuinely volatile.
+  // Stable across edits of one app (cacheable prefix, with the frame); only the instruction varies.
   const regions = plan.slots.map((s) => `slot ${s.id} — ${s.spec}`).join("\n");
   // The frame is stable across edits to one app until a shell edit lands, so it stays in the
   // cached `context` half with the regions.
@@ -93,11 +70,7 @@ export async function routeEdit(
       onUsage,
     });
   } catch (error) {
-    // A truncated router reply is not a provider failure the caller should see as a raw
-    // 500 — it genuinely means "we could not determine the target," exactly what
-    // RoutingError means, and edits.ts already turns that into the friendly retry prompt.
-    // Only this call is treated this way (testing-review.md S14's regression); nothing
-    // upstream of routeEdit gets a blanket TruncationError catch.
+    // A truncated reply means "could not determine the target", which edits.ts turns into a retry hint.
     if (error instanceof TruncationError) {
       console.warn(
         `router: reply truncated at max_tokens=${maxTokens} before it produced a usable answer —`,
@@ -105,14 +78,8 @@ export async function routeEdit(
       );
       throw new RoutingError(`router reply truncated at max_tokens=${maxTokens} (not an unparseable answer)`);
     }
-    // Same reasoning as the TruncationError case above, for the sibling failure mode: on
-    // this project's configured (heavily-reasoning) model, hidden reasoning consuming the
-    // whole budget before any visible output is *more* likely than a mid-answer cutoff, and
-    // it also means "we could not determine the target." Discriminate on RefusalError's
-    // typed `kind`, not on `reason` text — `kind: "empty"` is the "no content, no explicit
-    // refusal signal" case; `kind: "declined"` (content_filter, Anthropic's stop_reason:
-    // "refusal") is a real decline and must propagate untouched, not be disguised as "I
-    // couldn't tell which part to change."
+    // An empty reply (reasoning ate the budget) means the same. A real decline (kind "declined") must
+    // propagate, so discriminate on kind, not on reason text.
     if (error instanceof RefusalError && error.kind === "empty") {
       console.warn(`router: reply was empty (no content, no explicit refusal) —`, safeMessage(error, secrets));
       throw new RoutingError(`router reply was empty at max_tokens=${maxTokens} (not an unparseable answer)`);

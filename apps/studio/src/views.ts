@@ -7,25 +7,8 @@ import { THEME_CSS } from "./theme";
 import { isEditing } from "./activity";
 
 /**
- * htmx 2.0.4's shipped default `responseHandling` is
- * `[{code:"204",swap:false},{code:"[23]..",swap:true},{code:"[45]..",swap:false,error:true}]`
- * — read straight out of the served `htmx.min.js`. That `swap:false` on `[45]..` means a
- * 4xx/5xx body is **never** swapped into its target, and this app returns its user-facing
- * error HTML exactly that way throughout: settings.ts's invalid-key path (400) and edits.ts's
- * failure paths (400/404/409/500/502/503) all render `editProblem()` with an error status.
- * Every one of them was silently discarded — `#cred-result`/`#edit-result` simply stayed as
- * they were, so a failed edit or a rejected credential looked like nothing had happened at
- * all (testing-review.md S11). The scrubbing worked and then the scrubbed message was thrown
- * away.
- *
- * Fixed here rather than by returning these problems with a 200: the status codes are real
- * contracts, asserted directly by the backend suite, and "200 OK" for a rejected credential
- * would be a worse API to make a UI bug go away. `error:true` is kept so htmx still fires its
- * own error events and console logging; only `swap` changes.
- *
- * A `<meta>` rather than an inline script on purpose — htmx reads this at load time, so there
- * is no ordering dependency on a separate script block, and S10 is a fresh reminder that an
- * inline block in a template literal is the more fragile of the two.
+ * htmx skips 4xx/5xx bodies by default, which hides every user-facing error. Swap them, keeping error:true.
+ * A <meta>, not a script, so there is no load-order dependency.
  */
 const HTMX_CONFIG_META =
   `<meta name="htmx-config" content='{"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"[45]..","swap":true,"error":true}]}'>`;
@@ -38,20 +21,10 @@ function escapeHtml(value: string): string {
     .replaceAll('"', "&quot;");
 }
 
-/**
- * `grant` is the Phase 6 view grant (view-grant.ts) — a bearer capability to view THIS app
- * until it expires, minted by the caller (index.ts, which knows the viewer) and forwarded
- * blind by the sandbox all the way to studio's internal route. See architecture.md decision
- * #10.
- */
+/** `grant` is the view grant: minted by the caller, forwarded blind by the sandbox. */
 export function previewFrame(id: string, appOrigin: string, grant: string): string {
-  // allow-same-origin is now correct, where before it was forbidden. `appOrigin` is this
-  // app's own subdomain (<app-id>.apps.localhost:3001, see index.ts's appOrigin()) — the
-  // frame becomes same-origin with itself, not with the studio (localhost:3000, still
-  // cross-origin) and not with any other generated app (a different subdomain, so still
-  // cross-origin to this one too). That per-app split is what makes allow-same-origin safe
-  // to add now (locked decision #8) — adding it on a shared origin would let every app read
-  // every other app's storage.
+  // allow-same-origin is safe only because each app has its own origin; on a shared
+  // origin every app could read every other's storage.
   return `<iframe
     class="preview"
     src="${escapeHtml(appOrigin)}/preview/${escapeHtml(id)}?g=${encodeURIComponent(grant)}"
@@ -60,25 +33,16 @@ export function previewFrame(id: string, appOrigin: string, grant: string): stri
 }
 
 /**
- * The composer dock and the owner controls live OUTSIDE `#stage` (mockup D: one bottom bar,
- * one header row), but they belong to whichever app `#stage` is showing. htmx's out-of-band
- * swap lets a single response carry both: the main content replaces `#stage`'s children and
- * each slot below is swapped into its own element by id. An empty `html` is meaningful — it
- * clears the slot, which is how a freshly created (still streaming) app removes the previous
- * app's edit form instead of leaving it pointed at the wrong generation.
+ * Composer and owner controls live outside #stage but belong to the app it shows, so they arrive
+ * out-of-band. An empty html clears the slot.
  */
 export function oobSlot(id: "edit-slot" | "owner-slot", html: string): string {
   return `<div id="${id}" hx-swap-oob="innerHTML">${html}</div>`;
 }
 
 /**
- * The conversation panel's contents. Every body here is escaped text — user prompts, studio
- * sentences, scrubbed error messages, and (later) model-written lines are all untrusted as far
- * as markup goes, and none of them is ever interpreted as HTML.
- *
- * `pending` is the transient "assistant is working" row. It carries `data-pending` and no
- * `data-seq`: the page drops it and re-adds whatever the server says on every poll, and the
- * polling cursor is the highest `data-seq` it holds.
+ * The conversation panel's rows. Every body is escaped text, never HTML. The pending row has
+ * data-pending and no data-seq; the polling cursor is the highest data-seq.
  */
 export function messageItems(
   messages: Pick<Message, "seq" | "role" | "kind" | "target" | "body">[],
@@ -97,13 +61,7 @@ export function messageItems(
   return items.join("");
 }
 
-/**
- * Replaces the whole `#chat-log` element out-of-band (`hx-swap-oob="true"` swaps the element,
- * not just its children) so the `data-app` attribute changes with the content. `data-app` is
- * how the page knows which app the log belongs to — and an empty one means "no conversation
- * for what is on the stage" (nothing selected, or a shared app the viewer does not own), which
- * hides the panel.
- */
+/** Replaces the whole #chat-log element so data-app changes with it; an empty data-app hides the panel. */
 export function chatLogOob(appId: string, itemsHtml: string): string {
   return `<ol id="chat-log" hx-swap-oob="true" data-app="${escapeHtml(appId)}" aria-label="Conversation" aria-live="polite">${itemsHtml}</ol>`;
 }
@@ -132,13 +90,7 @@ const VISIBILITY_LABELS: Record<Visibility, string> = {
   public: "Public",
 };
 
-/**
- * Shown only to the app's owner (see index.ts's frame route) — changing visibility and
- * remixing someone else's app are different actions with different audiences. `shareUrl` is
- * the plain studio frame link; there is deliberately no separate "public gallery" link,
- * because a browsable index of everyone's public apps is out of scope (see
- * impl-phase-6.md's "Deliberately deferred").
- */
+/** Owner-only. shareUrl is the plain share link; there is no public gallery (deferred). */
 export function ownerControls(id: string, visibility: Visibility, shareUrl: string): string {
   const options = (Object.keys(VISIBILITY_LABELS) as Visibility[])
     .map(
@@ -157,11 +109,10 @@ export function ownerControls(id: string, visibility: Visibility, shareUrl: stri
   ${visibility !== "private" ? `<p class="hint">Link: <code>${escapeHtml(shareUrl)}</code></p>` : ""}`;
 }
 
-/** Shown to any viewer of a shared (unlisted/public) app who is not its owner. `hx-target`
- * names an element ("#stage") that does not exist on `sharedAppPage` below — harmless: with
- * `hx-swap="none"` htmx never writes into it, and this control's only real effect is the
- * response's `HX-Redirect` header, which htmx follows regardless of target/swap. Kept as one
- * function so the frame-route fragment and the standalone share page render it identically. */
+/**
+ * For a non-owner viewer of a shared app. hx-target names an element the share page lacks: harmless,
+ * because with hx-swap="none" only the HX-Redirect header matters.
+ */
 export function remixControl(id: string): string {
   return `<form hx-post="/generations/${escapeHtml(id)}/fork" hx-target="#stage" hx-swap="none">
     <button class="btn-accent">Remix this app</button>
@@ -170,13 +121,8 @@ export function remixControl(id: string): string {
 }
 
 /**
- * `GET /apps/:id` — the page a shared link actually opens. The frame
- * route's own response (`previewFrame(...) + editFormHtml + ownerHtml`) is a bare htmx
- * fragment: no doctype, no stylesheet, no htmx `<script>`. Opened directly it has no sizing
- * for `.preview` (falls back to the ~300x150 replaced-element default) and "Remix this app"
- * is a `<button>` in a `<form>` with no real submission path — with no htmx loaded, clicking
- * it just re-GETs the current URL. This is a real, standalone page instead: same iframe,
- * same remix control, its own head.
+ * The page a shared link opens. The frame route's response is a bare htmx fragment (no doctype,
+ * stylesheet or htmx), so opened directly it is a small iframe and Remix does nothing.
  */
 export function sharedAppPage(id: string, title: string, appOrigin: string, grant: string, mode: TokenMode): string {
   return `<!doctype html>
@@ -222,9 +168,7 @@ export function editForm(id: string, slots: { id: string }[]): string {
   const options = slots
     .map((s) => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.id)}</option>`)
     .join("");
-  // `#edit-result` is deliberately NOT rendered here: the edit form arrives out-of-band into
-  // the composer dock (see oobSlot) and `#edit-result` lives permanently in homePage next to
-  // it — a second copy would duplicate the id.
+  // #edit-result is not rendered here: it lives in homePage, and a copy would duplicate the id.
   return `<form id="edit-form"
     hx-post="/generations/${escapeHtml(id)}/edits"
     hx-target="#edit-result"
@@ -243,10 +187,8 @@ export function editForm(id: string, slots: { id: string }[]): string {
 }
 
 /**
- * Embeds a value as a `<script type="application/json">` block. Attributes and inline JS
- * both need escaping that JSON does not survive cleanly (quotes, ampersands), so the payload
- * travels as a JSON block instead and is parsed on the other side. `<` is still escaped so
- * the payload cannot prematurely close the block with a literal `</script`.
+ * Embeds a value as a JSON <script> block, which survives quoting that attributes do not. `<` is escaped so the
+ * payload cannot close the block.
  */
 function jsonBlock(value: unknown): string {
   return JSON.stringify(value).replaceAll("<", "\\u003c");
@@ -258,10 +200,8 @@ export function editApplied(
   target: { kind: "css" } | { kind: "shell" } | { kind: "slot"; id: string },
   next: { css: string; content: Record<string, string> },
 ): string {
-  // `generationId` lets the bridge (anyappApplyEdit) refuse to post into whatever happens to
-  // be in #stage when the response lands — see its own comment for why that can be a
-  // different app than the one the edit was submitted against. `appOrigin` is what lets that
-  // same bridge pin postMessage's targetOrigin instead of using "*" — see anyappApplyEdit.
+  // generationId lets the bridge skip a response that lands after the user opened another app; appOrigin pins
+  // postMessage's targetOrigin.
   const payload =
     target.kind === "css"
       ? { channel: "anyapp", type: "css", css: next.css, generationId: id, appOrigin }
@@ -289,8 +229,7 @@ export function editProblem(message: string): string {
   return `<p class="edit-problem">${escapeHtml(message)}</p>`;
 }
 
-/** One row per saved credential — provider, a masked hint, and when it was last validated.
- * The key itself never appears here; `listCredentialHints` never reads it back either. */
+/** Provider, a masked hint and the validation date. The key is never rendered or read back. */
 export function credentialList(hints: CredentialHint[]): string {
   if (hints.length === 0) {
     return `<p class="empty">No credentials saved. The platform key from .env is used until you add one.</p>`;
@@ -340,9 +279,7 @@ const ROLE_LABELS: Record<Role, string> = {
   router: "Router",
 };
 
-/** Read-only view of the current per-role config — env-driven (LLM_*), not yet editable
- * from this page. A per-role override UI needs its own storage beyond the credentials
- * table this phase adds, so it is deliberately deferred rather than half-built. */
+/** Read-only for now: a per-role override UI would need its own storage. */
 export function roleConfigTable(
   rows: { role: Role; provider: ProviderId; model: string; maxTokens: number }[],
 ): string {
@@ -362,16 +299,8 @@ export function roleConfigTable(
   <p class="hint">Set via <code>LLM_MODEL</code> / <code>LLM_&lt;ROLE&gt;_MODEL</code> etc. in <code>.env</code>.</p>`;
 }
 
-/** Sign-in/sign-up forms for an anonymous visitor, or an account summary + sign-out for a
- * signed-in one. Deliberately no password-reset link — see impl-phase-6.md's "Deliberately
- * deferred" (no email infrastructure exists to send one). */
-// Every button below deliberately has NO explicit `type="submit"` attribute — a bare
-// `<button>` inside a `<form>` submits by default, so behavior is unchanged, but the CSS
-// attribute selector `button[type="submit"]` (which the pre-Phase-6 frontend suite already
-// uses, page-wide, to find the ONE original prompt-generate button) then does not also match
-// these new buttons. Confirmed live: with an explicit attribute, `page.click('button[type=
-// "submit"]')` resolved to 3 elements on the home page alone and every case using it timed
-// out waiting for whichever one it guessed wasn't visible.
+// No explicit type="submit" on these buttons: tests find the create button via button[type="submit"] and
+// extra matches break them.
 export function authForms(owner: Owner): string {
   if (owner.kind === "user") {
     return `<div class="auth-user">
@@ -401,8 +330,7 @@ export function authForms(owner: Owner): string {
   </details>`;
 }
 
-/** Account block (signed-in row, or the anonymous sign-in/sign-up `<details>`) — used by the
- * home sidebar and the settings page, so it is one stylesheet rather than two copies. */
+/** Shared by the home sidebar and the settings page. */
 const AUTH_CSS = `
   .auth-user { display: flex; align-items: center; gap: 10px; font-size: 13px; }
   .auth-user form { display: flex; margin: 0; padding: 0; max-width: none; }
@@ -496,9 +424,7 @@ ${HTMX_CONFIG_META}
 </html>`;
 }
 
-/** Shown at the top of the home page when a generation would fail right now — for lack of a
- * credential, or because a role has no model configured at all — so the gap surfaces before
- * someone spends a wait on a failed generation. */
+/** Shown when a generation would fail right now, before anyone waits on a failed one. */
 export function missingCredentialBanner(missing: RoleProblem[]): string {
   if (missing.length === 0) return "";
   const parts = missing.map((m) => m.message).join(", ");
@@ -506,10 +432,8 @@ export function missingCredentialBanner(missing: RoleProblem[]): string {
 }
 
 /**
- * `isUpdating` defaults to the live in-memory tracker (activity.ts): a follow-up edit leaves the
- * persisted status at `complete`, so without it the badge would never show that an app is being
- * changed. Only a `complete` app can show "updating" — a generation still streaming already
- * says so, and edits cannot start on anything that is not complete.
+ * `isUpdating` defaults to the live edit tracker (activity.ts): an edit leaves the stored status `complete`.
+ * Only a complete app can show "updating".
  */
 export function generationList(generations: Generation[], isUpdating: (id: string) => boolean = isEditing): string {
   if (generations.length === 0) {
@@ -533,10 +457,7 @@ export function generationList(generations: Generation[], isUpdating: (id: strin
     .join("");
 }
 
-// `owner` is required, not optional — this function has exactly
-// one caller (index.ts's `GET /`), which always has one by the time it renders the page; an
-// optional third parameter here means a future caller that forgets it drops the entire auth
-// UI silently instead of failing to compile.
+// `owner` is required so a future caller cannot silently drop the auth UI.
 export function homePage(generations: Generation[], missing: RoleProblem[], owner: Owner): string {
   return `<!doctype html>
 <html lang="en">
@@ -578,12 +499,9 @@ ${HTMX_CONFIG_META}
     padding: 9px 10px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .app-list .empty { padding: 9px 10px; margin: 0; }
-  /* An <input type="button">, not a <button>: the frontend suite finds a row's open-app control
-     as the only "button" inside its li, which a second <button> in the row would make ambiguous. */
-  /* Collapsed to zero width (and pulled over the flex gap with a negative margin) until the row
-     is hovered, so it takes no room at rest; expanding it pushes the badge left. Keyboard users
-     get it via :focus-visible only — NOT :focus-within, which a mouse click on the row's name
-     button also satisfies, leaving the cross stuck open after the pointer has left. */
+  /* An <input type="button">, not a <button>: the suite finds a row's open control as its only button. */
+  /* Zero width until the row is hovered, so it takes no room at rest. Keyboard reveal uses :focus-visible,
+     not :focus-within, which a mouse click on the row would leave stuck open. */
   .app-list .app-delete {
     flex: none; width: 0; height: 22px; margin-left: -10px; padding: 0; border: 0; border-radius: 6px;
     overflow: hidden; background: transparent; color: var(--faint); font-size: 16px; line-height: 1;
@@ -623,7 +541,7 @@ ${HTMX_CONFIG_META}
   .preview { flex: 1; border: 0; width: 100%; height: 100%; background: #fff; }
   .placeholder { margin: auto; padding: 0 40px; text-align: center; }
 
-  /* Conversation panel: a slim header that expands into a ~30%-of-screen log above the composer. */
+  /* Conversation panel: a slim header that expands into a 30vh log. */
   .chat-panel { background: var(--panel); border-top: 1px solid var(--border); }
   .chat-panel:has(#chat-log[data-app=""]) { display: none; }
   .chat-head {
@@ -650,8 +568,7 @@ ${HTMX_CONFIG_META}
   /* The log already says what the toast would; showing both is noise. */
   body.chat-open #edit-result > p { display: none; }
 
-  /* One composer, two modes (mockup D): the create form is always in the DOM, the edit form
-     arrives out-of-band into #edit-slot. body.creating picks which one shows. */
+  /* Create form is always in the DOM; the edit form arrives out-of-band. body.creating picks one. */
   .dock { display: flex; gap: 10px; align-items: center; padding: 12px 20px;
           background: var(--panel); border-top: 1px solid var(--border); }
   body.creating #edit-slot { display: none; }
@@ -670,8 +587,7 @@ ${HTMX_CONFIG_META}
   .apply:hover, #edit-form button:hover { background: var(--accent-hover); }
   .apply:disabled, #edit-form button:disabled { background: var(--btn-disabled); cursor: default; }
 
-  /* editApplied / editProblem land in #edit-result; only the inner paragraph is drawn (as a
-     toast), so an empty container shows nothing. The text stays in the DOM after it fades. */
+  /* Only the inner paragraph is drawn (as a toast), so an empty container shows nothing. */
   #edit-result { position: fixed; left: 50%; bottom: 76px; transform: translateX(-50%); z-index: 50; pointer-events: none; }
   #edit-result > p {
     padding: 9px 16px; border-radius: 10px; font-size: 13px; font-weight: 500;
@@ -681,7 +597,7 @@ ${HTMX_CONFIG_META}
   #edit-result > .edit-problem { background: var(--toast-bad-bg); color: var(--toast-bad-fg); }
   @keyframes toast-out { 0%, 80% { opacity: 1; } 100% { opacity: 0; } }
 
-  /* Delete confirmation (replaces the browser's native confirm, via htmx:confirm below). */
+  /* Delete confirmation, opened from htmx:confirm. */
   #confirm-dialog {
     border: 1px solid var(--border); border-radius: 16px; padding: 0; width: min(420px, calc(100vw - 32px));
     background: var(--panel); color: var(--text); box-shadow: var(--shadow);
@@ -762,26 +678,15 @@ ${HTMX_CONFIG_META}
   </dialog>
   </div>
   <script>
-    // Returns the stage's iframe, but only if it is still showing the app named by
-    // generationId. An edit's model call takes seconds — long enough for the user to click
-    // a different app in the sidebar before the response lands. Without this check the
-    // payload would go to whatever is in #stage *now*, not what was there when the edit was
-    // submitted; since slot ids repeat across apps, that can make an unrelated app visibly
-    // (if transiently) take on this one's content, which looks exactly like data corruption
-    // to whoever sees it happen.
+    // Returns the stage's iframe only if it still shows generationId: a slow edit can land after the user
+    // opened another app, and slot ids repeat across apps.
     function anyappFrameFor(generationId) {
       var frame = document.querySelector("#stage iframe");
       if (!frame || !generationId || frame.src.indexOf(generationId) === -1) return null;
       return frame;
     }
 
-    // Pushes an applied edit into the live preview frame. The response fragment (see
-    // editApplied) carries the payload as a JSON block and calls this after swapping it in.
-    // Each generated app now has its own origin (locked decision #8), so the payload can
-    // name an exact targetOrigin instead of "*" — "*" would deliver the message no matter
-    // what document is in the frame, including one it navigated itself to. The receiving
-    // side still independently checks event.origin against the studio origin baked into
-    // swapRuntime; this is the sending side's half of the same discipline.
+    // Posts an applied edit (JSON block from editApplied) into the preview, pinned to the app's exact origin.
     function anyappApplyEdit() {
       var block = document.getElementById("edit-payload");
       if (!block) return;
@@ -789,41 +694,30 @@ ${HTMX_CONFIG_META}
       var frame = anyappFrameFor(payload.generationId);
       if (!frame) return;
       if (payload.type === "reload") {
-        // Re-assigning the same src reloads the frame (contentWindow.location.reload is not
-        // allowed across origins). The preview URL carries its own view grant, so it stays valid.
+        // A shell edit cannot be patched in place: reload the frame (location.reload is blocked cross-origin).
         frame.src = frame.src;
         return;
       }
       frame.contentWindow.postMessage(payload, payload.appOrigin);
     }
 
-    // Freezes the target region into a skeleton the instant an explicit slot edit is
-    // submitted, so the wait has visible feedback instead of the page looking unchanged
-    // until the whole response comes back. Only meaningful for an explicit slot choice —
-    // an auto-routed edit does not know its target until the response arrives.
+    // Freezes the target region as soon as an explicit slot edit is submitted. An auto-routed edit has no target yet.
     function anyappBeforeEdit(event) {
       var form = event.target;
       var target = form.elements["target"].value;
       if (!target || target === "css" || target === "@shell") return;
-      // Built with the RegExp constructor, not a regex literal, on purpose: this whole
-      // script is the body of a TEMPLATE LITERAL, where \\/ is not a recognised escape, so a
-      // literal /\\/generations\\/.../ silently loses its backslashes on the way out and the
-      // served line becomes a // comment — which killed the parse of this entire block, and
-      // with it all three helpers here, on every homepage load (testing-review.md S10).
-      // A constructor string needs no backslash at all, so it cannot regress the same way.
+      // RegExp constructor, not a literal: this script sits in a template literal, which drops backslashes.
       var match = new RegExp("/generations/([^/]+)/edits").exec(form.getAttribute("hx-post") || "");
       var frame = match && anyappFrameFor(match[1]);
       if (!frame) return;
-      // No JSON block to read appOrigin off of yet (the response hasn't come back) — the
-      // frame's own src carries the same origin, so read it back off that instead.
+      // No JSON block yet: read appOrigin off the frame's own src.
       frame.contentWindow.postMessage(
         { channel: "anyapp", type: "slot-pending", id: target },
         new URL(frame.src).origin,
       );
     }
 
-    // Composer mode + sidebar selection + the "Generating…" pill. Same template-literal rule
-    // as above: no regex literals and no backslashes in here, string methods only.
+    // Same rule as above: no regex literals or backslashes in here.
     (function () {
       var body = document.body;
       var createForm = document.getElementById("create-form");
@@ -836,22 +730,14 @@ ${HTMX_CONFIG_META}
       var list = document.getElementById("generation-list");
       var dialog = document.getElementById("confirm-dialog");
 
-      // ---- Live sidebar -----------------------------------------------------------------
-      // The list is rendered once by the server; without this, a new app or a status change
-      // (pending -> streaming -> complete/failed) is invisible until the page is reloaded.
-      // Polls GET /generations (the same fragment the page was built from) — fast while any
-      // row is still pending/streaming, slow otherwise, backing off while nothing changes, and
-      // not at all while the tab is hidden. Polling rather than a pushed stream because the
-      // studio has no long-lived connection to hang one on, and a status flip is never more
-      // than a couple of seconds late; the create/finish/delete paths below refresh at once.
+      // Live sidebar: polls GET /generations, fast while a row is pending/streaming/updating and slow otherwise,
+      // backing off when nothing changes and paused while the tab is hidden.
       var FAST_MS = 2000, SLOW_MS = 15000;
       var lastListHtml = null, refreshing = false, rerun = false, unchanged = 0, timer = null;
-      // Bumped by every local mutation (create, delete). A poll that started before one and
-      // lands after it carries a stale list, so it is dropped instead of undoing the change.
+      // Bumped by local changes; a poll that started earlier is stale and dropped.
       var listEpoch = 0;
 
-      // The sidebar highlight follows what is actually on the stage, so it survives the list
-      // being re-rendered and also covers an app that was just created rather than clicked.
+      // The highlight follows the stage, so it survives re-renders.
       function currentStageId() {
         var frame = document.querySelector("#stage iframe");
         if (!frame) return "";
@@ -869,12 +755,9 @@ ${HTMX_CONFIG_META}
       }
 
       function refreshList() {
-        // Skipped while a delete confirmation is open: replacing the list would detach the
-        // control the dialog is holding a pending request for.
+        // Not while a delete dialog is open: replacing the list would detach the control it holds.
         if (document.hidden || dialog.open) return Promise.resolve();
-        // A refresh requested while one is already in flight (typically a poll racing a create
-        // or an edit finishing) must not be dropped — the in-flight one may have been issued
-        // before the change. Remember it and run once more when this one lands.
+        // A refresh requested mid-flight may predate the change; run once more when this one lands.
         if (refreshing) { rerun = true; return Promise.resolve(); }
         refreshing = true;
         var epoch = listEpoch;
@@ -896,10 +779,7 @@ ${HTMX_CONFIG_META}
           });
       }
 
-      // ---- Conversation panel ---------------------------------------------------------------
-      // #chat-log is replaced wholesale (out-of-band, outerHTML) whenever the stage changes app,
-      // so it is looked up fresh every time — never cached in a variable. Its data-app says which
-      // app the log belongs to; empty means there is no conversation to show (panel hidden).
+      // Conversation panel. #chat-log is replaced out-of-band, so look it up each time; empty data-app hides the panel.
       var CHAT_KEY = "anyapp.chat.open";
       var chatToggle = document.getElementById("chat-toggle");
       var chatDot = document.getElementById("chat-dot");
@@ -925,7 +805,7 @@ ${HTMX_CONFIG_META}
         var seqs = el.querySelectorAll("li[data-seq]");
         return seqs.length ? Number(seqs[seqs.length - 1].getAttribute("data-seq")) : 0;
       }
-      // Pulls messages newer than what the log holds, and swaps the transient "working" row.
+      // Fetches messages newer than the log's last data-seq and swaps the transient "working" row.
       function refreshChat() {
         var log = chatEl();
         var appId = log ? log.getAttribute("data-app") : "";
@@ -936,7 +816,7 @@ ${HTMX_CONFIG_META}
           .then(function (res) { return res.ok ? res.text() : null; })
           .then(function (html) {
             var cur = chatEl();
-            // The stage may have moved to another app while this was in flight.
+            // The stage may have changed app while this was in flight.
             if (html === null || !cur || cur.getAttribute("data-app") !== appId) return;
             var stick = nearBottom(cur);
             var pending = cur.querySelector("[data-pending]");
@@ -968,8 +848,7 @@ ${HTMX_CONFIG_META}
         prompt.focus();
       });
 
-      // Enter sends, Shift+Enter is a newline. requestSubmit (not submit) so htmx's own
-      // submit listener and the textarea's "required" validation both still run.
+      // Enter sends, Shift+Enter is a newline; requestSubmit keeps htmx and required validation.
       prompt.addEventListener("keydown", function (event) {
         if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
           event.preventDefault();
@@ -984,24 +863,21 @@ ${HTMX_CONFIG_META}
         var verb = String((detail.requestConfig && detail.requestConfig.verb) || "").toLowerCase();
 
         if (verb === "get" && path.endsWith("/frame")) {
-          // Picking an app from the sidebar switches the composer to edit mode.
+          // Picking an app switches the composer to edit mode.
           body.classList.remove("creating");
           setStreaming(false);
           markActive();
           chatDot.hidden = true;
           setTimeout(scrollChat, 0);
         } else if (verb === "post" && path === "/generations") {
-          // A create response is the streaming iframe; it fires "load" when the document
-          // has fully arrived, which is also when the app's sidebar badge flips to its final
-          // state. A 400 response has no iframe and shows no pill.
+          // The create response is the streaming iframe; its load event means the document arrived.
           var frame = document.querySelector("#stage iframe");
           setStreaming(!!frame);
           if (frame) frame.addEventListener("load", function () { setStreaming(false); refreshList(); refreshChat(); });
         }
       });
 
-      // Custom confirmation instead of window.confirm. htmx raises htmx:confirm for any element
-      // with hx-confirm; cancelling the event holds the request until we call issueRequest.
+      // Custom confirmation instead of window.confirm: cancel htmx:confirm, then issueRequest on Delete.
       document.body.addEventListener("htmx:confirm", function (event) {
         if (!event.detail.question || !dialog.showModal) return;
         event.preventDefault();
@@ -1016,15 +892,13 @@ ${HTMX_CONFIG_META}
         });
         dialog.showModal();
       });
-      // Clicking the dimmed backdrop (the dialog element itself, not its form) cancels.
+      // A click on the backdrop (the dialog itself) cancels.
       dialog.addEventListener("click", function (event) {
         if (event.target === dialog) dialog.close("cancel");
       });
 
-      // A delete succeeded (200) or the app was already gone (404): drop its sidebar row, and
-      // if it is the app on the stage, put the stage and composer back to their empty state.
-      // Anything else (409 "still generating") leaves the row alone; the server's message has
-      // already landed in #edit-result as a toast.
+      // Deleted (200) or already gone (404): drop the row, and reset the stage if that app was open.
+      // Anything else (409) keeps the row; the toast already shows the message.
       document.body.addEventListener("htmx:afterRequest", function (event) {
         var detail = event.detail || {};
         var verb = String((detail.requestConfig && detail.requestConfig.verb) || "").toLowerCase();
@@ -1051,10 +925,8 @@ ${HTMX_CONFIG_META}
         refreshList().then(schedule);
       });
 
-      // A follow-up edit leaves the app "complete" in the database, so the only signal is the
-      // studio's in-memory "edit running" flag, which the list route folds into an "updating"
-      // badge. Pull the list just after the request starts (the flag is set a few awaits in) and
-      // again the moment it finishes, so the badge flips on and back without waiting for a poll.
+      // An edit leaves the app complete, so the badge comes from the server's in-memory edit flag: pull the list
+      // just after the request starts and again when it finishes.
       document.body.addEventListener("htmx:beforeRequest", function (event) {
         if (!event.target || event.target.id !== "edit-form") return;
         setTimeout(function () { unchanged = 0; tick().then(schedule); }, 400);
@@ -1065,11 +937,8 @@ ${HTMX_CONFIG_META}
         tick().then(schedule);
       });
 
-      // Both prompt boxes empty the moment they are submitted, so the next thing typed is a new
-      // prompt rather than an edit of the last one. htmx has already read the field's value by
-      // the time htmx:beforeRequest fires (and disables the controls only after that), so the
-      // request still carries the text. If the request then fails, the text is put back —
-      // unless the user has started typing something else — so a retry does not mean retyping.
+      // Prompt boxes clear on submit (htmx has already read the value); a failed request puts the text back
+      // unless the user typed something new.
       var submitted = {};
       function promptField(form) {
         return form.elements[form.id === "create-form" ? "prompt" : "instruction"];
@@ -1088,12 +957,10 @@ ${HTMX_CONFIG_META}
         var field = promptField(form);
         var ok = !!(event.detail && event.detail.successful);
         if (field && !ok && !field.value) field.value = submitted[form.id] || "";
-        // hx-disabled-elt took the focus with it; hand it back so the next prompt can be typed
-        // straight away — but never steal it from something the user moved on to.
+        // hx-disabled-elt took the focus with it: restore it unless the user moved elsewhere.
         if (field && ok && document.activeElement === document.body) field.focus();
         if (form === createForm && ok) {
-          // The new row already exists server-side (createGeneration runs before the response),
-          // so fetching the list now shows it, as "pending", without waiting for a page reload.
+          // The new row exists server-side already, so the list shows it as pending without a reload.
           listEpoch++;
           refreshList().then(schedule);
         }

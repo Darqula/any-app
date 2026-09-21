@@ -1,15 +1,7 @@
 /**
- * Self-test for `tests/harness/fake-provider.ts`. This does not test studio or sandbox at
- * all — it proves the fixture itself is faithful, by running the **real** provider adapters
- * (`packages/generator/src/providers/{openai,anthropic}.ts`, imported directly by relative
- * path — they are not part of `@any-app/generator`'s public `exports`, and importing a
- * relative path is not a production-code change) against it and asserting on what those
- * adapters actually produce, not on what the fixture merely wrote to the socket.
- *
- * Covers: both wire-format serialisers (parsed correctly by the real adapters),
- * chunk-splitting at an arbitrary boundary (mid-marker), the per-chunk delay knob, explicit
- * chunk-driving (`fake.emit()` holding a stream open), request counting, abort recording,
- * every required error shape, and that two instances never collide.
+ * Self-test of tests/harness/fake-provider.ts: it runs the real adapters against the fixture and asserts what they produce, not what the
+ * fixture wrote. Covers both serialisers, mid-marker chunk splits, delays, manual chunk-driving, request counting, abort recording,
+ * every error shape, and instance isolation.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -17,10 +9,7 @@ import { startFakeProvider } from "../harness/fake-provider";
 import type { FakeProvider } from "../harness/fake-provider";
 import { RefusalError } from "@any-app/generator";
 import type { ProviderCredential } from "@any-app/generator";
-// Not part of @any-app/generator's public `exports` (only "." -> src/index.ts is declared) —
-// imported by relative filesystem path, which Node's ESM resolver does not run through a
-// package's `exports` map at all. This is the "import them and run them against it" the task
-// brief asks for; nothing under packages/generator/src is modified.
+// Not in @any-app/generator's exports map, so imported by relative path (which bypasses the map).
 import { createOpenAIProvider } from "../../packages/generator/src/providers/openai";
 import { createAnthropicProvider } from "../../packages/generator/src/providers/anthropic";
 import type { ProviderRequest } from "../../packages/generator/src/providers/types";
@@ -52,18 +41,13 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2000, stepMs = 20):
   throw new Error("waitFor: condition never became true within " + timeoutMs + "ms");
 }
 
-// -----------------------------------------------------------------------------------------
-// Both serialisers, parsed by the real adapters
-// -----------------------------------------------------------------------------------------
 
 test("OpenAI serialiser: streamText yields exactly the scripted chunks, boundary preserved (G1)", async (t) => {
   const fake = await startFakeProvider();
   t.after(() => fake.close());
   const provider = createOpenAIProvider(openaiCred(fake));
 
-  // The marker is split mid-token — "===SLO" | "T timer===\n<div>ok</div>\n" — exactly the
-  // shape backend A6.3 exercises against createSlotStream, but here proving the *fixture*
-  // delivers that split faithfully through the real OpenAI adapter.
+  // The marker is split mid-token, as in A6.3, proving the fixture delivers the split through the real OpenAI adapter.
   fake.queueStream({ chunks: ["===SLO", "T timer===\n<div>ok</div>\n"], finish: "stop" });
 
   const deltas = await collect(provider.streamText("fake-model", req()));
@@ -118,9 +102,6 @@ test("System prompt placement is captured correctly per format (G9)", async (t) 
   assert.equal(anthropicReq.body.messages.some((m: any) => m.role === "system"), false, "Anthropic: never a system message");
 });
 
-// -----------------------------------------------------------------------------------------
-// The delay knob
-// -----------------------------------------------------------------------------------------
 
 test("Per-chunk delay: a chunk held back for delayMs actually arrives late", async (t) => {
   const fake = await startFakeProvider();
@@ -138,9 +119,6 @@ test("Per-chunk delay: a chunk held back for delayMs actually arrives late", asy
   assert.ok(elapsed >= 250, `expected roughly >=300ms before the first chunk, got ${elapsed}ms`);
 });
 
-// -----------------------------------------------------------------------------------------
-// Explicit chunk-driving: fake.emit() / handle.emit() holding a stream open
-// -----------------------------------------------------------------------------------------
 
 test("Explicit chunk-driving: a manually-driven stream stays open until finish() (frontend requirement)", async (t) => {
   const fake = await startFakeProvider();
@@ -157,8 +135,7 @@ test("Explicit chunk-driving: a manually-driven stream stays open until finish()
   })();
 
   await handle.connected;
-  // Top-level `fake.emit()` sugar — delegates to the most recently queued stream handle,
-  // exactly the `await fake.emit(chunk)` shape the frontend suite's harness section asks for.
+  // Top-level fake.emit() sugar: drives the most recently queued stream, the shape the frontend suite uses.
   await fake.emit("first ");
   await waitFor(() => received.length >= 1);
   assert.deepEqual(received, ["first "]);
@@ -174,9 +151,6 @@ test("Explicit chunk-driving: a manually-driven stream stays open until finish()
   assert.equal(done, true);
 });
 
-// -----------------------------------------------------------------------------------------
-// Request counting
-// -----------------------------------------------------------------------------------------
 
 test("Request counting: requestCount() reflects exactly the calls made, not calls attempted", async (t) => {
   const fake = await startFakeProvider();
@@ -197,9 +171,6 @@ test("Request counting: requestCount() reflects exactly the calls made, not call
   assert.equal(fake.requests().length, 2);
 });
 
-// -----------------------------------------------------------------------------------------
-// Abort recording
-// -----------------------------------------------------------------------------------------
 
 test("Abort recording: a client-aborted OpenAI stream is recorded on the captured request (C10)", async (t) => {
   const fake = await startFakeProvider();
@@ -254,9 +225,6 @@ test("Abort recording: a client-aborted Anthropic stream is recorded on the capt
   assert.equal(fake.requests().at(-1)!.aborted, true);
 });
 
-// -----------------------------------------------------------------------------------------
-// Error shapes
-// -----------------------------------------------------------------------------------------
 
 test("OpenAI: finish_reason content_filter surfaces as RefusalError (G5)", async (t) => {
   const fake = await startFakeProvider();
@@ -275,7 +243,7 @@ test("OpenAI: empty stream surfaces as RefusalError('empty response') (G8)", asy
   t.after(() => fake.close());
   const provider = createOpenAIProvider(openaiCred(fake));
 
-  fake.queueStream({ chunks: [] }); // auto-play, zero content chunks, finish default "stop"
+  fake.queueStream({ chunks: [] });
   await assert.rejects(
     () => collect(provider.streamText("fake-model", req())),
     (error: unknown) => error instanceof RefusalError && error.reason === "empty response",
@@ -299,7 +267,7 @@ test("Anthropic: stop_reason refusal WITHOUT stop_details is null-safe (G6, G7)"
   t.after(() => fake.close());
   const provider = createAnthropicProvider(anthropicCred(fake));
 
-  fake.queueStream({ chunks: [], finish: "refusal" }); // stopDetails omitted entirely
+  fake.queueStream({ chunks: [], finish: "refusal" });
   await assert.rejects(
     () => collect(provider.streamText("fake-model", req())),
     (error: unknown) => error instanceof RefusalError && error.reason === "refusal",
@@ -311,7 +279,7 @@ test("Anthropic: empty completeText surfaces as RefusalError('empty response') (
   t.after(() => fake.close());
   const provider = createAnthropicProvider(anthropicCred(fake));
 
-  fake.queueComplete({}); // text omitted
+  fake.queueComplete({});
   await assert.rejects(
     () => provider.completeText("fake-model", req()),
     (error: unknown) => error instanceof RefusalError && error.reason === "empty response",
@@ -335,9 +303,7 @@ test("HTTP 500: Anthropic streamText throws a real API error, not a RefusalError
   t.after(() => fake.close());
   const provider = createAnthropicProvider(anthropicCred(fake));
 
-  // retryable:false (the fixture's default) — without it the SDK's own default retry policy
-  // would turn this one scripted 500 into up to three requests. See ErrorScript's doc
-  // comment and tests/README.md.
+  // retryable:false (the default): otherwise the SDK's retries turn one scripted 500 into up to three requests.
   fake.queueError({ status: 500, retryable: false });
   await assert.rejects(
     () => collect(provider.streamText("fake-model", req())),
@@ -346,9 +312,6 @@ test("HTTP 500: Anthropic streamText throws a real API error, not a RefusalError
   assert.equal(fake.requestCount(), 1, "x-should-retry:false must stop the SDK from retrying on its own");
 });
 
-// -----------------------------------------------------------------------------------------
-// Multiple instances, no collision
-// -----------------------------------------------------------------------------------------
 
 test("Multiple fake-provider instances run concurrently without colliding", async (t) => {
   const a = await startFakeProvider();

@@ -1,16 +1,6 @@
 /**
- * Backend cases D1–D8 (`.docs/tests-backend.md` section D).
- *
- * D3–D5 and D7 stand a tiny local `node:http` stub in for studio (pointed at via
- * `STUDIO_INTERNAL_URL`, which only sandbox reads) so the upstream's exact behaviour —
- * a 404, a hung connection, a refused connection — is fully under this file's control
- * without needing to coax the real studio process into any of those states. `startServers`
- * still spawns the real studio process alongside sandbox in every test (there is no
- * "sandbox only" mode in the harness), but it sits idle and unused in those cases.
- *
- * D2, D6, and D8 exercise the real studio process, because they are specifically about the
- * proxy relaying real studio behaviour (D2), a genuine three-hop abort reaching the fake
- * provider (D6), and studio's own heartbeat surviving the sandbox proxy (D8).
+ * Cases D1-D8. D3-D5 and D7 point STUDIO_INTERNAL_URL at a local node:http stub to control the upstream (404,
+ * hang, refusal); the real studio still starts but sits idle. D2, D6 and D8 use the real studio (proxy relay, three-hop abort, heartbeat).
  */
 import { test } from "node:test";
 import type { TestContext } from "node:test";
@@ -88,11 +78,7 @@ async function setup(t: TestContext, envOverrides: Record<string, string> = {}):
   return { scratch, fake, servers };
 }
 
-/**
- * Returns the id AND the view grant, so callers hitting `/preview/:id` on the sandbox
- * directly can append `?g=<grant>` — sandbox forwards it blindly (index.ts), and studio's
- * internal route 404s a real (default-private) generation without a valid one.
- */
+/** Returns the id and grant so /preview/:id can be called directly: the sandbox forwards ?g blindly and studio 404s a private app without it. */
 async function createGeneration(
   servers: Stack["servers"],
   prompt = "Sandbox test app.",
@@ -105,11 +91,7 @@ async function createGeneration(
   return extractPreview(await res.text());
 }
 
-// -----------------------------------------------------------------------------------------
-// A tiny stand-in for studio, used only where the test needs to fully control the upstream's
-// behaviour (D3–D5, D7). `apps/sandbox` only ever reads STUDIO_INTERNAL_URL, so overriding it
-// leaves the real studio process (still started by `startServers`) simply unused.
-// -----------------------------------------------------------------------------------------
+// A stand-in for studio where a test must fully control the upstream (D3-D5, D7); the sandbox reads only STUDIO_INTERNAL_URL.
 
 interface Stub {
   url: string;
@@ -137,7 +119,6 @@ function startStub(handler: (req: IncomingMessage, res: ServerResponse) => void)
   });
 }
 
-// -----------------------------------------------------------------------------------------
 
 test("D1 — GET /health", async (t) => {
   const { servers } = await setup(t);
@@ -211,16 +192,8 @@ test("D6 — viewer disconnects: the upstream fetch is aborted (asserted on the 
   controller.abort();
   await reader.cancel().catch(() => {});
 
-  // This is the case's whole point (`tests-backend.md`'s D6: "Upstream fetch is aborted
-  // (assert on the studio side)") — the three-hop chain (this test's client -> sandbox ->
-  // studio -> fake provider) genuinely propagates the disconnect all the way through to the
-  // fake's own connection, not just across the sandbox->studio hop.
-  //
-  // What the *generation row* ends up as afterward is a separate question, deliberately not
-  // asserted here — see studio-routes.test.ts's C10 for a real bug found there (a disconnect
-  // during the fill call does not reliably reset the row to `pending`, because of how the
-  // OpenAI SDK's streaming iterator handles an aborted signal). Duplicating that same
-  // assertion here would just be asserting the same bug twice under a different case id.
+  // The point of D6: the disconnect propagates client -> sandbox -> studio -> the fake provider's own connection. The row's final state is
+  // asserted in C10, not repeated here.
   await waitUntil(() => fake.requests()[1]?.aborted === true, {
     message: "the fake provider's fill request must eventually be recorded as aborted, through sandbox and studio",
   });
@@ -230,9 +203,7 @@ test("D7 — viewer disconnects before upstream headers arrive: no unhandled rej
   let stubReqSeen = false;
   const stub = await startStub((_req, res) => {
     stubReqSeen = true;
-    // Deliberately never responds within this test's lifetime — simulates studio taking a
-    // long time to even send headers, so the abort below genuinely lands before any
-    // upstream response, not merely mid-body.
+    // Never responds in this test's lifetime, so the abort lands before any upstream response, not mid-body.
     const timer = setTimeout(() => {
       try {
         res.writeHead(200, { "Content-Type": "text/html" });
@@ -252,10 +223,8 @@ test("D7 — viewer disconnects before upstream headers arrive: no unhandled rej
   controller.abort();
   await assert.rejects(fetchPromise, "the client's own fetch must reject once aborted before headers arrived");
 
-  // The point of this case: an abort at exactly this moment goes through Express 5's
-  // default async-rejection handling with no try/catch around the `await fetch(...)` in
-  // /preview/:id. Confirmed harmless by the process still answering /health afterward
-  // rather than having crashed on an unhandled rejection.
+  // An abort here passes through Express 5's async rejection handling with no try/catch around the fetch. The process still answering
+  // /health proves it did not crash.
   const health = await fetch(`${servers.sandboxOrigin}/health`);
   assert.equal(health.status, 200);
 });
@@ -271,11 +240,8 @@ test("D8a — a deliberately small PREVIEW_TIMEOUT_MS bounds a stuck upstream in
   const start = Date.now();
   const res = await fetch(`${servers.sandboxOrigin}/preview/${id}${grantQuery(grant)}`);
   try {
-    // Read to completion — either naturally, or because sandbox cut the connection off
-    // partway through. A response abandoned mid-chunked-body is not a clean end from the
-    // client's own perspective (no final `0\r\n\r\n`), so undici surfaces that as a rejected
-    // read ("terminated") rather than a resolved partial body — either outcome is fine here;
-    // both mean the connection did not run the full 6s.
+    // Read to the end, or the proxy cut it off: undici reports an abandoned chunked body as a rejected read. Either outcome means the
+    // connection did not run the full 6s.
     await res.text();
   } catch {
     // Expected when sandbox truncates the response instead of ending it cleanly.
@@ -292,9 +258,7 @@ test("D8b — heartbeat comments keep a quiet proxied connection alive (bounded 
   const { servers, fake } = await setup(t); // default PREVIEW_TIMEOUT_MS (900000) — plenty of headroom
   const { id, grant } = await createGeneration(servers, "Heartbeat test.");
 
-  // Studio's own planning heartbeat (internal.ts) fires every 15s while planApp() is
-  // pending and is not configurable — unlike D8a's bound, this genuinely has to wait past
-  // it, but 17s is still nowhere near the 300s this case exists to guard against.
+  // Studio's planning heartbeat fires every 15s and is not configurable, so this must wait past it; 17s is nowhere near the 300s it guards.
   fake.queueComplete({ text: PLAN_TEXT, delayMs: 17_000 });
 
   const controller = new AbortController();

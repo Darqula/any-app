@@ -1,9 +1,6 @@
 /**
- * S13 (.docs/testing-review.md): see the matching comment on `FILL_SYSTEM_PROMPT` in
- * `fill-prompt.ts` — this is the parallel-fill path's copy of the same rule, paired with
- * `planner-prompt.ts`'s SHELL rule the same way. Keep both fill prompts and the planner prompt
- * in sync on this point; the real S13 document (parallel/contact-form) was produced by this
- * path, not the sequential one.
+ * Parallel-path copy of the "don't wrap the placeholder" rule; keep in sync with fill-prompt.ts
+ * and planner-prompt.ts.
  */
 export const SLOT_FILL_PROMPT = `You write the contents of ONE region of a web app whose layout and stylesheet already exist.
 

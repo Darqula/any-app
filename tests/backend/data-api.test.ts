@@ -1,18 +1,7 @@
 /**
- * Section K — per-app tokens and the data API (K1–K25). Needs Postgres and the
- * `anyapp_sandbox` role, but no model and no fake provider — this is HTTP plus Postgres.
- * See .docs/tests-backend.md's "K. Per-app tokens and the data API" for the prose behind
- * each case.
- *
- * All 25 cases share ONE scratch database and ONE running server pair, created once in a
- * file-level `before`/`after` — the README explicitly allows this when a whole file's cases
- * genuinely share one scratch database on purpose, and spinning up two fresh child-process
- * servers per case (25 times) would make this suite take minutes instead of seconds. Cases
- * do not interfere with each other because every case mints its own fresh app id
- * (`crypto.randomUUID()`) and therefore gets its own row-scope AND its own rate-limit bucket
- * (`packages/records/src/quota.ts`'s buckets are keyed by `${appId}:${kind}`) — nothing here
- * relies on test execution order except K15, which is written to restore what it breaks
- * before it returns control (see that case).
+ * Section K: per-app tokens and the data API (K1-K25). Needs Postgres and the sandbox role, no model.
+ * All cases share one scratch database and server pair (per-case would take minutes); each mints its own app id, so it has
+ * its own row scope and rate-limit bucket. Only K15 depends on order and restores what it breaks.
  */
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -54,7 +43,6 @@ after(async () => {
   await scratch.drop();
 });
 
-// --- helpers --------------------------------------------------------------------------
 
 function token(appId: string, secret = APP_TOKEN_SECRET, mode: "rw" | "ro" = "rw"): string {
   return mintAppToken(appId, mode, secret);
@@ -94,9 +82,6 @@ function freshApp(): { id: string; token: string; origin: string } {
   return { id, token: token(id), origin: servers.appOrigin(id) };
 }
 
-// ---------------------------------------------------------------------------------------
-// K1 — no Authorization header at all -> 401
-// ---------------------------------------------------------------------------------------
 
 test("K1 — no Authorization header -> 401", async () => {
   const { origin } = freshApp();
@@ -104,9 +89,6 @@ test("K1 — no Authorization header -> 401", async () => {
   assert.equal(res.status, 401);
 });
 
-// ---------------------------------------------------------------------------------------
-// K2 — token signed with the wrong secret, or one MAC character changed -> 401
-// ---------------------------------------------------------------------------------------
 
 test("K2 — token signed with the wrong secret -> 401", async () => {
   const { id, origin } = freshApp();
@@ -126,9 +108,6 @@ test("K2 — one MAC character changed -> 401", async () => {
   assert.equal(res.status, 401);
 });
 
-// ---------------------------------------------------------------------------------------
-// K3 — app A's valid token presented on app B's host -> 403 (host cross-check)
-// ---------------------------------------------------------------------------------------
 
 test("K3 — app A's valid token presented on app B's host -> 403", async () => {
   const a = freshApp();
@@ -137,12 +116,7 @@ test("K3 — app A's valid token presented on app B's host -> 403", async () => 
   assert.equal(res.status, 403);
 });
 
-// ---------------------------------------------------------------------------------------
-// K4 — app A's token, asking for a collection app B owns -> empty list, not an error.
-// Deliberately separate from K3: this holds even on A's OWN (correct) host, so it would
-// still hold if K3's host check were deleted entirely — scope comes from the token, not
-// from the host check, which is defence in depth only.
-// ---------------------------------------------------------------------------------------
+// Holds on A's own host too, so it would survive deleting K3's host check: scope comes from the token.
 
 test("K4 — app A's token against a collection app B populated -> empty list, no error", async () => {
   const a = freshApp();
@@ -159,9 +133,6 @@ test("K4 — app A's token against a collection app B populated -> empty list, n
   assert.equal(payload.nextCursor, null);
 });
 
-// ---------------------------------------------------------------------------------------
-// K5 — rows created by A are never returned to B under any query
-// ---------------------------------------------------------------------------------------
 
 test("K5 — rows created by A never come back to B", async () => {
   const a = freshApp();
@@ -177,16 +148,8 @@ test("K5 — rows created by A never come back to B", async () => {
   assert.deepStrictEqual(payload.records, [], "B must see none of A's rows");
 });
 
-// ---------------------------------------------------------------------------------------
-// K6 — where[status]=open actually filters. THE highest-value case in the document: Express
-// 5 defaults to a query parser with no bracket-notation support, so `where[status]=open`
-// would parse as one flat key literally named "where[status]", req.query.where would be
-// undefined, parseWhere would return {}, and `data @> '{}'::jsonb` matches every row. If
-// `app.set("query parser", "extended")` were deleted from apps/sandbox/src/index.ts, this
-// assertion (exactly one "open" row back, not both) would fail: both rows would come back,
-// `records.length` would be 2 instead of 1, and `records[0]!.data.status` would not even
-// need to be "open" to sneak past a weaker assertion. Reasoned through, not assumed.
-// ---------------------------------------------------------------------------------------
+// The highest-value case: without app.set("query parser", "extended") (apps/sandbox/src/index.ts), where[status]=open parses as a
+// flat key and every row comes back, so exactly one "open" row is the assertion that matters.
 
 test("K6 — where[status]=open actually filters (Express 5 query-parser regression guard)", async () => {
   const { origin, token: t } = freshApp();
@@ -201,9 +164,6 @@ test("K6 — where[status]=open actually filters (Express 5 query-parser regress
   assert.equal(payload.records[0]!.data.title, "a");
 });
 
-// ---------------------------------------------------------------------------------------
-// K7 — where[done]=true against a stored boolean -> matches (string/boolean coercion)
-// ---------------------------------------------------------------------------------------
 
 test("K7 — where[done]=true matches a stored boolean true", async () => {
   const { origin, token: t } = freshApp();
@@ -216,9 +176,6 @@ test("K7 — where[done]=true matches a stored boolean true", async () => {
   assert.equal(payload.records[0]!.data.label, "finished");
 });
 
-// ---------------------------------------------------------------------------------------
-// K8 — where[count]=3 against a stored number -> matches
-// ---------------------------------------------------------------------------------------
 
 test("K8 — where[count]=3 matches a stored number", async () => {
   const { origin, token: t } = freshApp();
@@ -231,9 +188,6 @@ test("K8 — where[count]=3 matches a stored number", async () => {
   assert.equal(payload.records[0]!.data.count, 3);
 });
 
-// ---------------------------------------------------------------------------------------
-// K9 — no where at all -> returns everything, newest first
-// ---------------------------------------------------------------------------------------
 
 test("K9 — no where -> everything, newest first", async () => {
   const { origin, token: t } = freshApp();
@@ -246,9 +200,6 @@ test("K9 — no where -> everything, newest first", async () => {
   assert.deepStrictEqual(payload.records.map((r) => r.data.n), [3, 2, 1]);
 });
 
-// ---------------------------------------------------------------------------------------
-// K10 — limit of 0, -1, 1000, "abc" -> clamped to 1-100, default 25, no throw
-// ---------------------------------------------------------------------------------------
 
 test("K10 — limit is clamped to 1-100, defaults to 25, never throws", async () => {
   const { id, origin, token: t } = freshApp();
@@ -281,23 +232,8 @@ test("K10 — limit is clamped to 1-100, defaults to 25, never throws", async ()
   assert.equal(((await noLimit.json()) as { records: unknown[] }).records.length, 25, "no limit param defaults to 25");
 });
 
-// ---------------------------------------------------------------------------------------
-// K11 — paging with cursor to the end: every row seen exactly once, nextCursor null on the
-// final page.
-//
-// FIXED (was found live, left red on purpose — see testing-review.md S1 for the original
-// root-cause writeup). The second page of any paginated request 500'd: `encodeCursor`
-// interpolated `row.created_at`, typed `string` but actually a JS `Date` (pg auto-converts
-// `timestamptz`, OID 1184), so the template literal called `Date.prototype.toString()` —
-// e.g. `"Mon Sep 01 2026 11:18:56 GMT+0500 (...)"` — which round-tripped past
-// `decodeCursor`'s own guard (it only checked `Date.parse`, which accepts that shape too)
-// and reached Postgres as a `timestamptz` bind parameter it does not accept
-// (`time zone "gmt+0500" not recognized`, SQLSTATE 22023). Fixed by having
-// `packages/records/src/db.ts` register a type parser for OID 1184 so `timestamptz` arrives
-// as a real ISO string (making `RecordRow.created_at: string`'s type honest instead of
-// aspirational), plus tightening `decodeCursor`'s guard to the exact ISO-instant shape as
-// defence in depth. This case now passes.
-// ---------------------------------------------------------------------------------------
+// Regression: the cursor embedded a JS Date's toString(), which Postgres rejected on page two.
+// records/db.ts now parses timestamptz as an ISO string.
 
 test("K11 — paging to the end sees every row exactly once, ends with nextCursor null", async () => {
   const { origin, token: t } = freshApp();
@@ -327,16 +263,8 @@ test("K11 — paging to the end sees every row exactly once, ends with nextCurso
   assert.equal(seen.size, total);
 });
 
-// ---------------------------------------------------------------------------------------
-// K11-R — regression test for S1-R (testing-review.md): two rows sharing the same
-// millisecond but differing in microseconds must both survive pagination. The first fix for
-// S1 (routing `timestamptz` through a JS `Date`) silently truncated to millisecond
-// resolution — Postgres itself stores microseconds — so a page-boundary row with a same-
-// millisecond, earlier-microsecond neighbour would drop that neighbour off both pages with
-// no error. K11 above cannot catch this: its rows arrive via sequential HTTP requests, so
-// they are milliseconds apart by construction. This inserts directly via the superuser
-// `admin` pool instead, the only way to put two rows inside one millisecond on purpose.
-// ---------------------------------------------------------------------------------------
+// Regression: rows in the same millisecond but different microseconds must both survive paging. Inserted as admin,
+// the only way to land two rows in one millisecond.
 
 test("K11-R — same-millisecond, different-microsecond rows both survive pagination", async () => {
   const { id: appId, token: t, origin } = freshApp();
@@ -374,10 +302,6 @@ test("K11-R — same-millisecond, different-microsecond rows both survive pagina
   for (const row of rows) assert.ok(seen.has(row.id), `missing row ${row.id}`);
 });
 
-// ---------------------------------------------------------------------------------------
-// K12 — a short page (fewer rows than limit) -> nextCursor is null, not a cursor onto an
-// empty page
-// ---------------------------------------------------------------------------------------
 
 test("K12 — short page: nextCursor is null, not a cursor onto an empty page", async () => {
   const { origin, token: t } = freshApp();
@@ -390,12 +314,7 @@ test("K12 — short page: nextCursor is null, not a cursor onto an empty page", 
   assert.equal(payload.nextCursor, null);
 });
 
-// ---------------------------------------------------------------------------------------
-// K13 — malformed cursor -> 400, no 500, nothing reaches Postgres. decodeCursor rejects
-// both cases before listRecords is ever called (records.ts's decodeCursor validates the id
-// half against UUID_PATTERN and the timestamp half against the exact ISO-instant shape), so
-// a 400 here proves the request never got as far as a query.
-// ---------------------------------------------------------------------------------------
+// decodeCursor rejects both malformed shapes before any query runs.
 
 test("K13 — malformed cursor -> 400", async () => {
   const { origin, token: t } = freshApp();
@@ -408,9 +327,6 @@ test("K13 — malformed cursor -> 400", async () => {
   assert.equal(encoded.status, 400);
 });
 
-// ---------------------------------------------------------------------------------------
-// K14 — :id that is not a uuid -> 404, no 500, no stack trace in the body
-// ---------------------------------------------------------------------------------------
 
 test("K14 — non-uuid :id -> 404, clean body", async () => {
   const { origin, token: t } = freshApp();
@@ -420,12 +336,7 @@ test("K14 — non-uuid :id -> 404, clean body", async () => {
   assert.deepStrictEqual(body, { error: "not found" });
 });
 
-// ---------------------------------------------------------------------------------------
-// K15 — any unexpected DB error -> {"error":"internal error"}, never Express's default
-// stack trace. Forced by renaming the `records` table out from under the sandbox's pool for
-// the span of one request, using the superuser connection — restored in a `finally` before
-// this test returns, so no other case ever sees the broken table.
-// ---------------------------------------------------------------------------------------
+// Forced by renaming `records` for one request through the superuser connection; restored in a finally.
 
 test("K15 — an unexpected DB error returns a clean {error: internal error}, no stack trace", async () => {
   const { origin, token: t } = freshApp();
@@ -443,9 +354,6 @@ test("K15 — an unexpected DB error returns a clean {error: internal error}, no
   }
 });
 
-// ---------------------------------------------------------------------------------------
-// K16 — invalid collection name -> 400
-// ---------------------------------------------------------------------------------------
 
 test("K16 — invalid collection name -> 400", async () => {
   const { origin, token: t } = freshApp();
@@ -455,12 +363,7 @@ test("K16 — invalid collection name -> 400", async () => {
   assert.equal(postRes.status, 400);
 });
 
-// ---------------------------------------------------------------------------------------
-// K17 — create past MAX_RECORDS_PER_APP -> 409. Pre-filled to 999 rows directly (bypassing
-// both the write-rate limiter and the time cost of 999 real HTTP writes — see the prose
-// under K in tests-backend.md), then the boundary itself is crossed through two real HTTP
-// POSTs so the actual route code is what's asserted against.
-// ---------------------------------------------------------------------------------------
+// Pre-filled to 999 rows directly (skipping the rate limiter and 999 HTTP writes); the boundary is crossed through real POSTs.
 
 test("K17 — creating past MAX_RECORDS_PER_APP -> 409, row count does not grow past it", async () => {
   const { id, origin, token: t } = freshApp();
@@ -483,19 +386,7 @@ test("K17 — creating past MAX_RECORDS_PER_APP -> 409, row count does not grow 
   assert.equal(rows[0]!.count, "1000", "quota must not let the row count grow past the limit");
 });
 
-// ---------------------------------------------------------------------------------------
-// K18 — request body over MAX_RECORD_BYTES -> 413
-//
-// FIXED (was found live, left red on purpose — see testing-review.md S2 for the original
-// root-cause writeup). `express.json({ limit: ... })` (data.ts) correctly rejects an
-// oversized body — internally via `raw-body`/`body-parser`, which construct a real
-// `PayloadTooLargeError` with `.status === 413` and hand it to `next(err)` — but the
-// terminal error-handling middleware used to answer 500 for every error unconditionally,
-// never reading `err.status`/`err.statusCode`, so a genuine 413 was indistinguishable from
-// an actual unexpected server error (K15). Fixed by having that handler pass a numeric
-// `status`/`statusCode` in the 4xx range straight through instead of collapsing it to 500;
-// 5xx stays opaque. This case now passes.
-// ---------------------------------------------------------------------------------------
+// Regression: the terminal error handler answered 500 for everything, hiding express.json's 413.
 
 test("K18 — request body over MAX_RECORD_BYTES -> 413", async () => {
   const { origin, token: t } = freshApp();
@@ -508,12 +399,7 @@ test("K18 — request body over MAX_RECORD_BYTES -> 413", async () => {
   );
 });
 
-// ---------------------------------------------------------------------------------------
-// K19 — repeated distinct-key PATCHes, each under the cap: the one that pushes the row over
-// the cap gets 413, not 404, and the row does not grow. Deliberately separate from K20 —
-// both are zero-rows-back from one UPDATE, and collapsing them into a single 404 would make
-// an over-size PATCH report "not found" for a record that plainly exists.
-// ---------------------------------------------------------------------------------------
+// Separate from K20: both are zero rows from one UPDATE, and one shared 404 would report an over-size PATCH as "not found".
 
 test("K19 — a cumulative PATCH that would exceed MAX_RECORD_BYTES gets 413, not 404", async () => {
   const { origin, token: t } = freshApp();
@@ -543,9 +429,6 @@ test("K19 — a cumulative PATCH that would exceed MAX_RECORD_BYTES gets 413, no
   assert.deepStrictEqual(afterData, lastGoodData);
 });
 
-// ---------------------------------------------------------------------------------------
-// K20 — PATCH against a genuinely missing id -> 404 (distinguished from K19)
-// ---------------------------------------------------------------------------------------
 
 test("K20 — PATCH against a genuinely missing id -> 404", async () => {
   const { origin, token: t } = freshApp();
@@ -553,22 +436,9 @@ test("K20 — PATCH against a genuinely missing id -> 404", async () => {
   assert.equal(res.status, 404);
 });
 
-// ---------------------------------------------------------------------------------------
-// K21 — write rate limit exceeded -> 429, and reads still work (buckets are per kind)
-// ---------------------------------------------------------------------------------------
 
-// Deliberately NOT "the 61st write is a 429". `quota.ts`'s bucket refills *continuously* —
-// 60 writes/min is one token per second, credited on every call from elapsed wall-clock time,
-// not reset in fixed windows. So the exact index of the first 429 is a function of how long
-// the burst takes: 61 sequential HTTP round trips well under a second see no refill and the
-// 61st is rejected, but the same loop slowed past a second (which is exactly what happens
-// when `node --test` runs this file concurrently with others) has a token or more back and
-// sails past 61. That made this case the main source of intermittent backend-suite failures
-// while it asserted the exact index — the limiter was behaving exactly as designed each time.
-//
-// What is actually contractual: a sustained burst gets cut off, it is not cut off before the
-// documented capacity, and reads keep working. All three are asserted below, none of them
-// depend on the burst's wall-clock duration.
+// Not "the 61st write is a 429": the bucket refills continuously, so where the first 429 lands depends on how long the burst takes
+// (flaky when run concurrently). Asserts what is contractual: a sustained burst is cut off, not before capacity, and reads still work.
 test("K21 — write rate limit: a sustained burst is cut off after ~60/min, reads unaffected", async () => {
   const { origin, token: t } = freshApp();
   const CAPACITY = 60;
@@ -595,9 +465,6 @@ test("K21 — write rate limit: a sustained burst is cut off after ~60/min, read
   assert.equal(read.status, 200);
 });
 
-// ---------------------------------------------------------------------------------------
-// K22 — anyapp_sandbox role against generations / provider_credentials -> permission denied
-// ---------------------------------------------------------------------------------------
 
 test("K22 — the restricted role cannot read generations or provider_credentials", async () => {
   const restricted = new Pool({ connectionString: scratch.sandboxDatabaseUrl });
@@ -618,9 +485,6 @@ test("K22 — the restricted role cannot read generations or provider_credential
   }
 });
 
-// ---------------------------------------------------------------------------------------
-// K23 — response body of any data route contains no app_id — it is scope, not payload
-// ---------------------------------------------------------------------------------------
 
 test("K23 — no data route's response body contains app_id", async () => {
   const { origin, token: t } = freshApp();
@@ -648,17 +512,7 @@ test("K23 — no data route's response body contains app_id", async () => {
   assert.doesNotMatch(await put.text(), /"app_id"/);
 });
 
-// ---------------------------------------------------------------------------------------
-// K24 — a document rendered for a plan with no collections contains neither the data
-// runtime nor a token.
-//
-// Rendered directly through apps/studio/src/shell.ts's own renderShellHead — the same
-// function internal.ts and edits.ts call — rather than through a live generation, since
-// this section needs no model: renderShellHead's behaviour (inlining dataRuntime(token)
-// only when plan.collections.length > 0) is a pure function of its plan argument, and
-// shell.ts imports nothing but @any-app/protocol, so importing it directly here carries no
-// side effects (no Postgres, no env, no credentials).
-// ---------------------------------------------------------------------------------------
+// Rendered through renderShellHead directly: a pure function of the plan whose module has no side effects.
 
 test("K24 — a plan with no collections carries neither the data runtime nor a token", () => {
   const plan: AppPlan = {
@@ -674,18 +528,8 @@ test("K24 — a plan with no collections carries neither the data runtime nor a 
   assert.doesNotMatch(doc, /TOKEN\s*=/);
 });
 
-// ---------------------------------------------------------------------------------------
-// K25 — a document rendered twice for one app (generate, then edit) carries the SAME
-// placeholder both times (Phase 6 step 7 rewrote this: `renderShellHead`/`renderFullHead`
-// never embed a live token any more — every render, generate or edit, emits
-// `APP_TOKEN_PLACEHOLDER` unconditionally, and the real per-viewer token is substituted only
-// at send time via `withAppToken`, in `internal.ts`). What both call sites actually rely on
-// is now two separate, independently-checkable properties: (1) the two render shapes embed
-// byte-identical PLACEHOLDER text, and (2) `mintAppToken(id, mode, secret)` — and therefore
-// `withAppToken`'s substitution — is a pure function of its arguments, so re-deriving the
-// token for the same id/mode/secret on a later render (e.g. after an edit) reproduces the
-// exact same live token a viewer already holds.
-// ---------------------------------------------------------------------------------------
+// Every render emits APP_TOKEN_PLACEHOLDER and the per-viewer token is substituted at send time. Checks that two
+// renders embed identical placeholder text and that mintAppToken is pure, so a viewer's token survives edits.
 
 test("K25 — the placeholder embedded in a document is identical across independent render passes, and the token derived from it is a pure function of (id, mode, secret)", () => {
   const id = randomUUID();
@@ -721,10 +565,6 @@ test("K25 — the placeholder embedded in a document is identical across indepen
   );
 });
 
-// ---------------------------------------------------------------------------------------
-// K26/K27 — Phase 6 step 7: a read-only ("ro") token reads fine but is rejected on every
-// write verb, with `app_id` still coming from the token alone (not the host, not the body).
-// ---------------------------------------------------------------------------------------
 
 test("K26 — a read-only token: GET succeeds, POST/PATCH/DELETE all 403 'this token is read-only'", async () => {
   const { id, origin } = freshApp();

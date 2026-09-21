@@ -1,17 +1,6 @@
 /**
- * C1-C8 — progressive rendering. C1 runs against a seeded row on the suite's shared default
- * server. C2-C8 need a real generation streamed through the fake provider, which means the
- * *platform* credential (see global-setup.ts's header comment for why a session credential
- * cannot reach planner/fill) — so this file spins up its OWN isolated scratch database, fake
- * provider, and studio/sandbox pair on ephemeral ports, entirely separate from the shared
- * server every other spec file uses. That pair never touches ports 3000/3001, so it cannot
- * contend with (or be contended with by) any other spec file regardless of run order.
- *
- * One fake provider for the whole C2-C8 group, created once in `beforeAll` (so its `baseUrl`
- * is known before the isolated server starts, to wire into its env) and reused by every test
- * — tests run serially (playwright.config.ts), so each one just queues exactly what it
- * expects right before triggering its own generation; the FIFO queue never has to span two
- * tests' worth of ambiguity.
+ * C1-C8: progressive rendering. C1 uses a seeded row on the shared server; C2-C8 stream real generations through one fake provider, so they run
+ * an isolated stack with the platform credential. Tests run serially, so each queues what it needs right before its generation.
  */
 import { readFile } from "node:fs/promises";
 import { test, expect } from "@playwright/test";
@@ -74,9 +63,7 @@ test.describe("C — progressive rendering", () => {
       fake.queueStream(); // manual mode (chunks omitted): stays open until this test says otherwise
 
       const { frame } = await submitPrompt(page, `C2-${Date.now()}`, servers.studioOrigin);
-      // A generous timeout on this first isolated-server assertion — a freshly-spawned tsx
-      // child process's first real request (DB pool warm-up, JIT) can be slower than later
-      // ones in the same file; this bounds that without weakening what's being checked.
+      // A generous first timeout: a freshly spawned tsx child's first request (pool warm-up, JIT) is slower than later ones.
       await expect(frame.locator(".anyapp-skeleton")).toHaveCount(2, { timeout: 15_000 });
       await expect(frame.locator("#slot-alpha")).toHaveClass(/anyapp-skeleton/);
       await expect(frame.locator("#slot-beta")).toHaveClass(/anyapp-skeleton/);
@@ -127,26 +114,17 @@ test.describe("C — progressive rendering", () => {
     });
 
     test("C6 — Phase 1 linear path: content is visible while the response is still open", async ({ page }) => {
-      // A plan missing every required section forces PlanError, which falls back to the
-      // linear path (internal.ts's runLinearFallback) — the one that streams raw HTML with
-      // no buffering.
+      // A plan missing every section forces PlanError and the linear fallback, which streams raw HTML without buffering.
       fake.queueComplete({ text: "not a valid plan, no sections here at all" });
       const handle = fake.queueStream();
 
       const { frame } = await submitPrompt(page, `C6-${Date.now()}`, servers.studioOrigin);
-      // runLinearFallback wraps the stream in createTrailingFenceGuard, which holds back
-      // the LAST 16 bytes emitted so far (to catch a trailing markdown fence split across
-      // chunks) — so the marker text needs trailing padding to actually clear that window
-      // before the response ends. An HTML comment is inert (no visible/DOM effect on
-      // #c6-marker itself) and stands in for "more text arrives after", same as real output.
+      // runLinearFallback holds back the last 16 bytes (trailing-fence guard), so the marker needs trailing padding; an HTML comment is inert.
       await handle.emit(
         '<html><body><p id="c6-marker">Streaming content, live</p><!-- ' + "x".repeat(24) + " -->",
       );
 
-      // The response is still open — finish() has not been called yet — and the text must
-      // already be on screen. This is the assertion that must never regress: a change that
-      // buffers the response still renders correctly only AFTER it ends, which is exactly
-      // what would slip past a check made only at that point.
+      // The response is still open, and the text must already be on screen. A check only after the response ends would miss a buffering regression.
       await expect(frame.locator("#c6-marker")).toHaveText("Streaming content, live");
 
       await handle.finish();
@@ -182,11 +160,7 @@ test.describe("C — progressive rendering", () => {
       const before = await frame.locator("#page-footer").boundingBox();
       expect(before).not.toBeNull();
 
-      // Separate <p> elements, not one <p> with embedded newlines — HTML collapses interior
-      // "\n" to a single space, so a single paragraph would render far shorter than either
-      // declared skeleton height regardless of how good the planner's estimate was. This
-      // shape is what makes the height comparison below meaningful instead of testing this
-      // fixture's own mismatch.
+      // Separate <p> elements: interior newlines collapse to a space, so one paragraph would render shorter than either skeleton height.
       await handle.emit(slotMarker("alpha") + "<p>Alpha content line.</p>\n".repeat(5));
       await handle.emit(slotMarker("beta") + "<p>Beta content line.</p>\n".repeat(3));
       await handle.finish();
@@ -195,9 +169,7 @@ test.describe("C — progressive rendering", () => {
       const after = await frame.locator("#page-footer").boundingBox();
       expect(after).not.toBeNull();
       const delta = Math.abs(after!.y - before!.y);
-      // Generous on purpose — this catches a planner that stopped estimating heights
-      // entirely, not small inaccuracies. Paragraph margins/line-height mean even
-      // reasonably-matched content won't land pixel-exact on the declared skeleton height.
+      // Generous: catches a planner that stopped estimating heights, not small inaccuracies.
       expect(delta).toBeLessThan(280);
     });
   });

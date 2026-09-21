@@ -2,17 +2,12 @@ import { pool } from "./db";
 import { MAX_RECORDS_PER_APP, MAX_RECORD_BYTES } from "./quota";
 import { UUID_PATTERN } from "@any-app/protocol";
 
-// Single source of truth is @any-app/protocol (shared with the planner's DATA-section
-// parsing and the fill prompts' collection list) — re-exported here so sandbox/data.ts can
-// import it from the same place it imports everything else records-shaped.
+// Single source is @any-app/protocol; re-exported for the sandbox routes.
 export { COLLECTION_PATTERN, UUID_PATTERN } from "@any-app/protocol";
 
 /**
- * One stored row, as returned to a caller. Deliberately NOT named `Record` — that shadows
- * TypeScript's built-in `Record<K, V>` utility type, which `listRecords`'s `where` parameter
- * below needs. Deliberately does not include `app_id`: every function here already scopes
- * on it internally, and it is not part of the JSON the data API hands back to a generated
- * app (see impl-phase-5.md step 5's response shapes).
+ * One stored row as returned to callers. Not named `Record` (it would shadow the TS utility type) and
+ * without app_id (not part of the API's JSON).
  */
 export interface RecordRow {
   id: string;
@@ -25,21 +20,13 @@ export interface RecordRow {
 const SELECT_COLUMNS = "id, collection, data, created_at, updated_at";
 
 /**
- * Every function below takes `appId` as its first argument, and callers only ever get it
- * from `verifyAppToken` (never from a request body, a query string, or a hostname — see
- * .docs/architecture.md's data-API rules). A record id is not an authorization token: every
- * statement here filters on `app_id`, without exception, including the ones that already
- * have a primary key in hand.
+ * appId comes only from verifyAppToken, never from a request. Every statement filters on app_id,
+ * even when a primary key is in hand.
  */
 
 /**
- * Enforces the row quota inside the insert itself, not before it. This is approximate under
- * concurrency and that is the right call — two simultaneous inserts at exactly the limit can
- * both pass and land the app at MAX_RECORDS_PER_APP + 1 rows. Making it exact needs a
- * serializable transaction or a lock on every write, on a path whose entire purpose is to be
- * cheap. A quota is a bound on runaway growth, not a ledger; being over by one occasionally
- * costs nothing. Returns null (not a thrown error) when the quota is full, so the caller can
- * respond 409 — that is an expected outcome here, not an exceptional one.
+ * The quota is enforced in the insert: approximate under concurrency, and that is fine (it bounds growth,
+ * it is not a ledger). Returns null when full so the caller can answer 409.
  */
 export async function createRecord(
   appId: string,
@@ -56,12 +43,7 @@ export async function createRecord(
   return rows[0] ?? null;
 }
 
-/**
- * `data @> '{}'::jsonb` matches every row, so the unfiltered list needs no second code path.
- * It is also exactly what `records_data_idx` (a jsonb_path_ops GIN index) serves — see
- * .docs/impl-phase-5.md step 5: the API is deliberately exactly as wide as that index can
- * answer.
- */
+/** `data @> '{}'` matches every row, so an unfiltered list needs no second path; records_data_idx serves it. */
 export async function listRecords(
   appId: string,
   collection: string,
@@ -99,16 +81,8 @@ export async function getRecord(
 }
 
 /**
- * PATCH semantics: a shallow merge of `patch` over the stored object. `express.json`'s
- * request-body limit (see data.ts) bounds one PATCH's own size, but the merge is cumulative
- * — a loop of distinct-key patches, each individually under that limit, grows one row
- * without bound, and the row quota only counts rows, not bytes. Guarded here the same way
- * the row quota is (a `where` clause the insert/update can fail against), not in application
- * code after the fact, for the same concurrency reason `createRecord`'s doc comment gives.
- *
- * Zero rows back is ambiguous between "not found" and "merge would exceed the size limit" —
- * the caller (data.ts) distinguishes the two with a follow-up `getRecord` rather than this
- * function guessing, since only the caller needs to turn that into a 404 vs a 413.
+ * PATCH merges shallowly. The merge is cumulative, so the size limit is enforced in the SQL where clause.
+ * Zero rows is ambiguous (missing vs too large): the caller disambiguates with getRecord.
  */
 export async function updateRecord(
   appId: string,
@@ -126,7 +100,6 @@ export async function updateRecord(
   return rows[0] ?? null;
 }
 
-/** PUT semantics: the stored object is replaced wholesale. */
 export async function replaceRecord(
   appId: string,
   collection: string,
@@ -151,40 +124,19 @@ export async function deleteRecord(appId: string, collection: string, id: string
 }
 
 /**
- * Opaque pagination cursor — `nextCursor` in a list response. Never parsed by the client.
- * `row.created_at` must already be a full-microsecond-precision ISO string — true today
- * because db.ts installs a type parser for `timestamptz` (OID 1184) that hand-formats
- * Postgres's own text, not because `pg` does that by default (it doesn't; a bare `pg` hands
- * back a JS `Date`, and this used to silently stringify one via `Date.prototype.toString()`
- * — see testing-review.md S1). A first fix routed through `Date.prototype.toISOString()`
- * instead, which fixed that but truncated to millisecond resolution — Postgres's own
- * resolution is microseconds — and could silently drop a row whose `created_at` differed
- * from a page-boundary row only in the discarded digits (S1-R). `ISO_INSTANT_PATTERN` below
- * is what `decodeCursor` checks a cursor's first half against, so keep it in sync with
- * whatever shape db.ts's parser actually emits.
+ * Opaque pagination cursor. created_at must keep full microsecond precision (see db.ts); ISO_INSTANT_PATTERN
+ * must match what the parser emits.
  */
 export function encodeCursor(row: { created_at: string; id: string }): string {
   return Buffer.from(`${row.created_at}|${row.id}`, "utf8").toString("base64url");
 }
 
-// The exact shape db.ts's timestamptz parser emits (full 6-digit microsecond precision, a
-// literal "Z" since the pool forces the session to UTC) and Postgres's own `timestamptz`
-// input parser accepts unambiguously (verified directly: `'...686107Z'::timestamptz` round
-// -trips losslessly). Anything looser (e.g. whatever `Date.parse` alone accepts, which
-// includes `Date.prototype.toString` output) is a cursor shape Postgres itself would reject
-// with `invalid input syntax`, so a looser check here just delays the same failure until it
-// hits the database. See S1 / S1-R.
+// The exact shape db.ts emits and Postgres accepts losslessly. A looser check only delays failure to the database.
 const ISO_INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
 
 /**
- * Null on anything malformed — a bad cursor should read as "no more pages", not throw.
- * Validates both halves, not just that a separator exists (Phase 5 review S2: the earlier
- * version let `base64url("x|y")` reach Postgres as a real query parameter, which failed
- * loudly as an `invalid input syntax` error instead of the 400 this function's own docstring
- * already promised). `id` must look like a uuid; `createdAt` must match the exact ISO-8601
- * instant shape Postgres's `timestamptz` parser accepts — both are exactly what
- * `listRecords`'s `(created_at, id) < ($5, $6)` clause needs to bind against typed columns
- * without ever reaching the database malformed.
+ * Null on anything malformed (reads as "no more pages"). Validates both halves so nothing malformed
+ * reaches Postgres.
  */
 export function decodeCursor(cursor: string): { createdAt: string; id: string } | null {
   let decoded: string;

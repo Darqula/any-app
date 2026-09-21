@@ -1,12 +1,6 @@
 /**
- * Provider error messages quote the credential back. This is not hypothetical: during live
- * testing a 401 wrote `Incorrect API key provided: REPLACE_ME` straight into
- * `generations.error`. That was survivable when the key was a placeholder belonging to the
- * operator. With user-supplied credentials the same path is a breach.
- *
- * Two passes, deliberately overlapping. The known-secret pass catches the credential we are
- * actually using, in whatever form the provider echoes it. The pattern pass catches keys we
- * were never told about — another service's token quoted in a gateway's error, say.
+ * Provider errors can quote the credential back.
+ * Two overlapping passes: the secrets we know, and key-shaped patterns we don't.
  */
 const KEY_PATTERNS = [
   /\bsk-[A-Za-z0-9_-]{12,}/g,

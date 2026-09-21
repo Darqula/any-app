@@ -1,12 +1,6 @@
 /**
- * A8 — mintAppToken / verifyAppToken / UUID_PATTERN.
- * Spec: .docs/tests-backend.md section A8. Target: packages/protocol/src/app-token.ts.
- *
- * Phase 6 step 7 added a `mode` ("rw" | "ro") to both functions — a token now authorizes a
- * specific app AND a specific read/write capability, not just the app. `verifyAppToken`
- * returns `{ appId, mode }` (or null) instead of a bare string.
- *
- * All exported directly from @any-app/protocol.
+ * A8: mintAppToken / verifyAppToken / UUID_PATTERN. A token carries a mode (rw|ro) and
+ * verifyAppToken returns { appId, mode } or null.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -78,8 +72,6 @@ test("A8.7 — UUID_PATTERN accepts gen_random_uuid() output, both cases", () =>
 });
 
 test("A8.8 — determinism: minting the same id and mode twice yields the same string", () => {
-  // This is the entire reason a token is derived rather than stored: re-rendering a
-  // document (which every edit does) must reproduce the same token, not a new random one,
-  // or an edited app would be silently disconnected from its own rows.
+  // Why tokens are derived: re-rendering a document (every edit) must reproduce the same token, or an edited app loses its rows.
   assert.equal(mintAppToken(ID, "rw", SECRET), mintAppToken(ID, "rw", SECRET));
 });

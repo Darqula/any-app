@@ -16,14 +16,8 @@ Absolute rules — these are the same rules the region was written under:
 - Change what the request asks for and keep everything else as it was. This is an edit, not a rewrite.`;
 
 /**
- * The last two rules are the other half of edit-router.ts's 2026-09-21 fix (see the note above
- * its prompt). Even routed correctly, a stylesheet call can still be handed a request it cannot
- * satisfy — the dropdown's explicit "Styling" choice bypasses the router entirely. Told to
- * "apply the requested change", the model invented rules for a control that did not exist
- * (body.dark-theme, :root[data-theme="light"], "applied by the theme switch") and spent ~11k
- * completion tokens doing it. Returning the stylesheet unchanged is the escape hatch:
- * edits.ts recognises an identical result and tells the user the truth instead of reporting an
- * update that changed nothing visible.
+ * Rules 5-6 are the other half of the router fix: a stylesheet cannot add a control, so the model
+ * returns it unchanged and edits.ts answers 422.
  */
 const CSS_EDIT_PROMPT = `You rewrite the stylesheet of an existing web app.
 
@@ -37,13 +31,7 @@ Absolute rules:
 - Only style what already exists. You are shown the shell markup and the region names, not what is inside each region, so reuse the class names the current stylesheet already defines. Never write rules for a control, element or state that the request asks to be ADDED — a stylesheet cannot create one, and rules for something that does not exist do nothing.
 - If the request is mainly about adding or changing a control, feature or behaviour (a switch, a button, a new section, something that should happen when the user does something), a stylesheet is the wrong tool. In that case change nothing: return the current stylesheet exactly as it is, character for character.`;
 
-/**
- * Rewrites the frame — the fixed markup around the regions. Added 2026-09-21: it was the one
- * part of an app no edit could reach (see edit-router.ts), so a request like "remove the
- * caption under the heading" silently did nothing. The placeholder rule is the same contract
- * planner-prompt.ts states for the original frame, and `checkShellEdit` enforces it after the
- * fact, because a frame that loses or duplicates a placeholder loses or duplicates a region.
- */
+/** Rewrites the fixed frame around the regions. checkShellEdit enforces the placeholder contract after. */
 const SHELL_EDIT_PROMPT = `You rewrite the frame of an existing web app: the fixed page markup around its regions — headings, captions, footer lines, wrappers.
 
 Output the complete new frame HTML and nothing else. No markdown code fences, no commentary, no <html> or <body> wrapper.
@@ -84,17 +72,8 @@ async function complete(
 }
 
 /**
- * Removes any `<style>` block or `style="..."` attribute a slot edit wrote despite being
- * told not to. Confirmed live: asked to add a button to a slot, the model wrote a correct
- * button *and* a `<style>` block styling it — the prompt's rule is not self-enforcing.
- *
- * A `<style>` element inserted via `replaceChildren`/`innerHTML` still takes effect (unlike
- * a `<script>`, it needs no re-creation to run), so leaving it in would not even look
- * broken — it would just silently reintroduce the exact hazard the planner's CSS monopoly
- * exists to prevent: a class the CSS editor never sees and can't account for, and (once
- * Phase 4 parallelises fill) two slot calls free to invent conflicting rules for the same
- * class name. Stripping is the safe default; the slot keeps working off the existing
- * stylesheet's classes.
+ * Strips a <style> block or style attribute the model wrote despite the rule. It would still take
+ * effect, and reintroduce classes the CSS editor never sees.
  */
 function stripStyleTags(html: string, slotId: string): string {
   let out = html.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "");
@@ -112,16 +91,12 @@ export async function regenerateSlot(
   currentContent: string,
   credential: ProviderCredential | null,
   signal?: AbortSignal,
-  // The generation id — see planApp's matching parameter.
   conversationId?: string,
-  // Phase 6 step 8 — see planApp's matching parameter.
   onUsage?: (usage: UsageInfo) => void,
 ): Promise<string> {
   const spec = plan.slots.find((s) => s.id === slotId)?.spec ?? "";
 
-  // The stylesheet and this slot's spec are stable across repeated edits to the same slot
-  // in one session — that's the half worth a cache breakpoint. The current contents and
-  // the instruction change on every call, so they stay in `user`.
+  // Stylesheet and region spec are the cached half; contents and instruction change every call.
   const html = await complete(
     "edit-slot",
     SLOT_EDIT_PROMPT,
@@ -143,10 +118,7 @@ The change requested: ${instruction}`,
   return stripStyleTags(html, slotId);
 }
 
-/** Unwraps a `<style>...</style>` tag the model wrote around the stylesheet despite being
- * told to return the bare CSS. Same "the rule isn't self-enforcing" lesson as
- * `stripStyleTags`, applied to the one tag this call is actually allowed to produce the
- * *contents* of, just not the wrapper. */
+/** Unwraps a <style> tag the model put around the stylesheet despite the rule. */
 function unwrapStyleTag(css: string): string {
   const match = /^<style[^>]*>([\s\S]*)<\/style>$/i.exec(css.trim());
   if (!match) return css;
@@ -155,10 +127,8 @@ function unwrapStyleTag(css: string): string {
 }
 
 /**
- * Validates and normalises a rewritten frame against the app's regions. Content inside a
- * placeholder is stripped deterministically first (the same net `parsePlan` uses for the
- * original frame), then the region ids must match the plan's exactly — each once. Returns the
- * usable frame, or a reason it cannot be used; nothing is saved on a problem.
+ * Strips content inside placeholders, then requires the plan's region ids exactly once each.
+ * Returns the usable frame or the reason it cannot be used; nothing is saved on a problem.
  */
 export function checkShellEdit(
   plan: AppPlan,
@@ -192,9 +162,7 @@ export async function regenerateShell(
   plan: AppPlan,
   credential: ProviderCredential | null,
   signal?: AbortSignal,
-  // The generation id — see planApp's matching parameter.
   conversationId?: string,
-  // Phase 6 step 8 — see planApp's matching parameter.
   onUsage?: (usage: UsageInfo) => void,
 ): Promise<string> {
   // The stylesheet and region list are the stable, cacheable half; the current frame changes
@@ -224,14 +192,10 @@ export async function regenerateCss(
   plan: AppPlan,
   credential: ProviderCredential | null,
   signal?: AbortSignal,
-  // The generation id — see planApp's matching parameter.
   conversationId?: string,
-  // Phase 6 step 8 — see planApp's matching parameter.
   onUsage?: (usage: UsageInfo) => void,
 ): Promise<string> {
-  // The shell and region list are stable across repeated CSS edits in one session; the
-  // stylesheet itself is what's being rewritten (and differs after every successful call),
-  // so it stays in `user` alongside the instruction rather than in the cached half.
+  // Shell and region list are the cached half; the stylesheet changes after every edit, so it stays in user.
   const css = await complete(
     "edit-css",
     CSS_EDIT_PROMPT,

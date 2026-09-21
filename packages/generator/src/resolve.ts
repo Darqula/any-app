@@ -10,8 +10,10 @@ export interface Resolved {
   maxTokens: number;
   /** Everything that must never appear in an error message. */
   secrets: string[];
-  /** True when the platform's own key was used — i.e. this call costs us money. A BYOK call
-   *  is recorded too (Phase 6 step 8), but never counts against the account's monthly cap. */
+  /**
+   * True when the platform key was used, i.e. this call costs money. BYOK calls are recorded but
+   * never count against the monthly cap.
+   */
   usedPlatformCredential: boolean;
 }
 
@@ -37,11 +39,7 @@ export function build(credential: ProviderCredential): Provider {
     : createOpenAIProvider(credential);
 }
 
-/**
- * User credential first, platform credential second, a clear error third — and the error is
- * raised here, before any HTTP call, so a misconfigured role fails fast instead of failing
- * as a provider 401 halfway through a generation.
- */
+/** User credential, then platform credential, then a clear error raised before any HTTP call. */
 export function resolve(role: Role, userCredential: ProviderCredential | null): Resolved {
   const config = roleConfig(role);
   const usesUserCredential = userCredential?.provider === config.provider;

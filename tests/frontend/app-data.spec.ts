@@ -1,20 +1,7 @@
 /**
- * H1-H7 — generated-app data. H1-H4 and H6-H7 run against seeded rows (no model); H5 needs
- * one real edit round trip, the same session-credential-via-settings technique security.spec
- * .ts's B10 uses (the edit route is session-aware; a fresh generation is not — see
- * global-setup.ts's header comment and this task's report).
- *
- * H3/H4/H5/H6/H7 drive `window.anyapp.data` via `frame.evaluate()` rather than baking calls
- * into the seeded document's own `<script>` — deliberately, for H3/H5 in particular: the
- * document's own script re-runs on every fresh load (including the "reload" half of each of
- * those cases), so a create baked into it would double-write on reload and invalidate the
- * very persistence check being made. Evaluating from the test isolates "when this record was
- * created" from "when this app was loaded".
- *
- * H6/H7 filter one specific, already-reported production error (see
- * `isKnownStudioHomepageSyntaxBug` in doc-builder.ts) out of what they assert on — it fires
- * on every studio homepage load, unrelated to the data-backed app either case is actually
- * about.
+ * H1-H7: generated-app data. H1-H4, H6, H7 use seeded rows; H5 needs one real edit round trip using a session credential (edits are session-aware,
+ * a fresh generation is not: see global-setup.ts). Data calls run through frame.evaluate() rather than the document's own script, which would
+ * re-run on reload and double-write. H6/H7 filter one known studio-shell error (doc-builder.ts).
  */
 import { readFile } from "node:fs/promises";
 import { test, expect } from "@playwright/test";
@@ -150,9 +137,7 @@ test.describe("H — generated-app data", () => {
       fake.queueComplete({ text: "<p>edited region</p>" });
       await page.goto("/");
       await page.locator("#generation-list li", { hasText: prompt }).locator("button").click();
-      // Captured so the NEXT reload below can exclude this exact frame object — see
-      // waitForFrameBySrc's excludeFrame doc comment for why an uncaptured intermediate
-      // frame is exactly what lets the following reload race against itself.
+      // Kept so the next reload can exclude this frame: an uncaptured intermediate frame lets the reload race against itself (waitForFrameBySrc).
       const srcAfterFirstReload = await page.locator("#stage iframe").getAttribute("src");
       const frameAfterFirstReload = await waitForFrameBySrc(page, srcAfterFirstReload!);
       await page.fill('#edit-form input[name="instruction"]', "reword this");
@@ -160,9 +145,7 @@ test.describe("H — generated-app data", () => {
       await page.click('#edit-form button[type="submit"]');
       await expect(page.locator("#edit-result")).toContainText("Updated");
 
-      // Reload the app fresh — every edit re-renders the whole document through
-      // renderDocument, reproducing mintAppToken(id, secret) rather than looking a token
-      // up. If it didn't, this list() call would 401 instead of just coming back empty.
+      // Reload fresh: every edit re-renders the document, which must reproduce the same token; otherwise this list() call would 401.
       await page.locator("#generation-list li", { hasText: prompt }).locator("button").click();
       const frame2 = await waitForFrameBySrc(page, src, { excludeFrame: frameAfterFirstReload });
       const list = await frame2.evaluate(async () => {
@@ -194,9 +177,7 @@ test.describe("H — generated-app data", () => {
       status.textContent = "loading…";
       document.body.appendChild(status);
 
-      // The app's default write bucket starts full at 60 (packages/records/src/quota.ts) —
-      // 62 rapid creates guarantees at least one 429, with every call paired to its own
-      // resolve/reject handler so nothing here can produce an unhandled rejection.
+      // The write bucket starts at 60, so 62 rapid creates guarantee a 429. Each call has its own handler so nothing rejects unhandled.
       const calls: Promise<{ ok: boolean; message?: string }>[] = [];
       for (let i = 0; i < 62; i++) {
         calls.push(
@@ -242,11 +223,7 @@ test.describe("H — generated-app data", () => {
   });
 });
 
-// Ambient type used only inside `frame.evaluate(...)` callbacks above, where the real
-// `window.anyapp.data` shape (packages/protocol/src/data-runtime.ts) is not statically
-// known to this file's own TypeScript program (it is defined and attached at runtime,
-// inside the frame, by an inlined script). Declared once, at module scope, exactly the way
-// data-runtime.spec.ts casts through `window as unknown as {...}` for the same reason.
+// Ambient type for frame.evaluate() callbacks: window.anyapp.data (data-runtime.ts) is attached at runtime inside the frame.
 interface DataApiBrowser {
   create(collection: string, data: unknown): Promise<{ id: string }>;
   list(

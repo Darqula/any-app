@@ -1,34 +1,7 @@
 /**
- * A real HTTP server speaking both wire protocols the two provider adapters
- * (`packages/generator/src/providers/{openai,anthropic}.ts`) parse: OpenAI chat-completions
- * SSE on `POST /chat/completions`, and Anthropic Messages SSE on `POST /v1/messages` — plus
- * their non-streaming counterparts, since `planner`/`edit`/`router` all call `completeText`
- * and only `fill` streams.
- *
- * Built as **one scripted core with two serialisers** — the request handler and queue below
- * are format-agnostic; only the "OpenAI serialiser" / "Anthropic serialiser" sections (and
- * the per-format branches inside `makeStreamHandle`) know about wire shape — not two
- * servers. See `.docs/tests-backend.md`'s "harness decision" section for why that split
- * matters: the two formats differ in where the system prompt goes, in delta event shape, and
- * in how a refusal is signalled, which is exactly what the adapters exist to hide.
- *
- * See `tests/README.md` for the full interface writeup and a worked example of pointing
- * `startServers` at this fixture, and `tests/backend/fake-provider.test.ts` for a self-test
- * that runs the *real* adapters against it end to end — that is the bar this file is held
- * to, not "produces JSON that looks about right".
- *
- * ---
- *
- * A queued response is matched to an incoming request **in FIFO order**, regardless of
- * which endpoint it lands on — this is what "replay a scripted sequence" means in practice:
- * a test queues responses in the exact order it expects `planner` → `fill` → ... to call
- * out, and the fixture does not try to be cleverer than that (no header/body sniffing to
- * "guess" which queued script a request "should" get). A request landing with the queue
- * empty is treated as harness misuse, not silently ignored: it gets a clear 500 telling the
- * test author why, rather than hanging forever or producing a mystifying downstream failure.
- *
- * Every request is recorded in `requests()` — matched or not — so "replay made no provider
- * call" (backend C8) is assertable by checking `requestCount()` never moved.
+ * A real HTTP server speaking both provider wire formats (OpenAI chat-completions, Anthropic Messages), streaming and
+ * not: one scripted core with two serialisers. Queued responses are matched in FIFO order regardless of endpoint; an
+ * empty queue is a clear 500; every request is recorded in requests(). Contract: tests/README.md.
  */
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse, Server } from "node:http";
@@ -36,17 +9,13 @@ import type { Socket } from "node:net";
 import { randomUUID } from "node:crypto";
 import { findFreePort } from "./ports";
 
-// -----------------------------------------------------------------------------------------
-// Public types
-// -----------------------------------------------------------------------------------------
 
 export type WireFormat = "openai" | "anthropic";
 
-/** What ends a scripted response. Not every value is legal on every format — see the
- * per-format serialisers below, which throw a clear error rather than emit a wire shape
- * that does not exist on that provider (an OpenAI `finish_reason` of `"refusal"`, say).
- * `"length"` is the generic (OpenAI-spelled) name for a token-budget cutoff — the Anthropic
- * serialiser maps it to that format's own `"max_tokens"` stop reason (testing-review.md S14). */
+/**
+ * What ends a scripted response. Not every value exists on every format: serialisers throw rather than emit an impossible
+ * shape. "length" maps to Anthropic's max_tokens.
+ */
 export type FinishKind = "stop" | "content_filter" | "refusal" | "length";
 
 export interface StopDetailsSpec {
@@ -69,17 +38,11 @@ export interface ChunkSpec {
 }
 
 export interface StreamScript {
-  /** Auto-played chunks, sent in order as soon as the request connects. Omit entirely (or
-   * pass `[]`) to drive the stream manually via the returned handle's `emit()`/`finish()` —
-   * or `fake.emit()`, the frontend suite's chunk-driving requirement (see the README). */
+  /** Auto-played chunks. Omit (or []) to drive the stream by hand with the handle's emit()/finish() or fake.emit(). */
   chunks?: (string | ChunkSpec)[];
-  /** Sent once the (auto- or manually-driven) content is done. Default `"stop"`. Ignored —
-   * the handle is left open — when `chunks` is omitted, since a manually-driven stream
-   * finishes only when the caller calls `finish()`. */
+  /** Sent when the content is done (default "stop"). Ignored when chunks is omitted: a manual stream ends on finish(). */
   finish?: FinishKind;
-  /** Anthropic only, and only meaningful when `finish === "refusal"` — present vs. absent
-   * (not merely empty) is what G7's "with and without `stop_details`" distinguishes. Pass
-   * `undefined`/omit for "without"; pass a value for "with". */
+  /** Anthropic only, for finish "refusal": present vs absent (not empty) is what G7 distinguishes. */
   stopDetails?: StopDetailsSpec;
   usage?: UsageSpec;
   model?: string;
@@ -88,7 +51,6 @@ export interface StreamScript {
 export interface CompleteScript {
   /** Omit or `""` for the empty-response case. */
   text?: string;
-  /** Delay before the single JSON response is written. */
   delayMs?: number;
   finish?: FinishKind;
   stopDetails?: StopDetailsSpec;
@@ -103,20 +65,13 @@ export interface ErrorScript {
   body?: unknown;
   delayMs?: number;
   /**
-   * Sets the `x-should-retry` response header both SDKs check *before* falling back to
-   * their own status-code heuristic (confirmed in both SDKs' `shouldRetry()` — see
-   * `tests/README.md`). Defaults to `false`: without it, a scripted 500 gets silently
-   * retried up to twice by the SDK's own default `maxRetries`, which is almost never what a
-   * test wants (it turns one scripted error into up to three requests, non-deterministically
-   * delayed by the SDK's backoff). Pass `true` deliberately to test that retry behaviour
-   * itself.
+   * Sets x-should-retry. Defaults to false: otherwise the SDKs retry a scripted 500 up to twice, turning one error into
+   * three requests.
    */
   retryable?: boolean;
 }
 
-/** One entry in the scripted sequence. Queue with `queueStream` / `queueComplete` /
- * `queueError` — there is no bare `queue()`, so a script's kind is always evident at the
- * call site. */
+/** One scripted response. Queue with queueStream/queueComplete/queueError so the kind shows at the call site. */
 export type Script = StreamScript | CompleteScript | ErrorScript;
 
 export interface CapturedRequest {
@@ -124,18 +79,15 @@ export interface CapturedRequest {
   method: string;
   path: string;
   headers: Record<string, string>;
-  /** Parsed JSON request body — a `ChatCompletionCreateParams` shape (OpenAI) or a
-   * `MessageCreateParams` shape (Anthropic). Inspect this for system-prompt placement (G9)
-   * and for what was actually sent. */
+  /** Parsed request JSON, for checking system-prompt placement (G9) and what was actually sent. */
   body: any;
-  /** The resolved system-prompt text, extracted per format: the `role:"system"` message's
-   * `content` (OpenAI), or the joined text of the `system` blocks (Anthropic). `null` when
-   * absent. Convenience only — `body` above carries the real, unprocessed shape. */
+  /** The resolved system-prompt text per format, or null. Convenience: body has the raw shape. */
   system: string | null;
   receivedAt: number;
-  /** `true` once the client socket closed before this fake finished writing its response —
-   * backend C10 asserts on this, not just on the database row, because the row can end up
-   * correct while the upstream request keeps running. */
+  /**
+   * True once the client socket closed before the response finished. C10 asserts on it: the row can be right while the
+   * upstream call keeps running.
+   */
   aborted: boolean;
 }
 
@@ -144,10 +96,8 @@ export interface StreamHandle {
    * headers have gone out. */
   connected: Promise<CapturedRequest>;
   /**
-   * Sends one more piece of assistant text as a single delta/text_delta event, honoring the
-   * caller's exact chunk boundary — this is what lets a marker like `===SLOT foo===` be
-   * split anywhere, including mid-marker, by splitting the *text* across two `emit()` calls
-   * rather than the transport. Waits for `connected` first, then for `delayMs` (default 0).
+   * Sends one more delta at the caller's exact chunk boundary, so a marker can be split mid-way. Waits for `connected`,
+   * then delayMs.
    */
   emit(text: string, delayMs?: number): Promise<void>;
   /** Ends the stream with the given (or scripted) finish reason. Safe to call more than
@@ -164,10 +114,7 @@ export interface CompleteHandle {
 }
 
 export interface FakeProvider {
-  /** e.g. `http://127.0.0.1:54321` — the bare API prefix. Point `OPENAI_BASE_URL` and/or
-   * `ANTHROPIC_BASE_URL` (or the per-role `LLM_<ROLE>_*` equivalents) directly at this; each
-   * SDK appends its own endpoint path (`/chat/completions` or `/v1/messages`) — see the
-   * README. */
+  /** Bare API prefix for OPENAI_BASE_URL / ANTHROPIC_BASE_URL (or LLM_<ROLE>_*); each SDK appends its own path. */
   baseUrl: string;
   requestCount(): number;
   /** Every request received so far, matched or not, in arrival order. Returns a fresh copy
@@ -176,22 +123,13 @@ export interface FakeProvider {
   queueStream(script?: StreamScript): StreamHandle;
   queueComplete(script?: CompleteScript): CompleteHandle;
   queueError(script: ErrorScript): CompleteHandle;
-  /**
-   * Sugar for `await fake.emit(chunk)` — the frontend suite's explicit chunk-driving
-   * requirement, which no backend case surfaces on its own (see the README). Delegates to
-   * the most recently queued stream handle that is still open; throws a clear error if there
-   * isn't one. Prefer the handle returned by `queueStream()` directly when a test juggles
-   * more than one stream at a time.
-   */
+  /** Sugar for the newest open stream handle's emit(); throws if none. Prefer the handle when juggling several streams. */
   emit(text: string, delayMs?: number): Promise<void>;
   /** Destroys every open connection, ends any still-open streams, and closes the server.
    * Safe to call once; awaiting it more than once resolves immediately. */
   close(): Promise<void>;
 }
 
-// -----------------------------------------------------------------------------------------
-// Internal state
-// -----------------------------------------------------------------------------------------
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -215,9 +153,7 @@ type QueueEntry =
       script: StreamScript;
       resolveConnected: (r: CapturedRequest) => void;
       rejectConnected: (e: unknown) => void;
-      /** Resolved with the *real* handle (bound to the live `ServerResponse`) once the
-       * matching request actually lands — see `queueStream()`'s proxy below, which is
-       * handed back synchronously, long before that response object exists. */
+      /** The real handle, resolved when the matching request lands (queueStream returns a proxy before that). */
       handleReady: Deferred<StreamHandle>;
     }
   | {
@@ -282,9 +218,6 @@ function extractSystem(format: WireFormat, body: any): string | null {
   return null;
 }
 
-// -----------------------------------------------------------------------------------------
-// OpenAI serialiser
-// -----------------------------------------------------------------------------------------
 
 function sseFrame(event: string | null, data: unknown): string {
   const json = JSON.stringify(data);
@@ -366,9 +299,6 @@ function openaiErrorBody(status: number, body: unknown) {
   return { error: { message: `fake-provider: HTTP ${status}`, type: "fake_provider_error", param: null, code: null } };
 }
 
-// -----------------------------------------------------------------------------------------
-// Anthropic serialiser
-// -----------------------------------------------------------------------------------------
 
 function anthropicStopReason(finish: FinishKind): "end_turn" | "refusal" | "max_tokens" {
   if (finish === "content_filter") {
@@ -420,9 +350,6 @@ function anthropicErrorBody(status: number, body: unknown) {
   return { type: "error", error: { type: "fake_provider_error", message: `fake-provider: HTTP ${status}` } };
 }
 
-// -----------------------------------------------------------------------------------------
-// Server
-// -----------------------------------------------------------------------------------------
 
 export async function startFakeProvider(): Promise<FakeProvider> {
   const port = await findFreePort();
@@ -436,9 +363,7 @@ export async function startFakeProvider(): Promise<FakeProvider> {
    * still awaiting a handle's `done` promise instead of hanging the process. */
   const openStreamEnders = new Set<() => void>();
 
-  /** Per-response "did we finish cleanly" flag, keyed off the response object itself rather
-   * than monkey-patched onto it — `res.on("close")` fires both on a normal completion and on
-   * a premature client disconnect, and this is what tells the two apart. */
+  /** Tells a clean finish from a premature disconnect (res.on("close") fires for both) without patching the response. */
   const finishedFlags = new WeakMap<ServerResponse, { finished: boolean }>();
 
   function trackAbort(res: ServerResponse, captured: CapturedRequest): void {
@@ -526,13 +451,7 @@ export async function startFakeProvider(): Promise<FakeProvider> {
       resolveDone = resolve;
     });
 
-    // Anthropic's `message_start` is not optional and must precede every other event —
-    // including `message_delta`/`message_stop` on a response with zero content blocks (an
-    // empty response, or a refusal with no text). Sent eagerly, once, right here — unlike
-    // `content_block_start` below, which only happens if there is ever any actual content.
-    // Missing this is exactly the bug this fixture's own self-test caught: a scripted
-    // zero-chunk refusal produced `message_delta` with no preceding `message_start`, which
-    // the real Anthropic SDK rejects with "Unexpected event order".
+    // message_start is mandatory and must come first, even for a zero-content response, or the real SDK rejects the stream.
     if (format === "anthropic") {
       safeWrite(
         res,
@@ -651,7 +570,6 @@ export async function startFakeProvider(): Promise<FakeProvider> {
 
     const chunks = normalizeChunks(entry.script.chunks);
     if (entry.script.chunks !== undefined) {
-      // Auto-play: send every scripted chunk, honoring each one's own delay, then finish.
       for (const chunk of chunks) {
         await handle.emit(chunk.text, chunk.delayMs);
       }
@@ -750,7 +668,6 @@ export async function startFakeProvider(): Promise<FakeProvider> {
         return;
       }
 
-      // entry.kind === "stream" (and wantsStream is true)
       await handleStreamRequest(res, format, reqModel, captured, entry);
     })().catch((error) => {
       try {
@@ -785,9 +702,7 @@ export async function startFakeProvider(): Promise<FakeProvider> {
       handleReady: handleD,
     });
 
-    // The real handle (bound to the live `ServerResponse`) is only created once a matching
-    // request actually lands — see `handleStreamRequest`. This proxy is returned
-    // synchronously, before that response object exists, and every method just waits for it.
+    // Returned synchronously, before any response exists; every method waits for the real handle.
     const proxy: StreamHandle = {
       connected: connectedD.promise,
       emit: async (text, delayMs) => (await handleD.promise).emit(text, delayMs),

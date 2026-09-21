@@ -1,19 +1,12 @@
 /**
- * D10 — the inlined data runtime (`dataRuntime(token)`, packages/protocol/src/data-runtime.ts).
- * Same posture as swap-runtime.spec.ts: no generation, no database, no dependency on
- * global-setup.ts's servers. A throwaway `http` server plays the sandbox's `/data/*` API so
- * the real request headers/bodies can be inspected server-side, which is at least as direct
- * as intercepting with Playwright's own routing.
+ * D10: the inlined data runtime. No generation or database; a throwaway http server plays the sandbox's /data/* so request headers and
+ * bodies can be inspected.
  */
 import http from "node:http";
 import { test, expect } from "@playwright/test";
 import { dataRuntime } from "@any-app/protocol";
 
-// See swap-runtime.spec.ts's header comment: `window` below is the real `lib.dom` type now
-// (tests/frontend has its own tsconfig.json with DOM enabled, checked separately — see
-// testing-review.md H2), not a module-scoped `declare const window: any`. The custom
-// `anyapp.data.*` surface this file pokes at still needs `window as unknown as {...}` casts,
-// same as before.
+// `window` is the real lib.dom type (tests/frontend has its own tsconfig); the anyapp.data surface still needs casts.
 
 interface SeenRequest {
   method: string;

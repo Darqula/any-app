@@ -1,75 +1,19 @@
 /**
- * D1–D9 — the `swap()` runtime, unit-tested against a static page. No generation, no
- * database, and (deliberately) no dependency on `global-setup.ts`'s studio/sandbox servers —
- * see `.docs/tests-frontend.md`'s Section D framing. Each test spins up its own tiny,
- * throwaway `http` server so the page has a real origin (needed for D3's postMessage
- * sub-case and D4's external-script fetch) without touching anything under `apps/*`.
- *
- * ## A note on D3, read this before touching `rerunScripts` in swap-runtime.ts
- *
- * The doc comment on `SWAP_RUNTIME`/`rerunScripts` (and CLAUDE.md) frames the recreation
- * loop as existing to defeat "a <script> moved out of a <template> by DOM insertion never
- * executes." That is the right conclusion but, verified empirically against real Chromium
- * before writing this file (a throwaway probe that called the *actual* `swapRuntime` source
- * with `rerunScripts` stubbed to a no-op, both via `page.setContent` and via a real streamed
- * HTTP response shaped exactly like `internal.ts`'s output), it is not quite the right
- * mechanism for the case named literally in the spec:
- *
- *   - `swap(id)` pulling a `<script>` out of a `<template>`'s `.content` (the initial-fill
- *     path — `slotClose()` in packages/protocol/src/slots.ts emits exactly this) executes
- *     the script *even with the recreation loop removed*. A `<template>`'s content, when
- *     parsed as part of the normal document parse (streamed or not) rather than via
- *     `innerHTML`/`insertAdjacentHTML`/the fragment-parsing algorithm, never has its script's
- *     "already started" flag set — so a plain `replaceChildren(fragment)` move into a
- *     connected, scripting-enabled document is enough on its own. Confirmed both via
- *     `page.setContent` and via a real Node `http` server writing the response in two
- *     streamed chunks, matching `internal.ts`'s shape.
- *   - The OTHER call site sharing the same `fill()`/`rerunScripts` code — the postMessage
- *     `"slot-content"` handler, used by every edit (`holder.innerHTML = msg.html`) — is
- *     genuinely, exclusively dependent on the loop. `innerHTML` assignment runs the HTML
- *     fragment-parsing algorithm, which *does* mark any `<script>` inside as "already
- *     started" at parse time, permanently. Confirmed the same script never runs there with
- *     the loop stubbed out, real origin, real postMessage.
- *
- * So D3 below drives BOTH paths through the one running page, not just the one the spec
- * names first — a version of D3 that only exercised `swap()` on a `<template>` would go
- * green even with the loop deleted, and would not be the regression guard the docs describe
- * it as. The edit-path assertion is the one that actually depends on `rerunScripts`.
- *
- * ## S16 — the gap D3 left open, closed by D11
- *
- * D3/D4 only ever asserted that a slot script's effect *happened*, never how many times.
- * Both facts above are true simultaneously — `swap()`'s fragment already runs its scripts on
- * insertion, AND (until S16 was fixed) `fill()` called `rerunScripts` unconditionally
- * afterwards on that same path — so every `swap()`-filled slot script actually ran twice, and
- * D3 stayed green through it. `fill()` now takes an explicit `needsRerun` flag so `swap()` can
- * say "don't, insertion already ran it" while the postMessage path still says "do, my fragment
- * came from innerHTML and needs the flag reset". D11 below is the regression guard: exactly
- * one execution, asserted on both paths.
+ * D1-D11: the swap() runtime against a static page: no generation, no database, no global-setup servers; each test runs its own tiny http server
+ * for a real origin. D3 drives both script paths because swap() from a <template> runs scripts even without rerunScripts, while the postMessage
+ * edit path (innerHTML) depends on it entirely. D11 asserts each script runs
+ * exactly once on both paths.
  */
 import http from "node:http";
 import { test, expect } from "@playwright/test";
 import { swapRuntime } from "@any-app/protocol";
 
-// This file's `page.evaluate(...)` callbacks are real browser-context code (window,
-// document, ...), which needs the DOM lib to typecheck as anything but `any`. That used to
-// mean a module-scoped `declare const window: any` / `document: any` here instead of a real
-// `/// <reference lib="dom" />`: under the single `tsc --build` program that used to include
-// this file alongside every server-side one, DOM's ambient globals (e.g. `ReadableStream`)
-// leaked into every other file, including apps/sandbox/src/index.ts's unrelated use of the
-// Node global of the same name. Fixed properly (testing-review.md H2): `tests/frontend` now
-// has its own `tsconfig.json` with the DOM lib enabled, checked as a separate `tsc`
-// invocation (`npm run typecheck` runs both), so `window`/`document` below are the real
-// `lib.dom` types with no leak anywhere else. The custom globals these tests actually poke
-// at (`__initialRan`, `swap`, ...) still need `window as unknown as {...}` casts — that part
-// was never about `any` vs. real DOM types, `window`'s own static type does not know about
-// this project's runtime-injected properties either way.
+// The page.evaluate callbacks are browser code, so this needs the DOM lib; tests/frontend has its own tsconfig for that (H2) so DOM globals do not
+// leak into server files. The runtime's custom globals still need casts.
 
 type Handler = (req: http.IncomingMessage, res: http.ServerResponse) => void | Promise<void>;
 
-/** Starts a throwaway HTTP server on 127.0.0.1 and hands the handler a way to read back its
- * own final origin (needed because `swapRuntime` must be built with the exact origin the
- * page is served from, but the port isn't known until the server is already listening). */
+/** Starts a throwaway server and reports its origin, which swapRuntime needs before the port is known. */
 async function startServer(
   makeHandler: (getOrigin: () => string) => Handler,
 ): Promise<{ origin: string; close: () => Promise<void> }> {
@@ -90,9 +34,7 @@ async function startServer(
   };
 }
 
-/** Wraps body markup in a full document with the runtime inlined exactly like
- * `renderShellHead` does (a `<script>` in the head), so these tests exercise the runtime the
- * same way a generated document's shell does. */
+/** Wraps body markup in a document with the runtime inlined as renderShellHead does. */
 function pageHtml(origin: string, body: string): string {
   return `<!doctype html>
 <html>
@@ -162,15 +104,11 @@ test.describe("D — the swap() runtime", () => {
     try {
       await page.goto(server.origin + "/");
 
-      // Sub-case 1: the literal case named in the spec — swap() pulling a <script> straight
-      // out of a <template>. See this file's header comment: this alone would pass even
-      // with the recreation loop deleted, so it is not sufficient on its own.
+      // Sub-case 1: swap() pulling a script out of a <template>. Passes even without the recreation loop, so it is not enough alone.
       await page.evaluate(() => (window as unknown as { swap(id: string): void }).swap("x"));
       expect(await page.evaluate(() => (window as unknown as { __initialRan?: boolean }).__initialRan)).toBe(true);
 
-      // Sub-case 2: the edit path. A real edit has no matching <template> — it arrives as a
-      // postMessage "slot-content" payload and lands via `holder.innerHTML = msg.html`
-      // (swap-runtime.ts). This is the sub-case that genuinely depends on rerunScripts.
+      // Sub-case 2: the edit path (postMessage slot-content, innerHTML). This is the one that depends on rerunScripts.
       await page.evaluate((appOrigin) => {
         window.postMessage(
           {
@@ -215,13 +153,7 @@ test.describe("D — the swap() runtime", () => {
     try {
       await page.goto(server.origin + "/");
 
-      // Sub-case 1: the literal case named in the spec — swap() pulling a src-script straight
-      // out of a <template>. Per S6/S16 (testing-review.md), `fill()` now passes
-      // `needsRerun: false` on this path, so this script is never re-created — it is the
-      // SAME element the document parser produced, moved into the slot as-is by
-      // `replaceChildren`, and it fetches/executes on that insertion alone. The attribute
-      // survives trivially (nothing ever touched the element), which is a different claim
-      // than sub-case 2's.
+      // Sub-case 1: a src-script moved out of a <template>. fill() passes needsRerun:false, so the same element executes on insertion.
       await page.evaluate(() => (window as unknown as { swap(id: string): void }).swap("x"));
       await expect
         .poll(() => page.evaluate(() => (window as unknown as { __extRan?: boolean }).__extRan))
@@ -232,11 +164,7 @@ test.describe("D — the swap() runtime", () => {
         .getAttribute("data-marker");
       expect(marker).toBe("carried-over");
 
-      // Sub-case 2: the edit path — a postMessage "slot-content" payload carrying a src-script,
-      // landing via `holder.innerHTML = msg.html`. `fill()` passes `needsRerun: true` here, so
-      // `rerunScripts` genuinely re-creates the element (a fresh <script> with the same
-      // attributes copied over) to reset the "already started" flag innerHTML set — this is
-      // the sub-case that actually proves attribute-copying happens, mirroring D3's sub-case 2.
+      // Sub-case 2: the edit path: needsRerun:true re-creates the script with its attributes copied, proving attribute-copying.
       await page.evaluate((appOrigin) => {
         window.postMessage(
           {
@@ -295,9 +223,8 @@ test.describe("D — the swap() runtime", () => {
   });
 
   test("D6 — two slots swapped in reverse document order both land in the right place", async ({ page }) => {
-    // Regression guard for out-of-order landing (Phase 4's parallel fan-out) — the only
-    // browser-side coverage of it now that LLM_FILL_MODE defaults to sequential. Slot "a"
-    // comes first in the DOM/document, but swap("b") is called before swap("a").
+    // Out-of-order landing (parallel fill): slot a is first in the document but swap("b") runs before swap("a"). The only browser-side coverage
+    // of this now that fill defaults to sequential.
     const server = await startServer((getOrigin) => (req, res) => {
       res.setHeader("Content-Type", "text/html; charset=utf-8");
       res.end(
@@ -398,12 +325,7 @@ test.describe("D — the swap() runtime", () => {
   });
 
   test("D10 — slot:ready's detail.element is a live reference the shell can query into (S15)", async ({ page }) => {
-    // Regression guard for S15 (testing-review.md): the model's natural instinct is
-    // `e.detail.element.querySelector(...)`, not resolving `e.detail.id` back into an
-    // element itself. This drives that exact pattern end to end in a real browser, on both
-    // dispatch paths that go through `fill()` — the initial swap() from a <template> AND the
-    // postMessage "slot-content" edit path — and asserts the queried content is real, not
-    // just that `detail.element` is truthy.
+    // Shells reach for e.detail.element.querySelector(...). Checks both dispatch paths and that the queried content is real, not just detail.element truthy.
     const server = await startServer((getOrigin) => (req, res) => {
       res.setHeader("Content-Type", "text/html; charset=utf-8");
       res.end(
@@ -457,11 +379,7 @@ test.describe("D — the swap() runtime", () => {
   });
 
   test("D11 — a slot script executes exactly once, not twice (S16), on both swap() and a postMessage edit", async ({ page }) => {
-    // Regression guard for S16 (testing-review.md): D3 only ever asserted a script's effect
-    // *happened*, never how many times, and that gap is exactly how a slot script running
-    // twice on every swap()-filled slot shipped undetected (Chart.js's "Canvas is already in
-    // use" was the only case load-bearing enough to surface as an error; everything else —
-    // listeners bound twice, data writes issued twice, timers started twice — stayed silent).
+    // Counts executions: a script running twice is loud only in Chart.js ("Canvas is already in use"); double listeners, writes and timers are silent.
     const server = await startServer((getOrigin) => (req, res) => {
       res.setHeader("Content-Type", "text/html; charset=utf-8");
       res.end(
@@ -475,20 +393,13 @@ test.describe("D — the swap() runtime", () => {
     try {
       await page.goto(server.origin + "/");
 
-      // Sub-case 1: initial fill via swap() — the path S16 found broken. `fill()` must pass
-      // `needsRerun: false` here: the document-parsed template's script already executed on
-      // `replaceChildren`, and calling `rerunScripts` anyway is the second execution.
+      // Sub-case 1: initial fill via swap(). needsRerun must be false: the document-parsed script already ran on insertion.
       await page.evaluate(() => (window as unknown as { swap(id: string): void }).swap("x"));
-      // No timers or network are involved on this path, but wait a beat anyway so a
-      // regression that reintroduces an async double-run would not slip past a synchronous
-      // read.
+      // No timers or network here, but wait a beat so an async double run cannot slip past a synchronous read.
       await page.waitForTimeout(200);
       expect(await page.evaluate(() => (window as unknown as { __swapRuns?: number }).__swapRuns)).toBe(1);
 
-      // Sub-case 2: the edit path — a postMessage "slot-content" payload. `fill()` must pass
-      // `needsRerun: true` here: innerHTML's fragment-parsing algorithm marks the script
-      // "already started", so without rerunScripts it would never run at all; asserting
-      // exactly 1 (not >=1) also catches a regression that made this path double-run too.
+      // Sub-case 2: the edit path. needsRerun must be true (innerHTML marks the script started); exactly 1, not >=1, also catches a double run.
       await page.evaluate((appOrigin) => {
         window.postMessage(
           {

@@ -1,8 +1,6 @@
 /**
- * Backend cases E1–E7 (`.docs/tests-backend.md` section E) — the streaming-transport
- * invariants that make the product's core property (content visible from byte one) actually
- * hold, and that a plausible-looking refactor (an added middleware, a "helpful" buffering
- * layer) can silently break without any functional test noticing.
+ * Cases E1-E7: the streaming-transport invariants (content visible from byte one) that a buffering middleware
+ * could break without any functional test noticing.
  */
 import { test } from "node:test";
 import type { TestContext } from "node:test";
@@ -90,7 +88,6 @@ async function queueHappyPath(fake: FakeProvider): Promise<void> {
   fake.queueStream({ chunks: [FILL_TEXT], finish: "stop" });
 }
 
-// -----------------------------------------------------------------------------------------
 
 test("E1 — first bytes of any generated response: <!doctype html>, nothing before it", async (t) => {
   const { servers, fake } = await setup(t);
@@ -124,26 +121,9 @@ test("E3 — response headers: Transfer-Encoding chunked, no Content-Length", as
 });
 
 /**
- * E4 — verified two ways, deliberately, before trusting it.
- *
- * 1. Temporarily commented out `internal.ts`'s `res.flushHeaders()` call and re-ran this
- *    test: it still passed. In this exact code, `res.write(DOCTYPE_AND_PADDING)` happens on
- *    the very next line with no `await` between them, so Node sends headers on that first
- *    write regardless of whether `flushHeaders()` ran first — the explicit call is currently
- *    redundant for time-to-first-byte, not load-bearing for it. So this test does not, in
- *    fact, detect that one line being deleted, despite the case's own name.
- * 2. Temporarily added a crude buffering middleware to `apps/studio/src/index.ts` (holds
- *    back a response's first few `res.write()` calls, then flushes them together — a rough
- *    stand-in for what `compression` or any similar wrapper would do) and re-ran this test:
- *    it correctly went red (`shell arrived at 2142ms`, instead of the required <500ms).
- *
- * So the property this test actually enforces — and the one worth having — is "the response
- * genuinely streams progressively, unbuffered, all the way to the client," which is exactly
- * what breaks if compression (or any similar wrapper) is ever added, regardless of whether
- * that regression happens to touch the `flushHeaders()` line itself. Kept the case's original
- * name/id since that is the scenario `tests-backend.md` describes, but this is why the
- * assertions below target *shell/content arrival timing* rather than literally asserting
- * `flushHeaders()` was called.
+ * E4 — verified two ways before trusting it: deleting res.flushHeaders() still passes (the next write flushes headers anyway), but adding a
+ * buffering middleware turned it red (shell at 2142ms vs the <500ms required). So it enforces "the response streams unbuffered to the client"
+ * (what compression would break), by asserting shell/content arrival time, not that flushHeaders() ran.
  */
 test("E4 — headers and the shell arrive well before a fake that delays its first fill chunk ~2s (flushHeaders() regression guard)", async (t) => {
   const { servers, fake } = await setup(t);
@@ -231,9 +211,7 @@ test("E6 — the shell arrives before the fill call starts (checked against the 
   const requests = fake.requests();
   assert.equal(requests.length, 2, "planner then fill");
   const fillRequestAt = requests[1]!.receivedAt;
-  // Same process, same clock (the fake provider is an in-process HTTP server — see
-  // fake-provider.ts) — Date.now() from both sides is directly comparable, no wall-clock
-  // race needed.
+  // Same process, same clock as the in-process fake, so Date.now() from both sides is comparable.
   assert.ok(
     shellObservedAt! <= fillRequestAt,
     `the shell was observed client-side at ${shellObservedAt}, but the fill request only reached ` +
@@ -249,8 +227,7 @@ test("E7 — slot templates appear after the shell script (swap() must be define
   const res = await fetch(streamUrl(servers, id, grant), { headers: authHeaders() });
   const body = await res.text();
 
-  // A stable token from inside swapRuntime()'s own source (packages/protocol/src/swap-runtime.ts)
-  // — present verbatim in the emitted <script>, not just in that file's comments.
+  // A token from the emitted swap runtime's source, present in the <script>, not merely in comments.
   const runtimeIndex = body.indexOf("function rerunScripts");
   const firstTemplateIndex = body.indexOf('<template id="c-');
   assert.notEqual(runtimeIndex, -1, "the swap runtime script must be present in the document");

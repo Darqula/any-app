@@ -1,14 +1,6 @@
 /**
- * Internal helper shared by db.ts (the one-shot `migrate-cli` child) and servers.ts (the
- * long-running studio/sandbox children). Not part of the public harness contract described
- * in the README, but exported anyway in case a later agent needs to spawn something else
- * under `tsx` the same way.
- *
- * Every child process spawned here gets a *minimal* inherited environment (just enough for
- * Windows/Node/tsx to run at all) plus whatever the caller passes in `env`. The developer's
- * real `.env` — API keys included — is never implicitly forwarded; every child sees only
- * what it is explicitly given. See the README's "Env-var precedence" section for why this
- * is paired with a scratch-directory `.env` file rather than relied on alone.
+ * Shared by db.ts and servers.ts. Children get a minimal environment plus the caller's `env`: the developer's real
+ * .env is never forwarded.
  */
 import { spawn, execSync } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
@@ -16,14 +8,9 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 
-/** Absolute path to tsx's CLI entry (`node_modules/tsx/dist/cli.mjs`), resolved once. */
 export const TSX_CLI = require.resolve("tsx/cli");
 
-/**
- * The handful of OS-level variables a spawned Node process needs to function on Windows
- * (or POSIX) at all. Nothing app-specific lives here — DATABASE_URL, LLM_*, credentials,
- * etc. all come from the caller's explicit `env`.
- */
+/** The OS-level variables a spawned Node process needs to run at all; nothing app-specific. */
 function hostEnv(): NodeJS.ProcessEnv {
   const keep = [
     "PATH",
@@ -58,7 +45,6 @@ export interface SpawnedTsx {
   logs: string[];
 }
 
-/** Spawns `<entry>` under tsx as a long-running child process (studio, sandbox). */
 export function spawnTsx(
   entry: string,
   opts: { cwd: string; env: NodeJS.ProcessEnv },
@@ -68,12 +54,7 @@ export function spawnTsx(
     env: { ...hostEnv(), ...opts.env },
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
-    // POSIX only (testing-review.md H1): makes this child a process-group leader, so
-    // killTree's `process.kill(-pid, "SIGKILL")` has a real group to target instead of
-    // throwing ESRCH and falling back to killing only the tsx wrapper — which re-execs
-    // itself as a *separate* OS process (see killTree's own doc comment), orphaning the
-    // real server. `detached` is meaningless to the Windows branch below (it uses
-    // `taskkill /T` instead, which walks the tree regardless), so this is POSIX-only.
+    // POSIX only: makes the child a process-group leader so killTree can kill the whole group.
     detached: process.platform !== "win32",
   });
   const logs: string[] = [];
@@ -86,10 +67,7 @@ export function spawnTsx(
   return { child, logs };
 }
 
-/**
- * Runs `<entry>` under tsx to completion (the `migrate-cli.ts` shape: does its work, then
- * lets the process exit naturally). Rejects with the captured output on a non-zero exit.
- */
+/** Runs <entry> under tsx to completion; rejects with the captured output on a non-zero exit. */
 export function runTsxScript(entry: string, opts: { cwd: string; env: NodeJS.ProcessEnv }): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [TSX_CLI, entry], {
@@ -109,13 +87,7 @@ export function runTsxScript(entry: string, opts: { cwd: string; env: NodeJS.Pro
   });
 }
 
-/**
- * Kills a spawned tsx process **and its child** (tsx re-execs itself with `--import
- * loader.mjs` as a *separate* OS process — confirmed empirically on this machine: the pid
- * returned by `spawn()` is the wrapper, not the one actually running the entry file).
- * `child.kill()` alone only kills the wrapper and orphans the real process, so this always
- * kills the whole tree.
- */
+/** Kills the tsx wrapper and the real process it re-execs as; child.kill() alone would orphan the server. */
 export async function killTree(pid: number | undefined): Promise<void> {
   if (!pid) return;
   if (process.platform === "win32") {

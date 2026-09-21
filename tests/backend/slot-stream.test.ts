@@ -1,9 +1,4 @@
-/**
- * A6 — createSlotStream.
- * Spec: .docs/tests-backend.md section A6. Target: packages/generator/src/slot-stream.ts.
- *
- * createSlotStream IS re-exported from @any-app/generator's index.ts.
- */
+/** A6: createSlotStream. Re-exported by the package index. */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createSlotStream } from "@any-app/generator";
@@ -100,16 +95,8 @@ test("A6.10 — slot id in the swap call is JSON-escaped, so a hyphenated id is 
 });
 
 test("A6.11 — content containing the literal </template>: documents current (broken) behaviour", () => {
-  // Accepted as a known limitation in the Phase 2 plan: createSlotStream forwards slot
-  // content verbatim with no escaping. If the model's output happens to contain the literal
-  // string "</template>", the emitted HTML contains it unescaped — a real browser parsing
-  // this stream would close the <template> element early, right there in the content,
-  // rather than at the intended slotClose() call. Everything after that point (the rest of
-  // the slot's content, the real closing </template>, and the <script>swap(...)</script>)
-  // would then be parsed as ordinary top-level document content instead of inert template
-  // contents, which is not what the streaming design intends. This test pins the current
-  // string-level output — it does not simulate an HTML parser — and exists so a future
-  // change to this behaviour is a deliberate, visible diff rather than an accidental one.
+  // Known limitation: slot content is forwarded unescaped, so a literal "</template>" would close the template early in a
+  // browser. Pins the current string output (no HTML parser) so a change is a visible diff.
   const { out, content } = run(["===SLOT foo===\nsome content with a literal </template> tag embedded\n"]);
 
   assert.equal(

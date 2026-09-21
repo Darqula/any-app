@@ -1,26 +1,7 @@
 /**
- * S14 follow-up — `routeEdit` must not let `TruncationError` escape as a raw failure.
- * Target: packages/generator/src/edit-router.ts's `routeEdit`.
- *
- * Before this fix, a truncated router reply threw `TruncationError` straight out of
- * `provider.completeText`, bypassing `routeEdit`'s own parse-and-throw-RoutingError logic —
- * so `apps/studio/src/edits.ts`'s `RoutingError` catch (the friendly "I could not tell which
- * part to change — pick one below" path) never fired, and the request fell through to the
- * generic 500 branch instead. The fix catches `TruncationError` from routeEdit's own call
- * only, logs a diagnostic that says "truncated" (not the generic RoutingError parse-failure
- * shape), and re-throws as `RoutingError` — semantically honest, since a truncated router
- * reply genuinely means "could not determine the target".
- *
- * Unit-level cases exercise `routeEdit` directly against the fake provider (same fixture and
- * `withEnv` pattern as provider-adapters.test.ts's S14 cases and parallel-fill.test.ts).
- * The route-level case drives the real HTTP endpoint end to end to confirm the user actually
- * gets the friendly html, not a 500, through apps/studio/src/edits.ts.
- *
- * Also covers the sibling gap: `RefusalError("empty response", "empty")` — hidden reasoning
- * consuming the whole budget before any visible output — gets the same RoutingError treatment
- * as TruncationError, for the same reason. A `RefusalError` with `kind: "declined"`
- * (content_filter, an explicit refusal) must NOT get that treatment; it has to propagate so
- * the caller sees a real decline, not "I couldn't tell which part to change."
+ * routeEdit must not let a TruncationError, or an "empty" RefusalError, escape as a raw failure. Both become RoutingError,
+ * which edits.ts turns into the friendly "pick one below" path instead of a generic 500. A "declined" RefusalError must still propagate.
+ * Unit cases use the fake provider; the route-level case checks the user gets the friendly HTML.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -88,9 +69,6 @@ function withConsoleWarn(fn: () => Promise<void>): Promise<string[]> {
     });
 }
 
-// -----------------------------------------------------------------------------------------
-// Unit-level: routeEdit against the fake provider directly
-// -----------------------------------------------------------------------------------------
 
 test("a truncated router reply surfaces as RoutingError, not TruncationError", async (t) => {
   const fake = await startFakeProvider();
@@ -231,17 +209,8 @@ test("a normal, complete router response is unaffected", async (t) => {
   });
 });
 
-// -----------------------------------------------------------------------------------------
-// Route-level: the real HTTP endpoint must return the friendly html, not a raw 500
-// -----------------------------------------------------------------------------------------
 
-/**
- * `sessionId` (Phase 6): the row's `session_id` must match the anonymous session that will
- * later POST to `/generations/:id/edits`, since that route is owner-scoped
- * (`getFilledApp(id, owner)`) — an editor whose session doesn't match the row's owner gets
- * the same 404 a nonexistent row would. Null keeps the row ownerless for cases that don't
- * exercise the real HTTP route at all.
- */
+/** sessionId: edits are owner-scoped, so the row must belong to the anonymous session that will POST the edit; null leaves it ownerless. */
 async function insertCompleteGeneration(
   databaseUrl: string,
   prompt: string,
@@ -289,9 +258,7 @@ test("route: a truncated router call ends in the friendly routing-failure html, 
   });
   t.after(() => servers.stop());
 
-  // Establish the anonymous session that will make the edit request FIRST, so the row can be
-  // seeded as that same session's own — editing is owner-scoped (getFilledApp), and this
-  // route's session cookie doubles as the session id (session.ts's `COOKIE=id` format).
+  // Establish the anonymous session first, then seed the row as its own (the cookie value is the session id).
   const homeRes = await fetch(`${servers.studioOrigin}/`);
   const setCookie = homeRes.headers.get("set-cookie");
   assert.ok(setCookie, "expected the home page to set an anonymous session cookie");
@@ -299,7 +266,7 @@ test("route: a truncated router call ends in the friendly routing-failure html, 
   const sessionId = cookie.split("=")[1]!;
 
   const id = await insertCompleteGeneration(scratch.databaseUrl, "an app with a hero banner", sessionId);
-  fake.queueComplete({ text: "sl", finish: "length" }); // the router call, cut off
+  fake.queueComplete({ text: "sl", finish: "length" });
 
   const res = await fetch(`${servers.studioOrigin}/generations/${id}/edits`, {
     method: "POST",
@@ -315,12 +282,8 @@ test("route: a truncated router call ends in the friendly routing-failure html, 
   );
 });
 
-// -----------------------------------------------------------------------------------------
-// The routing rule itself. The model's decision cannot be tested with a fake provider, but the
-// wording that makes it can be pinned: the 2026-09-21 regression ("Add a dark theme switch"
-// routed to css, which then styled a switch that did not exist) came from a prompt that told
-// the model to prefer css whenever a request could be either.
-// -----------------------------------------------------------------------------------------
+// The routing rule itself cannot be tested with a fake provider, but its wording can: the "Add a dark theme switch" misroute came
+// from a prompt that preferred css on a tie.
 
 test("the router prompt sends new controls/behaviour to a region and no longer says to prefer css on a tie", async (t) => {
   const fake = await startFakeProvider();

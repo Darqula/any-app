@@ -112,8 +112,7 @@ Three rules follow:
   a `Referer` header.
 - Visibility gates the document, and the document carries the app's data token — so gating the
   document gates the data. That is why publishing a link is a data decision as much as a
-  viewing one, and why a shared app's data token must be scoped read-only for non-owners (see
-  [`impl-phase-6.md`](./impl-phase-6.md) step 7).
+  viewing one, and why a shared app's data token must be scoped read-only for non-owners.
 
 ### Dependency rules
 

@@ -12,8 +12,7 @@ export interface UsageEvent {
   billable: boolean;
 }
 
-/** Batches every usage event for one generation into a single round trip. Empty input is a
- *  no-op — callers collect events for a whole generation and write them once at the end. */
+/** One round trip per generation. Empty input is a no-op. */
 export async function recordUsage(events: UsageEvent[]): Promise<void> {
   if (events.length === 0) return;
   const values: string[] = [];
@@ -44,16 +43,8 @@ export async function recordUsage(events: UsageEvent[]): Promise<void> {
 }
 
 /**
- * Sum of billable (prompt + completion) tokens this calendar month.
- * `date_trunc('month', now())` rather than a rolling 30 days so a user's allowance resets on
- * a date they can predict.
- *
- * Deliberately `prompt_tokens + completion_tokens`, NOT discounted by `cached_tokens`:
- * a cached prompt token is still inside `prompt_tokens` at
- * full weight, by design — this counts against the cap as real API usage, because it still
- * is (the provider still serves the request; caching only changes what WE pay, per
- * open-problems.md, not what the token accounted for). `cached_tokens` exists on the row as
- * a diagnostic/cost-accounting field for later, not as an input to this cap.
+ * Billable prompt + completion tokens this calendar month (a predictable reset date).
+ * Not discounted by cached_tokens: a cached token is still real API usage.
  */
 export async function billableTokensThisMonth(userId: string): Promise<number> {
   const { rows } = await pool.query<{ total: string }>(
