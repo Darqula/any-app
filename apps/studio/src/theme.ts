@@ -27,6 +27,7 @@ export const THEME_CSS = `
     --btn-disabled: #b9c4e8;
     --ok: #0a7d2c;
     --bad: #b00020;
+    --danger-fg: #ffffff;
     --warn-bg: #fff8e6;
     --warn-text: #7a5b00;
     --warn-border: #f3e3ad;
@@ -35,7 +36,7 @@ export const THEME_CSS = `
     --status-complete-fg: #0a7d2c;
     --status-streaming-bg: #eef1fd;
     --status-streaming-fg: #3b5bdb;
-    --status-pending-bg: #f1f3f8;
+    --status-pending-bg: #e3e7ef;
     --status-pending-fg: #64707f;
     --status-failed-bg: #fdeaea;
     --status-failed-fg: #b00020;
@@ -64,6 +65,7 @@ export const THEME_CSS = `
       --btn-disabled: #3a4258;
       --ok: #5fd18a;
       --bad: #ff8a94;
+      --danger-fg: #1a0a0c;
       --warn-bg: #2a2413;
       --warn-text: #f1d48a;
       --warn-border: #4a3f1c;
@@ -72,7 +74,7 @@ export const THEME_CSS = `
       --status-complete-fg: #5fd18a;
       --status-streaming-bg: rgba(124, 147, 245, .16);
       --status-streaming-fg: #9db0fa;
-      --status-pending-bg: #1e222b;
+      --status-pending-bg: #2a2f3b;
       --status-pending-fg: #9aa3b2;
       --status-failed-bg: rgba(255, 138, 148, .14);
       --status-failed-fg: #ff8a94;

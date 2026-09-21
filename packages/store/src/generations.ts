@@ -227,3 +227,59 @@ export async function forkGeneration(
   await pool.query(`update generations set document = $1 where id = $2`, [document, fork.id]);
   return { ...fork, document };
 }
+
+export type DeleteResult = "deleted" | "missing" | "busy";
+
+/** A `streaming` row this old is assumed to belong to a crashed process (see
+ *  `claimForGeneration`'s note: such rows are never reclaimed), so it stays deletable —
+ *  otherwise a crash would leave an app the owner can never remove. Longer than any real
+ *  generation, which is bounded by the provider timeouts. */
+const STALE_STREAMING_INTERVAL = "15 minutes";
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Deletes an app and its `records` rows, for its owner only. "missing" covers both "no such
+ * app" and "not yours", like every other owner-scoped lookup here.
+ *
+ * A generation that is actively streaming is refused ("busy"), not deleted. Its usage events
+ * are only written at the very end (`recordUsage` in internal.ts) and carry a
+ * `generation_id` foreign key: delete the row mid-stream and that insert fails, so a user
+ * could start a generation, delete it, and have its tokens never count against the monthly
+ * cap. `usage_events` and `forked_from` both use `on delete set null`, so a completed
+ * generation's accounting and its remixes survive the delete.
+ *
+ * `records` has no foreign key to `generations` (the sandbox's restricted role can touch
+ * that table and nothing else), so its rows are removed explicitly, in the same transaction.
+ */
+export async function deleteGeneration(id: string, owner: Owner): Promise<DeleteResult> {
+  if (!UUID_RE.test(id)) return "missing";
+  const { sql, param } = ownerFilter(owner, 2);
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const { rows } = await client.query<{ status: GenerationStatus; stale: boolean }>(
+      `select status, updated_at < now() - interval '${STALE_STREAMING_INTERVAL}' as stale
+       from generations where id = $1 and ${sql} for update`,
+      [id, param],
+    );
+    const row = rows[0];
+    if (!row) {
+      await client.query("rollback");
+      return "missing";
+    }
+    if (row.status === "streaming" && !row.stale) {
+      await client.query("rollback");
+      return "busy";
+    }
+    await client.query(`delete from records where app_id = $1`, [id]);
+    await client.query(`delete from generations where id = $1`, [id]);
+    await client.query("commit");
+    return "deleted";
+  } catch (error) {
+    await client.query("rollback").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}

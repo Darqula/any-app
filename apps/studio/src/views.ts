@@ -473,6 +473,11 @@ export function generationList(generations: Generation[]): string {
                 hx-target="#stage"
                 hx-swap="innerHTML">${escapeHtml(g.prompt.slice(0, 80))}</button>
         <span class="status status-${g.status}">${g.status}</span>
+        <input type="button" class="app-delete" value="×" title="Delete this app" aria-label="Delete this app"
+               hx-delete="/generations/${g.id}"
+               hx-target="#edit-result"
+               hx-swap="innerHTML"
+               hx-confirm="Delete this app?">
       </li>`,
     )
     .join("");
@@ -523,7 +528,27 @@ ${HTMX_CONFIG_META}
     padding: 9px 10px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .app-list .empty { padding: 9px 10px; margin: 0; }
-  .status { font-size: 10px; font-weight: 600; letter-spacing: .03em; padding: 2px 8px; border-radius: 999px; flex: none; }
+  /* An <input type="button">, not a <button>: the frontend suite finds a row's open-app control
+     as the only "button" inside its li, which a second <button> in the row would make ambiguous. */
+  /* Collapsed to zero width (and pulled over the flex gap with a negative margin) until the row
+     is hovered, so it takes no room at rest; expanding it pushes the badge left. Keyboard users
+     get it via :focus-visible only — NOT :focus-within, which a mouse click on the row's name
+     button also satisfies, leaving the cross stuck open after the pointer has left. */
+  .app-list .app-delete {
+    flex: none; width: 0; height: 22px; margin-left: -10px; padding: 0; border: 0; border-radius: 6px;
+    overflow: hidden; background: transparent; color: var(--faint); font-size: 16px; line-height: 1;
+    opacity: 0; pointer-events: none;
+    transition: width .15s ease, margin-left .15s ease, opacity .15s ease, background .12s, color .12s;
+  }
+  .app-list li:hover .app-delete, .app-list li:has(:focus-visible) .app-delete {
+    width: 22px; margin-left: 0; opacity: 1; pointer-events: auto;
+  }
+  .app-list .app-delete:hover, .app-list .app-delete:focus-visible { background: var(--status-failed-bg); color: var(--bad); }
+  @media (hover: none) { .app-list .app-delete { width: 22px; margin-left: 0; opacity: 1; pointer-events: auto; } }
+  .status {
+    flex: none; width: 76px; text-align: center; font-size: 10px; font-weight: 600; letter-spacing: .03em;
+    padding: 2px 0; border-radius: 999px;
+  }
   .status-complete { background: var(--status-complete-bg); color: var(--status-complete-fg); }
   .status-streaming { background: var(--status-streaming-bg); color: var(--status-streaming-fg); }
   .status-pending { background: var(--status-pending-bg); color: var(--status-pending-fg); }
@@ -578,6 +603,31 @@ ${HTMX_CONFIG_META}
   #edit-result > .edit-problem { background: var(--toast-bad-bg); color: var(--toast-bad-fg); }
   @keyframes toast-out { 0%, 80% { opacity: 1; } 100% { opacity: 0; } }
 
+  /* Delete confirmation (replaces the browser's native confirm, via htmx:confirm below). */
+  #confirm-dialog {
+    border: 1px solid var(--border); border-radius: 16px; padding: 0; width: min(420px, calc(100vw - 32px));
+    background: var(--panel); color: var(--text); box-shadow: var(--shadow);
+  }
+  #confirm-dialog::backdrop { background: rgba(10, 12, 18, .5); backdrop-filter: blur(2px); }
+  #confirm-dialog[open] { animation: dialog-in .16s ease; }
+  @keyframes dialog-in { from { opacity: 0; transform: translateY(6px) scale(.98); } }
+  #confirm-dialog form { display: block; margin: 0; padding: 22px 22px 18px; }
+  #confirm-dialog h2 { margin: 0 0 6px; font-size: 16px; }
+  #confirm-dialog .confirm-name {
+    margin: 0 0 8px; padding: 6px 10px; border-radius: 8px; background: var(--hover);
+    font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #confirm-dialog .confirm-body { margin: 0; color: var(--muted); }
+  #confirm-dialog .confirm-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+  #confirm-dialog .confirm-actions button {
+    height: 36px; padding: 0 16px; border-radius: 10px; font-weight: 600;
+    border: 1px solid var(--border); background: var(--panel); color: var(--text);
+  }
+  #confirm-dialog .confirm-actions button:hover { background: var(--hover); }
+  #confirm-dialog .confirm-actions .confirm-danger { background: var(--bad); border-color: transparent; color: var(--danger-fg); }
+  #confirm-dialog .confirm-actions .confirm-danger:hover { background: var(--bad); filter: brightness(1.1); }
+  #confirm-dialog button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
   @media (max-width: 760px) {
     .shell { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
     aside { border-right: 0; border-bottom: 1px solid var(--border); max-height: 38vh; }
@@ -614,6 +664,17 @@ ${HTMX_CONFIG_META}
     </div>
     <div id="edit-result"></div>
   </main>
+  <dialog id="confirm-dialog" aria-labelledby="confirm-title">
+    <form method="dialog">
+      <h2 id="confirm-title">Delete this app?</h2>
+      <p class="confirm-name" id="confirm-name"></p>
+      <p class="confirm-body">This permanently removes the app and any data it has saved. This cannot be undone.</p>
+      <div class="confirm-actions">
+        <button value="cancel" autofocus>Cancel</button>
+        <button value="delete" class="confirm-danger">Delete</button>
+      </div>
+    </form>
+  </dialog>
   </div>
   <script>
     // Returns the stage's iframe, but only if it is still showing the app named by
@@ -716,6 +777,52 @@ ${HTMX_CONFIG_META}
           setStreaming(!!frame);
           if (frame) frame.addEventListener("load", function () { setStreaming(false); });
         }
+      });
+
+      // Custom confirmation instead of window.confirm. htmx raises htmx:confirm for any element
+      // with hx-confirm; cancelling the event holds the request until we call issueRequest.
+      var dialog = document.getElementById("confirm-dialog");
+      document.body.addEventListener("htmx:confirm", function (event) {
+        if (!event.detail.question || !dialog.showModal) return;
+        event.preventDefault();
+        var row = event.detail.elt.closest("li");
+        var opener = row ? row.querySelector("button") : null;
+        document.getElementById("confirm-title").textContent = event.detail.question;
+        document.getElementById("confirm-name").textContent = opener ? opener.textContent : "";
+        dialog.returnValue = "cancel";
+        dialog.addEventListener("close", function onClose() {
+          dialog.removeEventListener("close", onClose);
+          if (dialog.returnValue === "delete") event.detail.issueRequest(true);
+        });
+        dialog.showModal();
+      });
+      // Clicking the dimmed backdrop (the dialog element itself, not its form) cancels.
+      dialog.addEventListener("click", function (event) {
+        if (event.target === dialog) dialog.close("cancel");
+      });
+
+      // A delete succeeded (200) or the app was already gone (404): drop its sidebar row, and
+      // if it is the app on the stage, put the stage and composer back to their empty state.
+      // Anything else (409 "still generating") leaves the row alone; the server's message has
+      // already landed in #edit-result as a toast.
+      document.body.addEventListener("htmx:afterRequest", function (event) {
+        var detail = event.detail || {};
+        var verb = String((detail.requestConfig && detail.requestConfig.verb) || "").toLowerCase();
+        var status = detail.xhr ? detail.xhr.status : 0;
+        if (verb !== "delete" || (status !== 200 && status !== 404)) return;
+        var path = (detail.pathInfo && detail.pathInfo.requestPath) || "";
+        var deletedId = path.split("/").pop();
+        var row = event.target && event.target.closest ? event.target.closest("li") : null;
+        if (row) row.remove();
+        if (anyappFrameFor(deletedId)) {
+          document.getElementById("stage").innerHTML = '<p class="placeholder">Your app will appear here.</p>';
+          document.getElementById("edit-slot").innerHTML = "";
+          document.getElementById("owner-slot").innerHTML = "";
+          body.classList.add("creating");
+          setStreaming(false);
+        }
+        var list = document.getElementById("generation-list");
+        if (!list.querySelector("li")) list.innerHTML = '<p class="empty">No apps yet. Describe one above.</p>';
       });
 
       document.body.addEventListener("htmx:afterRequest", function (event) {

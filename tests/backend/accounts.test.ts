@@ -613,6 +613,98 @@ test("M13 — GET /apps/:id: an unlisted app renders the full share page with no
 // N — usage and limits
 // -----------------------------------------------------------------------------------------
 
+async function deleteApp(stack: Stack, id: string, cookie?: string): Promise<globalThis.Response> {
+  return fetch(`${stack.servers.studioOrigin}/generations/${id}`, {
+    method: "DELETE",
+    headers: cookie ? { cookie } : {},
+  });
+}
+
+async function scalar(databaseUrl: string, sql: string, params: unknown[]): Promise<string | null> {
+  const pool = new Pool({ connectionString: databaseUrl });
+  try {
+    const { rows } = await pool.query(sql, params);
+    return rows[0] ? String(Object.values(rows[0])[0]) : null;
+  } finally {
+    await pool.end();
+  }
+}
+
+test("M14 — the owner can delete an app: 200, the row and its records are gone, the frame 404s afterwards", async (t) => {
+  const stack = await setupM(t);
+  const owner = await generateAs(stack, "M14 owner's app");
+
+  const pool = new Pool({ connectionString: stack.scratch.databaseUrl });
+  try {
+    await pool.query(`insert into records (app_id, collection, data) values ($1, 'notes', '{"a":1}')`, [owner.id]);
+  } finally {
+    await pool.end();
+  }
+
+  const res = await deleteApp(stack, owner.id, owner.cookie);
+  assert.equal(res.status, 200);
+  assert.equal(await res.text(), "", "a successful delete sends an empty body — the page removes the row itself");
+
+  assert.equal(await scalar(stack.scratch.databaseUrl, `select count(*) from generations where id = $1`, [owner.id]), "0");
+  assert.equal(await scalar(stack.scratch.databaseUrl, `select count(*) from records where app_id = $1`, [owner.id]), "0");
+
+  const frame = await fetch(`${stack.servers.studioOrigin}/generations/${owner.id}/frame`, { headers: { cookie: owner.cookie } });
+  assert.equal(frame.status, 404);
+  const again = await deleteApp(stack, owner.id, owner.cookie);
+  assert.equal(again.status, 404, "deleting an already-deleted app is a 404, not a 500");
+});
+
+test("M15 — another owner (or no cookie) cannot delete a private app: 404, and the app is untouched", async (t) => {
+  const stack = await setupM(t);
+  const owner = await generateAs(stack, "M15 owner's app");
+  const other = await generateAs(stack, "M15 someone else's app");
+
+  for (const cookie of [undefined, other.cookie]) {
+    const res = await deleteApp(stack, owner.id, cookie);
+    assert.equal(res.status, 404);
+  }
+  assert.equal(await scalar(stack.scratch.databaseUrl, `select count(*) from generations where id = $1`, [owner.id]), "1");
+
+  // A non-uuid id is a 404 too, not a Postgres "invalid input syntax" 500.
+  assert.equal((await deleteApp(stack, "not-a-uuid", owner.cookie)).status, 404);
+});
+
+test("M16 — a generation still streaming cannot be deleted (409) until its row goes stale; usage events and remixes survive a delete", async (t) => {
+  const stack = await setupM(t);
+  const owner = await generateAs(stack, "M16 owner's app");
+  const usageBefore = await waitForUsageEvents(stack.scratch.databaseUrl, owner.id);
+  assert.ok(usageBefore.length > 0, "the fixture generation must have recorded usage");
+
+  const pool = new Pool({ connectionString: stack.scratch.databaseUrl });
+  try {
+    await pool.query(`update generations set status = 'streaming', updated_at = now() where id = $1`, [owner.id]);
+    const busy = await deleteApp(stack, owner.id, owner.cookie);
+    assert.equal(busy.status, 409);
+    assert.match(await busy.text(), /Still generating/);
+    assert.equal(await scalar(stack.scratch.databaseUrl, `select count(*) from generations where id = $1`, [owner.id]), "1");
+
+    // A row stuck in `streaming` by a crashed process must not be undeletable forever.
+    await pool.query(`update generations set updated_at = now() - interval '1 hour' where id = $1`, [owner.id]);
+    await pool.query(`update generations set status = 'complete' where id = $1`, [owner.id]); // restore for the fork below
+    const fork = await fetch(`${stack.servers.studioOrigin}/generations/${owner.id}/fork`, {
+      method: "POST",
+      headers: { cookie: owner.cookie },
+    });
+    assert.equal(fork.status, 200);
+    await pool.query(`update generations set status = 'streaming', updated_at = now() - interval '1 hour' where id = $1`, [owner.id]);
+
+    const res = await deleteApp(stack, owner.id, owner.cookie);
+    assert.equal(res.status, 200);
+
+    const { rows: usageAfter } = await pool.query(`select 1 from usage_events where generation_id is null and role = $1`, [usageBefore[0]!.role]);
+    assert.ok(usageAfter.length > 0, "usage_events rows survive with generation_id set null, so the monthly cap still counts them");
+    const { rows: forks } = await pool.query(`select forked_from from generations where forked_from is null and id <> $1`, [owner.id]);
+    assert.ok(forks.length > 0, "a remix survives its source's deletion, with forked_from set null");
+  } finally {
+    await pool.end();
+  }
+});
+
 test("N1 — a completed generation on the platform credential writes billable usage_events rows", async (t) => {
   const stack = await setupM(t);
   const owner = await generateAs(stack, "N1 usage test");

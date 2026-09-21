@@ -7,6 +7,7 @@ import {
   getFilledApp,
   listRecentGenerations,
   setVisibility,
+  deleteGeneration,
   forkGeneration,
   assertCredentialKeyConfigured,
 } from "@any-app/store";
@@ -18,7 +19,7 @@ import { internalRouter } from "./internal";
 import { editsRouter } from "./edits";
 import { settingsRouter } from "./settings";
 import { authRouter } from "./auth";
-import { homePage, previewFrame, oobSlot, editForm, ownerControls, remixControl, sharedAppPage, notFoundPage } from "./views";
+import { homePage, previewFrame, oobSlot, editProblem, editForm, ownerControls, remixControl, sharedAppPage, notFoundPage } from "./views";
 import { currentOwner } from "./session";
 import { missingCredentials } from "./credential-resolve";
 import { renderFullHead, SHELL_TAIL } from "./shell";
@@ -204,6 +205,23 @@ app.post("/generations/:id/visibility", async (req, res) => {
     return;
   }
   res.type("html").send(`<p class="edit-ok">Set to ${visibility}.</p>`);
+});
+
+// Owner-only, like visibility: another owner's app answers 404, never a distinguishing 403.
+// The sidebar's delete control targets #edit-result, so the messages below surface as the
+// same toast an edit problem does; a 200 sends an empty body and the page removes the row.
+app.delete("/generations/:id", async (req, res) => {
+  const owner = await currentOwner(req, res);
+  const result = await deleteGeneration(req.params.id, owner);
+  if (result === "missing") {
+    res.status(404).type("html").send(editProblem("That app no longer exists."));
+    return;
+  }
+  if (result === "busy") {
+    res.status(409).type("html").send(editProblem("Still generating — delete it once it finishes."));
+    return;
+  }
+  res.status(200).type("html").send("");
 });
 
 app.post("/generations/:id/fork", async (req, res) => {
