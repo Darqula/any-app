@@ -19,8 +19,9 @@ import { internalRouter } from "./internal";
 import { editsRouter } from "./edits";
 import { settingsRouter } from "./settings";
 import { authRouter } from "./auth";
-import { homePage, previewFrame, oobSlot, editProblem, editForm, ownerControls, remixControl, sharedAppPage, notFoundPage } from "./views";
+import { homePage, previewFrame, oobSlot, editProblem, generationList, editForm, ownerControls, remixControl, sharedAppPage, notFoundPage } from "./views";
 import { currentOwner } from "./session";
+import { isEditing } from "./activity";
 import { missingCredentials } from "./credential-resolve";
 import { renderFullHead, SHELL_TAIL } from "./shell";
 
@@ -120,6 +121,15 @@ app.get("/", async (req, res) => {
   res.type("html").send(homePage(generations, missing, owner));
 });
 
+// The sidebar's live refresh (see homePage's script): the same fragment the page renders the
+// list from, re-fetched so new apps and status changes show up without a reload. Owner-scoped
+// by listRecentGenerations; no-store so a proxy or the browser never serves a stale list.
+app.get("/generations", async (req, res) => {
+  const owner = await currentOwner(req, res);
+  const generations = await listRecentGenerations(owner);
+  res.set("Cache-Control", "no-store").type("html").send(generationList(generations));
+});
+
 app.post("/generations", async (req, res) => {
   const owner = await currentOwner(req, res);
   const prompt = String(req.body.prompt ?? "").trim();
@@ -212,13 +222,13 @@ app.post("/generations/:id/visibility", async (req, res) => {
 // same toast an edit problem does; a 200 sends an empty body and the page removes the row.
 app.delete("/generations/:id", async (req, res) => {
   const owner = await currentOwner(req, res);
-  const result = await deleteGeneration(req.params.id, owner);
+  const result = await deleteGeneration(req.params.id, owner, isEditing);
   if (result === "missing") {
     res.status(404).type("html").send(editProblem("That app no longer exists."));
     return;
   }
   if (result === "busy") {
-    res.status(409).type("html").send(editProblem("Still generating — delete it once it finishes."));
+    res.status(409).type("html").send(editProblem("Still generating or updating — delete it once that finishes."));
     return;
   }
   res.status(200).type("html").send("");

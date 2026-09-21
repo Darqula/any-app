@@ -4,6 +4,7 @@ import type { Role, ProviderId } from "@any-app/generator";
 import type { TokenMode } from "@any-app/protocol";
 import type { RoleProblem } from "./credential-resolve";
 import { THEME_CSS } from "./theme";
+import { isEditing } from "./activity";
 
 /**
  * htmx 2.0.4's shipped default `responseHandling` is
@@ -462,24 +463,31 @@ export function missingCredentialBanner(missing: RoleProblem[]): string {
   return `<p class="cred-banner">${escapeHtml(parts)}. <a href="/settings">Add a credential</a> or check the matching <code>LLM_*</code> vars in <code>.env</code>.</p>`;
 }
 
-export function generationList(generations: Generation[]): string {
+/**
+ * `isUpdating` defaults to the live in-memory tracker (activity.ts): a follow-up edit leaves the
+ * persisted status at `complete`, so without it the badge would never show that an app is being
+ * changed. Only a `complete` app can show "updating" — a generation still streaming already
+ * says so, and edits cannot start on anything that is not complete.
+ */
+export function generationList(generations: Generation[], isUpdating: (id: string) => boolean = isEditing): string {
   if (generations.length === 0) {
     return `<p class="empty">No apps yet. Describe one above.</p>`;
   }
   return generations
-    .map(
-      (g) => `<li>
+    .map((g) => {
+      const state = g.status === "complete" && isUpdating(g.id) ? "updating" : g.status;
+      return `<li data-id="${g.id}">
         <button hx-get="/generations/${g.id}/frame"
                 hx-target="#stage"
                 hx-swap="innerHTML">${escapeHtml(g.prompt.slice(0, 80))}</button>
-        <span class="status status-${g.status}">${g.status}</span>
+        <span class="status status-${state}">${state}</span>
         <input type="button" class="app-delete" value="×" title="Delete this app" aria-label="Delete this app"
                hx-delete="/generations/${g.id}"
                hx-target="#edit-result"
                hx-swap="innerHTML"
                hx-confirm="Delete this app?">
-      </li>`,
-    )
+      </li>`;
+    })
     .join("");
 }
 
@@ -550,7 +558,8 @@ ${HTMX_CONFIG_META}
     padding: 2px 0; border-radius: 999px;
   }
   .status-complete { background: var(--status-complete-bg); color: var(--status-complete-fg); }
-  .status-streaming { background: var(--status-streaming-bg); color: var(--status-streaming-fg); }
+  .status-streaming, .status-updating { background: var(--status-streaming-bg); color: var(--status-streaming-fg); }
+  .status-updating { animation: blink 1.4s infinite; }
   .status-pending { background: var(--status-pending-bg); color: var(--status-pending-fg); }
   .status-failed { background: var(--status-failed-bg); color: var(--status-failed-fg); }
 
@@ -742,6 +751,79 @@ ${HTMX_CONFIG_META}
         body.classList.toggle("streaming", on);
       }
 
+      var list = document.getElementById("generation-list");
+      var dialog = document.getElementById("confirm-dialog");
+
+      // ---- Live sidebar -----------------------------------------------------------------
+      // The list is rendered once by the server; without this, a new app or a status change
+      // (pending -> streaming -> complete/failed) is invisible until the page is reloaded.
+      // Polls GET /generations (the same fragment the page was built from) — fast while any
+      // row is still pending/streaming, slow otherwise, backing off while nothing changes, and
+      // not at all while the tab is hidden. Polling rather than a pushed stream because the
+      // studio has no long-lived connection to hang one on, and a status flip is never more
+      // than a couple of seconds late; the create/finish/delete paths below refresh at once.
+      var FAST_MS = 2000, SLOW_MS = 15000;
+      var lastListHtml = null, refreshing = false, rerun = false, unchanged = 0, timer = null;
+      // Bumped by every local mutation (create, delete). A poll that started before one and
+      // lands after it carries a stale list, so it is dropped instead of undoing the change.
+      var listEpoch = 0;
+
+      // The sidebar highlight follows what is actually on the stage, so it survives the list
+      // being re-rendered and also covers an app that was just created rather than clicked.
+      function currentStageId() {
+        var frame = document.querySelector("#stage iframe");
+        if (!frame) return "";
+        return new URL(frame.src).pathname.split("/")[2] || "";
+      }
+      function markActive() {
+        var id = currentStageId();
+        var rows = list.querySelectorAll("li");
+        for (var i = 0; i < rows.length; i++) {
+          rows[i].classList.toggle("active", !!id && rows[i].getAttribute("data-id") === id);
+        }
+      }
+      function hasLiveRows() {
+        return !!list.querySelector(".status-pending, .status-streaming, .status-updating");
+      }
+
+      function refreshList() {
+        // Skipped while a delete confirmation is open: replacing the list would detach the
+        // control the dialog is holding a pending request for.
+        if (document.hidden || dialog.open) return Promise.resolve();
+        // A refresh requested while one is already in flight (typically a poll racing a create
+        // or an edit finishing) must not be dropped — the in-flight one may have been issued
+        // before the change. Remember it and run once more when this one lands.
+        if (refreshing) { rerun = true; return Promise.resolve(); }
+        refreshing = true;
+        var epoch = listEpoch;
+        return fetch("/generations", { credentials: "same-origin", cache: "no-store" })
+          .then(function (res) { return res.ok ? res.text() : null; })
+          .then(function (html) {
+            if (html === null || epoch !== listEpoch) return;
+            if (html === lastListHtml) { unchanged++; return; }
+            unchanged = 0;
+            lastListHtml = html;
+            list.innerHTML = html;
+            htmx.process(list);
+            markActive();
+          })
+          .catch(function () {})
+          .then(function () {
+            refreshing = false;
+            if (rerun) { rerun = false; return refreshList(); }
+          });
+      }
+
+      function schedule() {
+        clearTimeout(timer);
+        var delay = hasLiveRows() ? Math.min(SLOW_MS, FAST_MS * (1 + unchanged)) : SLOW_MS;
+        timer = setTimeout(function () { refreshList().then(schedule); }, delay);
+      }
+      document.addEventListener("visibilitychange", function () {
+        if (!document.hidden) { unchanged = 0; refreshList().then(schedule); }
+      });
+      schedule();
+
       document.getElementById("newapp-btn").addEventListener("click", function () {
         body.classList.add("creating");
         prompt.focus();
@@ -766,22 +848,19 @@ ${HTMX_CONFIG_META}
           // Picking an app from the sidebar switches the composer to edit mode.
           body.classList.remove("creating");
           setStreaming(false);
-          var rows = document.querySelectorAll("#generation-list li");
-          for (var i = 0; i < rows.length; i++) rows[i].classList.remove("active");
-          var row = detail.elt && detail.elt.closest ? detail.elt.closest("li") : null;
-          if (row) row.classList.add("active");
+          markActive();
         } else if (verb === "post" && path === "/generations") {
           // A create response is the streaming iframe; it fires "load" when the document
-          // has fully arrived. A 400 response has no iframe and shows no pill.
+          // has fully arrived, which is also when the app's sidebar badge flips to its final
+          // state. A 400 response has no iframe and shows no pill.
           var frame = document.querySelector("#stage iframe");
           setStreaming(!!frame);
-          if (frame) frame.addEventListener("load", function () { setStreaming(false); });
+          if (frame) frame.addEventListener("load", function () { setStreaming(false); refreshList(); });
         }
       });
 
       // Custom confirmation instead of window.confirm. htmx raises htmx:confirm for any element
       // with hx-confirm; cancelling the event holds the request until we call issueRequest.
-      var dialog = document.getElementById("confirm-dialog");
       document.body.addEventListener("htmx:confirm", function (event) {
         if (!event.detail.question || !dialog.showModal) return;
         event.preventDefault();
@@ -812,8 +891,11 @@ ${HTMX_CONFIG_META}
         if (verb !== "delete" || (status !== 200 && status !== 404)) return;
         var path = (detail.pathInfo && detail.pathInfo.requestPath) || "";
         var deletedId = path.split("/").pop();
-        var row = event.target && event.target.closest ? event.target.closest("li") : null;
-        if (row) row.remove();
+        listEpoch++;
+        var rows = list.querySelectorAll("li");
+        for (var i = 0; i < rows.length; i++) {
+          if (rows[i].getAttribute("data-id") === deletedId) rows[i].remove();
+        }
         if (anyappFrameFor(deletedId)) {
           document.getElementById("stage").innerHTML = '<p class="placeholder">Your app will appear here.</p>';
           document.getElementById("edit-slot").innerHTML = "";
@@ -821,12 +903,32 @@ ${HTMX_CONFIG_META}
           body.classList.add("creating");
           setStreaming(false);
         }
-        var list = document.getElementById("generation-list");
         if (!list.querySelector("li")) list.innerHTML = '<p class="empty">No apps yet. Describe one above.</p>';
+        markActive();
+        refreshList().then(schedule);
+      });
+
+      // A follow-up edit leaves the app "complete" in the database, so the only signal is the
+      // studio's in-memory "edit running" flag, which the list route folds into an "updating"
+      // badge. Pull the list just after the request starts (the flag is set a few awaits in) and
+      // again the moment it finishes, so the badge flips on and back without waiting for a poll.
+      document.body.addEventListener("htmx:beforeRequest", function (event) {
+        if (!event.target || event.target.id !== "edit-form") return;
+        setTimeout(function () { unchanged = 0; refreshList().then(schedule); }, 400);
+      });
+      document.body.addEventListener("htmx:afterRequest", function (event) {
+        if (!event.target || event.target.id !== "edit-form") return;
+        listEpoch++;
+        refreshList().then(schedule);
       });
 
       document.body.addEventListener("htmx:afterRequest", function (event) {
-        if (event.target === createForm && event.detail && event.detail.successful) prompt.value = "";
+        if (event.target !== createForm || !event.detail || !event.detail.successful) return;
+        prompt.value = "";
+        // The new row already exists server-side (createGeneration runs before the response),
+        // so fetching the list now shows it, as "pending", without waiting for a page reload.
+        listEpoch++;
+        refreshList().then(schedule);
       });
     })();
   </script>

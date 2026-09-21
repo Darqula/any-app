@@ -26,6 +26,7 @@ import { renderFullHead, SHELL_TAIL } from "./shell";
 import { editApplied, editProblem } from "./views";
 import { currentOwner } from "./session";
 import { credentialForRole } from "./credential-resolve";
+import { beginEdit } from "./activity";
 
 /**
  * Guards against a slot edit that came back as a diff-shaped fragment instead of the whole
@@ -127,6 +128,11 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
       };
     }
 
+    // Ended in the `finally` below, AFTER the usage write — the delete route refuses an app
+    // that is mid-edit, and an edit's usage rows carry a generation_id foreign key, so letting
+    // a delete land between the model call and that write would make it fail and the tokens
+    // never count against the monthly cap.
+    const endEdit = beginEdit(id);
     try {
       // An explicit dropdown choice skips the router call entirely.
       let target;
@@ -236,6 +242,8 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
         await recordUsage(usageEvents);
       } catch (error) {
         console.warn(`edit ${id}: failed to record usage:`, error);
+      } finally {
+        endEdit();
       }
     }
   });

@@ -705,6 +705,53 @@ test("M16 — a generation still streaming cannot be deleted (409) until its row
   }
 });
 
+test("M17 — GET /generations returns the sidebar list fragment for the caller only, uncached, so the page can refresh it live", async (t) => {
+  const stack = await setupM(t);
+  const mine = await generateAs(stack, "M17 mine");
+  const theirs = await generateAs(stack, "M17 theirs");
+
+  const res = await fetch(`${stack.servers.studioOrigin}/generations`, { headers: { cookie: mine.cookie } });
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get("cache-control") ?? "", /no-store/);
+  const body = await res.text();
+  assert.ok(body.includes(`data-id="${mine.id}"`), "the caller's own app is listed, keyed by id");
+  assert.ok(!body.includes(theirs.id), "another owner's app must never appear in this owner's list");
+  assert.ok(!body.includes("<html"), "it is a fragment, not a page");
+
+  // No cookie -> a fresh anonymous owner with nothing yet: the empty state, never someone else's rows.
+  const anon = await (await fetch(`${stack.servers.studioOrigin}/generations`)).text();
+  assert.ok(anon.includes("No apps yet"));
+});
+
+test("M18 — while a follow-up edit runs the sidebar list shows \"updating\" and the app cannot be deleted; both clear when it finishes", async (t) => {
+  const stack = await setupM(t);
+  const owner = await generateAs(stack, "M18 owner's app");
+  const list = async () =>
+    (await fetch(`${stack.servers.studioOrigin}/generations`, { headers: { cookie: owner.cookie } })).text();
+  assert.match(await list(), /status-complete/);
+
+  stack.fake.queueComplete({ text: "<p>edited</p>", delayMs: 1500 });
+  const edit = fetch(`${stack.servers.studioOrigin}/generations/${owner.id}/edits`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", cookie: owner.cookie },
+    body: new URLSearchParams({ instruction: "change it", target: "alpha" }).toString(),
+  });
+  await new Promise((r) => setTimeout(r, 500)); // the edit is in its (delayed) model call
+
+  const during = await list();
+  assert.match(during, /status-updating">updating</, "the persisted status is still complete; the badge comes from the in-memory tracker");
+  assert.doesNotMatch(during, /status-complete/);
+  const refused = await deleteApp(stack, owner.id, owner.cookie);
+  assert.equal(refused.status, 409);
+  assert.equal(await scalar(stack.scratch.databaseUrl, `select count(*) from generations where id = $1`, [owner.id]), "1");
+
+  const done = await edit;
+  assert.equal(done.status, 200);
+  await done.text();
+  assert.match(await list(), /status-complete/, "the flag is cleared once the edit (and its usage write) is done");
+  assert.equal((await deleteApp(stack, owner.id, owner.cookie)).status, 200);
+});
+
 test("N1 — a completed generation on the platform credential writes billable usage_events rows", async (t) => {
   const stack = await setupM(t);
   const owner = await generateAs(stack, "N1 usage test");

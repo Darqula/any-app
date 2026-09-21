@@ -252,7 +252,13 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * `records` has no foreign key to `generations` (the sandbox's restricted role can touch
  * that table and nothing else), so its rows are removed explicitly, in the same transaction.
  */
-export async function deleteGeneration(id: string, owner: Owner): Promise<DeleteResult> {
+export async function deleteGeneration(
+  id: string,
+  owner: Owner,
+  /** For work the database cannot see, e.g. a follow-up edit running in the studio process —
+   *  it leaves `status` at `complete`, but its usage write has the same foreign-key problem. */
+  isBusy: (id: string) => boolean = () => false,
+): Promise<DeleteResult> {
   if (!UUID_RE.test(id)) return "missing";
   const { sql, param } = ownerFilter(owner, 2);
   const client = await pool.connect();
@@ -268,7 +274,7 @@ export async function deleteGeneration(id: string, owner: Owner): Promise<Delete
       await client.query("rollback");
       return "missing";
     }
-    if (row.status === "streaming" && !row.stale) {
+    if ((row.status === "streaming" && !row.stale) || isBusy(id)) {
       await client.query("rollback");
       return "busy";
     }

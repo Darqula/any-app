@@ -199,11 +199,113 @@ test.describe("A — studio UI", () => {
     await page.click('button[type="submit"]');
     await expect(page.locator("#stage iframe")).toHaveCount(1);
 
-    // The sidebar only re-renders on a full page load (the submit form only swaps #stage).
+    // A fresh page load, so this asserts what the server renders, not the live refresh.
     await page.goto("/");
 
     expect(dialogFired).toBe(false);
     await expect(page.locator("#generation-list img")).toHaveCount(0);
     await expect(page.locator("#generation-list li", { hasText: marker })).toBeVisible();
+  });
+
+  test("A10 — status badges are one width, and the delete cross takes no room until the row is hovered", async ({ page }) => {
+    const marker = `A10-${Date.now()}`;
+    const sessionId = await establishAnonSession(page);
+    for (const status of ["complete", "pending", "failed", "streaming"] as const) {
+      await seedGeneration(databaseUrl, { prompt: `${marker} ${status}`, document: MINIMAL_DOCUMENT, status, sessionId });
+    }
+    await page.goto("/");
+
+    const widths = await page
+      .locator("#generation-list li", { hasText: marker })
+      .locator(".status")
+      .evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().width)));
+    expect(widths).toHaveLength(4);
+    expect(new Set(widths).size, `badge widths: ${widths}`).toBe(1);
+
+    const row = page.locator("#generation-list li", { hasText: `${marker} complete` });
+    const badge = row.locator(".status");
+    const cross = row.locator(".app-delete");
+    const restX = (await badge.boundingBox())!.x;
+    expect((await cross.boundingBox())!.width).toBe(0);
+    await row.hover();
+    await expect.poll(async () => (await cross.boundingBox())!.width).toBeGreaterThan(0);
+    await expect.poll(async () => (await badge.boundingBox())!.x).toBeLessThan(restX);
+
+    // A mouse click on the row's name focuses it; the cross must not stay open once the
+    // pointer has left (it used to, via :focus-within).
+    await row.locator("button").click();
+    await page.mouse.move(600, 300);
+    await expect.poll(async () => (await cross.boundingBox())!.width).toBe(0);
+  });
+
+  test("A11 — delete uses the in-page confirmation dialog: cancel and Escape keep the app, Delete removes it", async ({ page }) => {
+    const marker = `A11-${Date.now()}`;
+    const sessionId = await establishAnonSession(page);
+    const { id } = await seedGeneration(databaseUrl, { prompt: `${marker} doomed`, document: MINIMAL_DOCUMENT, status: "complete", sessionId });
+    let native = 0;
+    page.on("dialog", async (d) => { native++; await d.dismiss(); });
+    await page.goto("/");
+
+    const row = page.locator("#generation-list li", { hasText: marker });
+    const dialog = page.locator("#confirm-dialog");
+    const open = async () => { await row.hover(); await row.locator(".app-delete").click(); await expect(dialog).toBeVisible(); };
+
+    await open();
+    await expect(dialog).toContainText(`${marker} doomed`);
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await expect(dialog).toBeHidden();
+    await open();
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+    await expect(row).toHaveCount(1);
+
+    await open();
+    await dialog.getByRole("button", { name: "Delete", exact: true }).click();
+    await expect(row).toHaveCount(0);
+    expect(native, "the browser's own confirm() must not be used").toBe(0);
+
+    const pool = new Pool({ connectionString: databaseUrl });
+    try {
+      const { rows } = await pool.query("select 1 from generations where id = $1", [id]);
+      expect(rows).toHaveLength(0);
+    } finally {
+      await pool.end();
+    }
+  });
+
+  test("A12 — the sidebar follows the server without a reload: status flips and rows created elsewhere appear", async ({ page }) => {
+    const marker = `A12-${Date.now()}`;
+    const sessionId = await establishAnonSession(page);
+    const { id } = await seedGeneration(databaseUrl, { prompt: `${marker} first`, document: MINIMAL_DOCUMENT, status: "pending", sessionId });
+    await page.goto("/");
+
+    const status = page.locator("#generation-list li", { hasText: `${marker} first` }).locator(".status");
+    await expect(status).toHaveText("pending");
+
+    const pool = new Pool({ connectionString: databaseUrl });
+    try {
+      await pool.query("update generations set status = 'streaming' where id = $1", [id]);
+      await expect(status).toHaveText("streaming", { timeout: 10_000 });
+      await pool.query("update generations set status = 'complete' where id = $1", [id]);
+      await expect(status).toHaveText("complete", { timeout: 10_000 });
+    } finally {
+      await pool.end();
+    }
+
+    // A row this tab never created (another tab or device). A pending one keeps the fast
+    // poll running, so this does not have to wait out the idle interval.
+    await seedGeneration(databaseUrl, { prompt: `${marker} second`, document: MINIMAL_DOCUMENT, status: "pending", sessionId });
+    await expect(page.locator("#generation-list li", { hasText: `${marker} second` })).toBeVisible({ timeout: 20_000 });
+  });
+
+  test("A13 — creating an app from the composer shows its row immediately, as pending or beyond, and highlights it", async ({ page }) => {
+    const prompt = `A13 composer ${Date.now()}`;
+    await page.goto("/");
+    await page.fill('textarea[name="prompt"]', prompt);
+    await page.click('button[type="submit"]');
+    const row = page.locator("#generation-list li", { hasText: prompt });
+    await expect(row).toBeVisible({ timeout: 5_000 });
+    await expect(row).toHaveClass(/active/);
+    await expect(page.locator('textarea[name="prompt"]')).toHaveValue("");
   });
 });
