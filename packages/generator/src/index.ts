@@ -7,7 +7,7 @@ export { stripTrailingFence, createTrailingFenceGuard } from "./fence-stripper";
 export { parseSections } from "./section-parser";
 export { routeEdit, RoutingError } from "./edit-router";
 export type { EditTarget } from "./edit-router";
-export { regenerateSlot, regenerateCss } from "./edit";
+export { regenerateSlot, regenerateCss, regenerateShell, checkShellEdit } from "./edit";
 export { roleConfig } from "./roles";
 export type { Role, RoleConfig } from "./roles";
 export { resolve, build, NoCredentialError } from "./resolve";

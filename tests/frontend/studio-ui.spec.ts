@@ -339,4 +339,28 @@ test.describe("A — studio UI", () => {
     await page.locator("#chat-toggle").click();
     await expect(log).toBeHidden();
   });
+
+  test("A15 — the create box empties on submit and the prompt still reaches the server; a rejected prompt is put back", async ({ page }) => {
+    const prompt = `A15 clears ${Date.now()}`;
+    await page.goto("/");
+    const box = page.locator('textarea[name="prompt"]');
+
+    await box.fill(prompt);
+    await page.click('button[type="submit"]');
+    await expect(box).toHaveValue("");
+    await expect(page.locator("#stage iframe")).toHaveCount(1);
+    expect(await promptsMatching(prompt)).toEqual([prompt]); // cleared in the UI, sent in full
+
+    // Whitespace passes the browser's "required" check but the server rejects it (400): the
+    // text comes back so it can be fixed instead of retyped.
+    await box.fill("   ");
+    await page.click('button[type="submit"]');
+    await expect(box).toHaveValue("   ");
+
+    // ...but not over something the user has typed since.
+    await box.fill("   ");
+    await box.press("Enter");
+    await box.fill("new draft");
+    await expect(box).toHaveValue("new draft");
+  });
 });

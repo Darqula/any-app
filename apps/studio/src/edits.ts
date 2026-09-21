@@ -6,6 +6,8 @@ import {
   RoutingError,
   regenerateSlot,
   regenerateCss,
+  regenerateShell,
+  checkShellEdit,
   fillSlot,
   isAbortError,
   resolve,
@@ -148,6 +150,9 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
       let target;
       if (chosen === "css") {
         target = { kind: "css" as const };
+      } else if (chosen === "@shell") {
+        // "@" cannot begin a region id (SLOT_ID_PATTERN), so this can never collide with one.
+        target = { kind: "shell" as const };
       } else if (chosen) {
         // The router's own answer is checked against plan.slots (edit-router.ts); a
         // hand-crafted POST with an unknown id must be checked the same way here, or it
@@ -174,13 +179,43 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
           console.warn(
             `edit ${id}: css rewrite came back as ${after.length} chars against ${before.length} before — looks like a fragment, not a full stylesheet. Discarding.`,
           );
-          res
-            .status(502)
-            .type("html")
-            .send(editProblem("That came back as a fragment, not the whole stylesheet. Try rephrasing, or try again."));
+          await problem(502, "That came back as a fragment, not the whole stylesheet. Try rephrasing, or try again.");
+          return;
+        }
+        // An identical stylesheet means the model declined (the CSS prompt tells it to return
+        // it untouched when the request needs a new control or behaviour) or the request was
+        // already satisfied. Either way nothing changed, so do not save a new version or claim
+        // "Updated styling." — that message on a no-op is exactly what made a failed "add a dark
+        // theme switch" look like it had worked.
+        if (after.trim() === before.trim()) {
+          await problem(
+            422,
+            "The stylesheet came back unchanged. Styling can only change what is already there — if you asked for a new control or feature, pick the region that should hold it instead of Styling and ask again.",
+          );
           return;
         }
         next.css = after;
+      } else if (target.kind === "shell") {
+        const before = filled.shell;
+        const raw = await regenerateShell(instruction, filled, editCred, ac.signal, id, collector("edit-shell", editResolved));
+        // Region placeholders must survive exactly (see checkShellEdit); a frame that loses or
+        // duplicates one loses or duplicates a whole region, and it would be saved before
+        // anyone saw it.
+        const checked = checkShellEdit(filled, raw);
+        if (!checked.ok) {
+          console.warn(`edit ${id}: shell rewrite rejected: ${checked.problem}`);
+          await problem(502, checked.problem);
+          return;
+        }
+        if (looksTruncated(before, checked.shell)) {
+          await problem(502, "That came back as a fragment, not the whole page frame. Try rephrasing, or try again.");
+          return;
+        }
+        if (checked.shell.trim() === before.trim()) {
+          await problem(422, "The page frame came back unchanged. Name the text or element you mean (for example the heading, subtitle or footer) and ask again.");
+          return;
+        }
+        next.shell = checked.shell;
       } else {
         const before = filled.content[target.id] ?? "";
         // A placeholder is missing content, not content to edit — regenerateSlot would hand
@@ -213,10 +248,17 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
           console.warn(
             `edit ${id}: slot "${target.id}" came back as ${after.length} chars against ${before.length} before — looks like a fragment, not a full region. Discarding.`,
           );
-          res
-            .status(502)
-            .type("html")
-            .send(editProblem("That came back as a fragment, not the whole region. Try rephrasing, or try again."));
+          await problem(502, "That came back as a fragment, not the whole region. Try rephrasing, or try again.");
+          return;
+        }
+        // Nothing changed: not saved, not reported as an update. Found live — asked to remove a
+        // caption that lives in the page frame, the router picked the nearest region three times
+        // and each edit "succeeded" (new version, "Updated status-bar.") while changing nothing.
+        if (after.trim() === before.trim()) {
+          await problem(
+            422,
+            `Nothing changed in "${target.id}". What you mean may not be in that region — name the part you mean, or pick a different part of the page in the target list.`,
+          );
           return;
         }
         next.content[target.id] = after;
@@ -231,11 +273,11 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
         return;
       }
 
-      const label = target.kind === "css" ? "styling" : target.id;
+      const label = target.kind === "css" ? "styling" : target.kind === "shell" ? "the page frame" : target.id;
       await recordMessage(id, {
         role: "assistant",
         kind: "edit",
-        target: target.kind === "css" ? "css" : target.id,
+        target: target.kind === "slot" ? target.id : target.kind,
         body: `Updated ${label}.`,
       });
       res.type("html").send(editApplied(id, appOrigin(id), target, next));

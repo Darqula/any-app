@@ -87,7 +87,7 @@ export function messageItems(
   const items = messages.map((m) => {
     const meta =
       m.role === "user" && m.kind === "edit" && m.target
-        ? `<span class="chat-meta">${escapeHtml(m.target === "css" ? "styling" : m.target)}</span>`
+        ? `<span class="chat-meta">${escapeHtml(m.target === "css" ? "styling" : m.target === "shell" || m.target === "@shell" ? "page frame" : m.target)}</span>`
         : "";
     return `<li class="chat-msg chat-${m.role}${m.kind === "error" ? " chat-error" : ""}" data-seq="${m.seq}">${meta}<p class="chat-body">${escapeHtml(m.body)}</p></li>`;
   });
@@ -235,6 +235,7 @@ export function editForm(id: string, slots: { id: string }[]): string {
     <select name="target" title="Which part to change">
       <option value="">Decide for me</option>
       <option value="css">Styling</option>
+      <option value="@shell">Page frame (heading, caption, footer)</option>
       ${options}
     </select>
     <button type="submit">Apply</button>
@@ -254,7 +255,7 @@ function jsonBlock(value: unknown): string {
 export function editApplied(
   id: string,
   appOrigin: string,
-  target: { kind: "css" } | { kind: "slot"; id: string },
+  target: { kind: "css" } | { kind: "shell" } | { kind: "slot"; id: string },
   next: { css: string; content: Record<string, string> },
 ): string {
   // `generationId` lets the bridge (anyappApplyEdit) refuse to post into whatever happens to
@@ -264,7 +265,11 @@ export function editApplied(
   const payload =
     target.kind === "css"
       ? { channel: "anyapp", type: "css", css: next.css, generationId: id, appOrigin }
-      : {
+      : target.kind === "shell"
+        // The frame cannot be patched in place the way a region or the stylesheet can — it is
+        // the document's own markup — so the parent reloads the preview from the saved document.
+        ? { channel: "anyapp", type: "reload", generationId: id, appOrigin }
+        : {
           channel: "anyapp",
           type: "slot-content",
           id: target.id,
@@ -273,7 +278,7 @@ export function editApplied(
           appOrigin,
         };
 
-  const label = target.kind === "css" ? "styling" : target.id;
+  const label = target.kind === "css" ? "styling" : target.kind === "shell" ? "the page frame" : target.id;
 
   return `<script type="application/json" id="edit-payload">${jsonBlock(payload)}</script>
 <script>anyappApplyEdit()</script>
@@ -783,6 +788,12 @@ ${HTMX_CONFIG_META}
       var payload = JSON.parse(block.textContent);
       var frame = anyappFrameFor(payload.generationId);
       if (!frame) return;
+      if (payload.type === "reload") {
+        // Re-assigning the same src reloads the frame (contentWindow.location.reload is not
+        // allowed across origins). The preview URL carries its own view grant, so it stays valid.
+        frame.src = frame.src;
+        return;
+      }
       frame.contentWindow.postMessage(payload, payload.appOrigin);
     }
 
@@ -793,7 +804,7 @@ ${HTMX_CONFIG_META}
     function anyappBeforeEdit(event) {
       var form = event.target;
       var target = form.elements["target"].value;
-      if (!target || target === "css") return;
+      if (!target || target === "css" || target === "@shell") return;
       // Built with the RegExp constructor, not a regex literal, on purpose: this whole
       // script is the body of a TEMPLATE LITERAL, where \\/ is not a recognised escape, so a
       // literal /\\/generations\\/.../ silently loses its backslashes on the way out and the
@@ -1054,13 +1065,38 @@ ${HTMX_CONFIG_META}
         tick().then(schedule);
       });
 
+      // Both prompt boxes empty the moment they are submitted, so the next thing typed is a new
+      // prompt rather than an edit of the last one. htmx has already read the field's value by
+      // the time htmx:beforeRequest fires (and disables the controls only after that), so the
+      // request still carries the text. If the request then fails, the text is put back —
+      // unless the user has started typing something else — so a retry does not mean retyping.
+      var submitted = {};
+      function promptField(form) {
+        return form.elements[form.id === "create-form" ? "prompt" : "instruction"];
+      }
+      document.body.addEventListener("htmx:beforeRequest", function (event) {
+        var form = event.target;
+        if (!form || (form.id !== "create-form" && form.id !== "edit-form")) return;
+        var field = promptField(form);
+        if (!field) return;
+        submitted[form.id] = field.value;
+        field.value = "";
+      });
       document.body.addEventListener("htmx:afterRequest", function (event) {
-        if (event.target !== createForm || !event.detail || !event.detail.successful) return;
-        prompt.value = "";
-        // The new row already exists server-side (createGeneration runs before the response),
-        // so fetching the list now shows it, as "pending", without waiting for a page reload.
-        listEpoch++;
-        refreshList().then(schedule);
+        var form = event.target;
+        if (!form || (form.id !== "create-form" && form.id !== "edit-form")) return;
+        var field = promptField(form);
+        var ok = !!(event.detail && event.detail.successful);
+        if (field && !ok && !field.value) field.value = submitted[form.id] || "";
+        // hx-disabled-elt took the focus with it; hand it back so the next prompt can be typed
+        // straight away — but never steal it from something the user moved on to.
+        if (field && ok && document.activeElement === document.body) field.focus();
+        if (form === createForm && ok) {
+          // The new row already exists server-side (createGeneration runs before the response),
+          // so fetching the list now shows it, as "pending", without waiting for a page reload.
+          listEpoch++;
+          refreshList().then(schedule);
+        }
       });
     })();
   </script>

@@ -815,6 +815,96 @@ test("M19 — the conversation log: prompt first, then the build result and each
   assert.equal(await scalar(stack.scratch.databaseUrl, `select count(*) from messages where generation_id = $1`, [owner.id]), "0");
 });
 
+test("M20 — a stylesheet edit that comes back unchanged is refused honestly (422), saves nothing, and is logged as an error, not \"Updated styling.\"", async (t) => {
+  const stack = await setupM(t);
+  const owner = await generateAs(stack, "M20 owner's app");
+  const version = () => scalar(stack.scratch.databaseUrl, `select version from generations where id = $1`, [owner.id]);
+  const before = await version();
+
+  // The plan's stylesheet is ".card{padding:8px}" (PLAN_TEXT). A model told to return it
+  // untouched when the request needs a new control gives exactly that back.
+  stack.fake.queueComplete({ text: ".card{padding:8px}" });
+  const res = await fetch(`${stack.servers.studioOrigin}/generations/${owner.id}/edits`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", cookie: owner.cookie },
+    body: new URLSearchParams({ instruction: "add a dark theme switch", target: "css" }).toString(),
+  });
+  assert.equal(res.status, 422);
+  const body = await res.text();
+  assert.match(body, /came back unchanged/);
+  assert.doesNotMatch(body, /Updated/);
+  assert.equal(await version(), before, "no new version is saved for a no-op");
+
+  const log = await (await fetch(`${stack.servers.studioOrigin}/generations/${owner.id}/messages?after=0`, { headers: { cookie: owner.cookie } })).text();
+  assert.match(log, /chat-error/);
+  assert.doesNotMatch(log, /Updated styling/);
+
+  // A real change still goes through, and does bump the version.
+  stack.fake.queueComplete({ text: ".card{padding:16px}" });
+  const ok = await fetch(`${stack.servers.studioOrigin}/generations/${owner.id}/edits`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", cookie: owner.cookie },
+    body: new URLSearchParams({ instruction: "more padding", target: "css" }).toString(),
+  });
+  assert.equal(ok.status, 200);
+  assert.notEqual(await version(), before);
+});
+
+test("M21 — the page frame is editable: a caption can be removed, damaged regions are refused, and no-op edits are not reported as updates", async (t) => {
+  const stack = await setupM(t);
+  const owner = await generateAs(stack, "M21 owner's app");
+  const url = `${stack.servers.studioOrigin}/generations/${owner.id}/edits`;
+  const post = (fields: Record<string, string>) =>
+    fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", cookie: owner.cookie },
+      body: new URLSearchParams(fields).toString(),
+    });
+  const shell = () => scalar(stack.scratch.databaseUrl, `select plan->>'shell' from generations where id = $1`, [owner.id]);
+  const version = () => scalar(stack.scratch.databaseUrl, `select version from generations where id = $1`, [owner.id]);
+
+  // 1. Add a caption to the frame (the region placeholder must survive untouched).
+  stack.fake.queueComplete({ text: `<p class="cap">Played across a chessboard</p>\n<div data-slot="alpha"></div>` });
+  const added = await post({ instruction: "add a caption", target: "@shell" });
+  assert.equal(added.status, 200);
+  const addedBody = await added.text();
+  assert.match(addedBody, /"type":"reload"/, "a frame edit tells the page to reload the preview; it cannot be patched in place");
+  assert.match(addedBody, /Updated the page frame\./);
+  assert.match((await shell())!, /Played across a chessboard/);
+  const v1 = await version();
+
+  // 2. Remove it again — the case that failed live: text in the frame, no region owns it.
+  stack.fake.queueComplete({ text: `<div data-slot="alpha"></div>` });
+  assert.equal((await post({ instruction: "remove the caption", target: "@shell" })).status, 200);
+  assert.doesNotMatch((await shell())!, /chessboard/);
+  const v2 = await version();
+  assert.notEqual(v2, v1);
+
+  // The persisted document (what a reload serves) carries the new frame, region content intact.
+  const doc = await scalar(stack.scratch.databaseUrl, `select document from generations where id = $1`, [owner.id]);
+  assert.doesNotMatch(doc!, /chessboard/);
+  assert.match(doc!, /<p>hi<\/p>/);
+
+  // 3. A rewrite that loses the region placeholder is refused and saves nothing.
+  stack.fake.queueComplete({ text: `<h1>No regions here</h1>` });
+  const damaged = await post({ instruction: "simplify", target: "@shell" });
+  assert.equal(damaged.status, 502);
+  assert.match(await damaged.text(), /damaged the page's regions/);
+  assert.equal(await version(), v2);
+
+  // 4. An unchanged frame, and an unchanged region, are 422s — not "Updated".
+  stack.fake.queueComplete({ text: `<div data-slot="alpha"></div>` });
+  const sameShell = await post({ instruction: "change nothing", target: "@shell" });
+  assert.equal(sameShell.status, 422);
+  assert.doesNotMatch(await sameShell.text(), /Updated/);
+
+  stack.fake.queueComplete({ text: "<p>hi</p>" });
+  const sameSlot = await post({ instruction: "remove the caption", target: "alpha" });
+  assert.equal(sameSlot.status, 422);
+  assert.match(await sameSlot.text(), /Nothing changed in &quot;alpha&quot;/);
+  assert.equal(await version(), v2, "no-op edits never bump the version");
+});
+
 test("N1 — a completed generation on the platform credential writes billable usage_events rows", async (t) => {
   const stack = await setupM(t);
   const owner = await generateAs(stack, "N1 usage test");

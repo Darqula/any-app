@@ -5,7 +5,7 @@ import type { ProviderCredential } from "./providers/types";
 import type { UsageInfo } from "./providers/usage";
 import { safeMessage } from "./scrub";
 
-export type EditTarget = { kind: "css" } | { kind: "slot"; id: string };
+export type EditTarget = { kind: "css" } | { kind: "shell" } | { kind: "slot"; id: string };
 
 export class RoutingError extends Error {
   constructor(message: string) {
@@ -14,18 +14,51 @@ export class RoutingError extends Error {
   }
 }
 
+/**
+ * Found live (2026-09-21, same tic-tac-toe app, "Remove the ... caption"): the app's fixed
+ * frame — page heading, subtitle/caption, footer, wrappers — is markup that belongs to no
+ * region, and until then no edit could reach it. The router had only `css` and `slot <id>` to
+ * choose from, so it picked the nearest region every time; that region's edit had nothing to
+ * remove, saved a new version anyway, and reported "Updated status-bar." three times while the
+ * caption stayed. `shell` is now a third answer, and the router is shown the frame markup so
+ * it can tell where a piece of text actually lives.
+ *
+ * Found live (2026-09-21, a tic-tac-toe app, "Add a dark theme switch"): the old wording here
+ * ended with "when a request could be either, prefer css". A request to ADD a control is
+ * exactly the kind of thing that reads as visual ("theme", "switch"), so it was routed to the
+ * stylesheet, which dutifully wrote light/dark theme rules "applied by the theme switch" — and
+ * there was no switch, because a stylesheet cannot create an element or make anything happen.
+ * The studio then reported "Updated styling." The tie-break was backwards for that whole class
+ * of request: new controls and behaviour need a region's markup and script; only what is
+ * already on the page can be restyled. The prompt now says so explicitly, and `css` is the
+ * fallback only for a genuinely vague, purely visual request ("make it nicer").
+ *
+ * Known limit, deliberately not solved here: a request that needs BOTH (a dark-mode switch
+ * needs the control AND theme rules in the stylesheet) still gets one target per edit. It is
+ * routed to the region that holds the control, since that is the part that is missing; a
+ * follow-up can then style it. Multi-target edits would be a bigger change to edits.ts.
+ */
 const ROUTER_PROMPT = `You decide which part of a web app an edit request is about.
 
 Reply with EXACTLY one line and nothing else — no explanation, no punctuation:
 
   css
   slot <id>
+  shell
 
-Choose "css" when the request is about appearance: colour, size, spacing, typography, theme, borders, shadows, or how things are laid out visually.
+The app has three kinds of part. The regions are listed under "Regions". The frame is the fixed markup around the regions — the page heading, subtitles and captions, footer lines, wrappers; it is shown under "The frame", and anything visible that is not inside a listed region lives there. The stylesheet controls how everything looks.
 
-Choose "slot <id>" when the request is about what is inside one region: its wording, the items it lists, the controls it offers, or the structure of its markup.
+A stylesheet can only change how things that ALREADY EXIST look. It cannot add an element, and it cannot make anything happen. A region's own markup and script can do both.
 
-When a request could be either, prefer "css" — the stylesheet controls every visual property, and region markup carries no styling of its own.`;
+Choose "css" when the request only changes the appearance of what is already on the page: colour, size, spacing, typography, borders, shadows, fonts, or how existing things are laid out. Changing the whole app's colour scheme ("make it dark", "use a green palette") is "css".
+
+Choose "slot <id>" when the request is about content or behaviour: wording, the items a region lists, the structure of its markup — and ANYTHING that adds or changes a control or feature. That includes a button, switch, toggle, input, menu, filter, counter, timer, sorting, or any request phrased like "add a ...", "let the user ...", "show a ...", "make it so that ...". Pick the region where that control most naturally belongs, judging by the region descriptions.
+
+When a request needs both a new control and a look for it (for example "add a dark mode switch"), choose the region that will hold the control — the control is what is missing. Styling for it can be requested afterwards.
+
+Choose "shell" when the request is about text or elements in the frame: removing, rewording or adding a heading, subtitle, caption or footer line, or changing the wrappers around the regions. Look at the frame markup you are shown — if the text or element the request names appears there, the answer is "shell", not a region and not "css", even when a region's description sounds related.
+
+Only when a request is genuinely vague and purely about looks ("make it nicer", "more modern") choose "css".`;
 
 export async function routeEdit(
   instruction: string,
@@ -43,13 +76,15 @@ export async function routeEdit(
   // calls, identical system+context, cache_read_input_tokens stayed 0 — because context
   // wasn't wired up yet; see open-problems.md). Only `instruction` is genuinely volatile.
   const regions = plan.slots.map((s) => `slot ${s.id} — ${s.spec}`).join("\n");
+  // The frame is stable across edits to one app until a shell edit lands, so it stays in the
+  // cached `context` half with the regions.
   const { provider, model, maxTokens, secrets } = resolve("router", credential);
 
   let response: string;
   try {
     response = await provider.completeText(model, {
       system: ROUTER_PROMPT,
-      context: `Regions:\n${regions}`,
+      context: `Regions:\n${regions}\n\nThe frame (fixed markup around the regions; each data-slot element is where a region goes):\n${plan.shell}`,
       user: `Request: ${instruction}`,
       maxTokens,
       signal,
@@ -88,6 +123,7 @@ export async function routeEdit(
   const raw = response.trim().toLowerCase();
 
   if (raw === "css") return { kind: "css" };
+  if (raw === "shell") return { kind: "shell" };
 
   const match = /^slot\s+([a-z][a-z0-9-]{0,30})$/.exec(raw);
   if (match) {

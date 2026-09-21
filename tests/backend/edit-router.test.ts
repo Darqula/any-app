@@ -314,3 +314,57 @@ test("route: a truncated router call ends in the friendly routing-failure html, 
     `expected the friendly routing-failure message, got: ${body}`,
   );
 });
+
+// -----------------------------------------------------------------------------------------
+// The routing rule itself. The model's decision cannot be tested with a fake provider, but the
+// wording that makes it can be pinned: the 2026-09-21 regression ("Add a dark theme switch"
+// routed to css, which then styled a switch that did not exist) came from a prompt that told
+// the model to prefer css whenever a request could be either.
+// -----------------------------------------------------------------------------------------
+
+test("the router prompt sends new controls/behaviour to a region and no longer says to prefer css on a tie", async (t) => {
+  const fake = await startFakeProvider();
+  t.after(() => fake.close());
+  const plan = planWithOneSlot();
+
+  await withEnv(routerEnv(fake), async () => {
+    fake.queueComplete({ text: "slot hero", finish: "stop" });
+    await routeEdit("add a dark theme switch", plan, null);
+  });
+
+  const system = fake.requests().at(-1)?.system ?? "";
+  assert.match(system, /cannot add an element/i, "must say a stylesheet cannot create elements");
+  assert.match(system, /switch/i, "must name switches/toggles as region work");
+  assert.match(system, /add a dark mode switch/i, "must cover the mixed control-plus-look case explicitly");
+  assert.doesNotMatch(system, /prefer "css"/i, "the old tie-break that caused the misroute must stay gone");
+});
+
+test("the router can answer \"shell\", and is shown the frame markup so it can tell where text lives", async (t) => {
+  const fake = await startFakeProvider();
+  t.after(() => fake.close());
+  const plan: AppPlan = {
+    ...planWithOneSlot(),
+    shell: `<h1>Title</h1><p class="app-subtitle">A caption that belongs to no region</p><div data-slot="hero"></div>`,
+  };
+
+  await withEnv(routerEnv(fake), async () => {
+    fake.queueComplete({ text: "shell", finish: "stop" });
+    const target = await routeEdit("remove the caption under the heading", plan, null);
+    assert.deepEqual(target, { kind: "shell" });
+  });
+
+  const sent = fake.requests().at(-1)!;
+  assert.match(sent.system ?? "", /"shell"/, "the prompt must offer shell as an answer");
+  assert.ok(
+    JSON.stringify(sent.body).includes("A caption that belongs to no region"),
+    "the frame markup must be in what the router sees, or it cannot tell a frame caption from a region's content",
+  );
+
+  // Case-insensitive like the other answers, and still exact: prose around it is a RoutingError.
+  await withEnv(routerEnv(fake), async () => {
+    fake.queueComplete({ text: "Shell", finish: "stop" });
+    assert.deepEqual(await routeEdit("remove the caption", plan, null), { kind: "shell" });
+    fake.queueComplete({ text: "the shell", finish: "stop" });
+    await assert.rejects(() => routeEdit("remove the caption", plan, null), /router replied with/);
+  });
+});
