@@ -27,6 +27,7 @@ import { editApplied, editProblem } from "./views";
 import { currentOwner } from "./session";
 import { credentialForRole } from "./credential-resolve";
 import { beginEdit } from "./activity";
+import { recordMessage } from "./conversation";
 
 /**
  * Guards against a slot edit that came back as a diff-shaped fragment instead of the whole
@@ -133,6 +134,15 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
     // a delete land between the model call and that write would make it fail and the tokens
     // never count against the monthly cap.
     const endEdit = beginEdit(id);
+    // The follow-up is part of the conversation from the moment it is accepted, not when it
+    // succeeds — a failed edit still leaves "you asked X" followed by why it did not happen.
+    // `chosen` is only what the dropdown said; an auto-routed edit's target is not known yet.
+    await recordMessage(id, { role: "user", kind: "edit", target: chosen || null, body: instruction });
+    /** Records an edit failure in the conversation, then answers the request with it. */
+    async function problem(status: number, message: string): Promise<void> {
+      await recordMessage(id, { role: "assistant", kind: "error", target: chosen || null, body: message });
+      res.status(status).type("html").send(editProblem(message));
+    }
     try {
       // An explicit dropdown choice skips the router call entirely.
       let target;
@@ -145,7 +155,7 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
         // swap runtime never finds a slot for — a version bump and a paid model call for
         // no visible effect.
         if (!filled.slots.some((s) => s.id === chosen)) {
-          res.status(400).type("html").send(editProblem(`Unknown region "${chosen}".`));
+          await problem(400, `Unknown region "${chosen}".`);
           return;
         }
         target = { kind: "slot" as const, id: chosen };
@@ -217,26 +227,31 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
       const document = renderDocument(next, (p) => renderFullHead(p, studioOrigin), SHELL_TAIL);
 
       if (!(await saveEditedApp(id, owner, next, document, version))) {
-        res
-          .status(409)
-          .type("html")
-          .send(editProblem("This app changed while your edit was running. Try again."));
+        await problem(409, "This app changed while your edit was running. Try again.");
         return;
       }
 
+      const label = target.kind === "css" ? "styling" : target.id;
+      await recordMessage(id, {
+        role: "assistant",
+        kind: "edit",
+        target: target.kind === "css" ? "css" : target.id,
+        body: `Updated ${label}.`,
+      });
       res.type("html").send(editApplied(id, appOrigin(id), target, next));
     } catch (error) {
       if (isAbortError(error)) return;
       if (error instanceof RoutingError) {
         console.warn(`edit ${id}: routing failed`, error);
-        res
-          .type("html")
-          .send(editProblem("I could not tell which part to change — pick one below."));
+        // Not `problem()`: this answers 200 (the form's own "pick one" hint), unlike the failures above.
+        const hint = "I could not tell which part to change — pick one below.";
+        await recordMessage(id, { role: "assistant", kind: "error", body: hint });
+        res.type("html").send(editProblem(hint));
         return;
       }
       const message = safeMessage(error, secrets);
       console.error(`edit ${id} failed:`, message);
-      res.status(500).type("html").send(editProblem(message));
+      await problem(500, message);
     } finally {
       try {
         await recordUsage(usageEvents);

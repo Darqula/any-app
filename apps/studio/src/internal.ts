@@ -43,6 +43,7 @@ import {
 import type { UsageEvent, Owner } from "@any-app/store";
 import { renderShellHead, renderFullHead, DOCTYPE_AND_PADDING, SHELL_TAIL } from "./shell";
 import { credentialForRole } from "./credential-resolve";
+import { recordMessage } from "./conversation";
 
 export function internalRouter(studioOrigin: string): Router {
   const router = Router();
@@ -128,6 +129,7 @@ export function internalRouter(studioOrigin: string): Router {
       const limit = await monthlyLimitFor(generation.owner_id);
       if (limit !== null && (await billableTokensThisMonth(generation.owner_id)) >= limit) {
         await markFailed(id, "Monthly token limit reached.");
+        await recordMessage(id, { role: "assistant", kind: "error", body: "Monthly token limit reached." });
         res.send(DOCTYPE_AND_PADDING + errorBanner("Monthly token limit reached."));
         return;
       }
@@ -320,6 +322,7 @@ export function internalRouter(studioOrigin: string): Router {
             // A shell full of apologies is not a generated app.
             res.write(SHELL_TAIL);
             await markFailed(id, "every region failed to generate");
+            await recordMessage(id, { role: "assistant", kind: "error", body: "Every region failed to generate." });
             res.end();
             return;
           }
@@ -344,6 +347,12 @@ export function internalRouter(studioOrigin: string): Router {
         // correct: swap() has always been order-independent.
         const document = renderDocument(filled, (p) => renderFullHead(p, studioOrigin), SHELL_TAIL);
         await markCompleteWithPlan(id, document, filled);
+        const regions = filled.slots.length;
+        await recordMessage(id, {
+          role: "assistant",
+          kind: "create",
+          body: `Built "${filled.title}" with ${regions} ${regions === 1 ? "region" : "regions"}.`,
+        });
         res.end();
       } catch (error) {
         if (isAbortError(error)) {
@@ -356,6 +365,7 @@ export function internalRouter(studioOrigin: string): Router {
         const message = safeMessage(error, secrets);
         console.error(`generation ${id} failed:`, message);
         await markFailed(id, message);
+        await recordMessage(id, { role: "assistant", kind: "error", body: message });
         res.write(errorBanner(message));
         res.end();
       }
@@ -446,5 +456,6 @@ async function runLinearFallback(
 
   // Persist before ending, for the same reason as the plan/fill path above.
   await markComplete(id, document);
+  await recordMessage(id, { role: "assistant", kind: "create", body: "Built your app." });
   res.end();
 }

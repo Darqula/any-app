@@ -752,6 +752,69 @@ test("M18 — while a follow-up edit runs the sidebar list shows \"updating\" an
   assert.equal((await deleteApp(stack, owner.id, owner.cookie)).status, 200);
 });
 
+test("M19 — the conversation log: prompt first, then the build result and each follow-up; owner-only; cursor-based; deleted with the app", async (t) => {
+  const stack = await setupM(t);
+  const owner = await generateAs(stack, "M19 a weekly planner");
+  const messages = async (after: number, cookie?: string) =>
+    fetch(`${stack.servers.studioOrigin}/generations/${owner.id}/messages?after=${after}`, { headers: cookie ? { cookie } : {} });
+
+  // The frame route renders the whole conversation (prompt as message zero) into the log.
+  const frame = await (await fetch(`${stack.servers.studioOrigin}/generations/${owner.id}/frame`, { headers: { cookie: owner.cookie } })).text();
+  assert.ok(frame.includes(`id="chat-log"`) && frame.includes(`data-app="${owner.id}"`));
+  assert.ok(frame.includes("M19 a weekly planner"), "message zero is the prompt");
+  assert.match(frame, /Built &quot;Accounts Test App&quot; with 1 region\./, "the finished build is recorded, escaped");
+
+  // A follow-up: the user's line and the outcome are both recorded, after the build message.
+  stack.fake.queueComplete({ text: "<p>edited</p>" });
+  const edit = await fetch(`${stack.servers.studioOrigin}/generations/${owner.id}/edits`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", cookie: owner.cookie },
+    body: new URLSearchParams({ instruction: "<b>make it bigger</b>", target: "alpha" }).toString(),
+  });
+  assert.equal(edit.status, 200);
+  await edit.text();
+  const all = await (await messages(0, owner.cookie)).text();
+  assert.match(all, /&lt;b&gt;make it bigger&lt;\/b&gt;/, "user text is escaped, never interpreted as markup");
+  assert.ok(all.includes("Updated alpha."));
+  assert.ok(!all.includes("M19 a weekly planner"), "the prompt is rendered by frame/create, never re-sent by the poll");
+  assert.match(all, /chat-user/);
+
+  // Cursor: nothing after the newest seq.
+  const seqs = [...all.matchAll(/data-seq="(\d+)"/g)].map((m) => Number(m[1]));
+  assert.ok(seqs.length >= 3, "build result, user follow-up, edit result");
+  assert.deepEqual(seqs, [...seqs].sort((a, b) => a - b), "oldest first");
+  const none = await (await messages(Math.max(...seqs), owner.cookie)).text();
+  assert.ok(!none.includes("data-seq"), "nothing newer than the newest message");
+
+  // A failed edit is recorded as an error the user can read back.
+  stack.fake.queueError({ status: 500 });
+  const bad = await fetch(`${stack.servers.studioOrigin}/generations/${owner.id}/edits`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", cookie: owner.cookie },
+    body: new URLSearchParams({ instruction: "this fails", target: "alpha" }).toString(),
+  });
+  assert.equal(bad.status, 500);
+  assert.match(await (await messages(Math.max(...seqs), owner.cookie)).text(), /chat-error/);
+
+  // Owner-only: no cookie / another owner get a 404 and no content; a non-owner's frame gets
+  // an empty, hidden log rather than the owner's history.
+  const other = await generateAs(stack, "M19 someone else");
+  assert.equal((await messages(0)).status, 404);
+  assert.equal((await messages(0, other.cookie)).status, 404);
+  await fetch(`${stack.servers.studioOrigin}/generations/${owner.id}/visibility`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", cookie: owner.cookie },
+    body: new URLSearchParams({ visibility: "unlisted" }).toString(),
+  });
+  const sharedFrame = await (await fetch(`${stack.servers.studioOrigin}/generations/${owner.id}/frame`, { headers: { cookie: other.cookie } })).text();
+  assert.ok(sharedFrame.includes(`data-app=""`) && !sharedFrame.includes("M19 a weekly planner"));
+
+  // Deleting the app deletes its conversation (cascade), leaving no orphan rows.
+  assert.equal(await scalar(stack.scratch.databaseUrl, `select count(*) from messages where generation_id = $1`, [owner.id]) !== "0", true);
+  assert.equal((await deleteApp(stack, owner.id, owner.cookie)).status, 200);
+  assert.equal(await scalar(stack.scratch.databaseUrl, `select count(*) from messages where generation_id = $1`, [owner.id]), "0");
+});
+
 test("N1 — a completed generation on the platform credential writes billable usage_events rows", async (t) => {
   const stack = await setupM(t);
   const owner = await generateAs(stack, "N1 usage test");

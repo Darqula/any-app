@@ -1,4 +1,4 @@
-import type { Generation, Visibility } from "@any-app/store";
+import type { Generation, Message, Visibility } from "@any-app/store";
 import type { CredentialHint, Owner } from "@any-app/store";
 import type { Role, ProviderId } from "@any-app/generator";
 import type { TokenMode } from "@any-app/protocol";
@@ -69,6 +69,43 @@ export function previewFrame(id: string, appOrigin: string, grant: string): stri
  */
 export function oobSlot(id: "edit-slot" | "owner-slot", html: string): string {
   return `<div id="${id}" hx-swap-oob="innerHTML">${html}</div>`;
+}
+
+/**
+ * The conversation panel's contents. Every body here is escaped text — user prompts, studio
+ * sentences, scrubbed error messages, and (later) model-written lines are all untrusted as far
+ * as markup goes, and none of them is ever interpreted as HTML.
+ *
+ * `pending` is the transient "assistant is working" row. It carries `data-pending` and no
+ * `data-seq`: the page drops it and re-adds whatever the server says on every poll, and the
+ * polling cursor is the highest `data-seq` it holds.
+ */
+export function messageItems(
+  messages: Pick<Message, "seq" | "role" | "kind" | "target" | "body">[],
+  pending: string | null = null,
+): string {
+  const items = messages.map((m) => {
+    const meta =
+      m.role === "user" && m.kind === "edit" && m.target
+        ? `<span class="chat-meta">${escapeHtml(m.target === "css" ? "styling" : m.target)}</span>`
+        : "";
+    return `<li class="chat-msg chat-${m.role}${m.kind === "error" ? " chat-error" : ""}" data-seq="${m.seq}">${meta}<p class="chat-body">${escapeHtml(m.body)}</p></li>`;
+  });
+  if (pending) {
+    items.push(`<li class="chat-msg chat-assistant chat-pending" data-pending="1"><p class="chat-body">${escapeHtml(pending)}</p></li>`);
+  }
+  return items.join("");
+}
+
+/**
+ * Replaces the whole `#chat-log` element out-of-band (`hx-swap-oob="true"` swaps the element,
+ * not just its children) so the `data-app` attribute changes with the content. `data-app` is
+ * how the page knows which app the log belongs to — and an empty one means "no conversation
+ * for what is on the stage" (nothing selected, or a shared app the viewer does not own), which
+ * hides the panel.
+ */
+export function chatLogOob(appId: string, itemsHtml: string): string {
+  return `<ol id="chat-log" hx-swap-oob="true" data-app="${escapeHtml(appId)}" aria-label="Conversation" aria-live="polite">${itemsHtml}</ol>`;
 }
 
 /** Owner-controls row (visibility form / remix form) — shared by the home page's header slot
@@ -581,6 +618,33 @@ ${HTMX_CONFIG_META}
   .preview { flex: 1; border: 0; width: 100%; height: 100%; background: #fff; }
   .placeholder { margin: auto; padding: 0 40px; text-align: center; }
 
+  /* Conversation panel: a slim header that expands into a ~30%-of-screen log above the composer. */
+  .chat-panel { background: var(--panel); border-top: 1px solid var(--border); }
+  .chat-panel:has(#chat-log[data-app=""]) { display: none; }
+  .chat-head {
+    display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 20px;
+    border: 0; background: transparent; color: var(--muted); text-align: left;
+    font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+  }
+  .chat-head:hover { color: var(--text); }
+  .chat-head .chat-chevron { margin-left: auto; transition: transform .15s; }
+  body.chat-open .chat-head .chat-chevron { transform: rotate(180deg); }
+  .chat-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+  .chat-dot[hidden] { display: none; }
+  #chat-log { display: none; list-style: none; margin: 0; padding: 4px 20px 12px; overflow-y: auto; flex-direction: column; gap: 10px; }
+  body.chat-open #chat-log { display: flex; height: 30vh; }
+  .chat-msg { max-width: 78%; display: flex; flex-direction: column; gap: 2px; }
+  .chat-user { align-self: flex-end; align-items: flex-end; }
+  .chat-assistant { align-self: flex-start; }
+  .chat-body { margin: 0; padding: 8px 12px; border-radius: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .chat-user .chat-body { background: var(--accent); color: var(--accent-fg); border-bottom-right-radius: 4px; }
+  .chat-assistant .chat-body { background: var(--hover); color: var(--text); border-bottom-left-radius: 4px; }
+  .chat-error .chat-body { background: var(--status-failed-bg); color: var(--status-failed-fg); }
+  .chat-meta { font-size: 11px; color: var(--faint); }
+  .chat-pending .chat-body { color: var(--muted); animation: blink 1.4s infinite; }
+  /* The log already says what the toast would; showing both is noise. */
+  body.chat-open #edit-result > p { display: none; }
+
   /* One composer, two modes (mockup D): the create form is always in the DOM, the edit form
      arrives out-of-band into #edit-slot. body.creating picks which one shows. */
   .dock { display: flex; gap: 10px; align-items: center; padding: 12px 20px;
@@ -664,6 +728,13 @@ ${HTMX_CONFIG_META}
       <div id="owner-slot" class="owner-controls"></div>
     </div>
     <div id="stage"><p class="placeholder">Your app will appear here.</p></div>
+    <section class="chat-panel">
+      <button type="button" id="chat-toggle" class="chat-head" aria-expanded="false" aria-controls="chat-log">
+        <span>Conversation</span><span class="chat-dot" id="chat-dot" hidden></span>
+        <svg class="chat-chevron" width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 10l5-5 5 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <ol id="chat-log" data-app="" aria-label="Conversation" aria-live="polite"></ol>
+    </section>
     <div class="dock">
       <form id="create-form" hx-post="/generations" hx-target="#stage" hx-swap="innerHTML">
         <textarea name="prompt" rows="1" placeholder="Describe the app you want…" required></textarea>
@@ -814,13 +885,70 @@ ${HTMX_CONFIG_META}
           });
       }
 
+      // ---- Conversation panel ---------------------------------------------------------------
+      // #chat-log is replaced wholesale (out-of-band, outerHTML) whenever the stage changes app,
+      // so it is looked up fresh every time — never cached in a variable. Its data-app says which
+      // app the log belongs to; empty means there is no conversation to show (panel hidden).
+      var CHAT_KEY = "anyapp.chat.open";
+      var chatToggle = document.getElementById("chat-toggle");
+      var chatDot = document.getElementById("chat-dot");
+      var chatBusy = false;
+      function chatEl() { return document.getElementById("chat-log"); }
+      function nearBottom(el) { return el.scrollHeight - el.scrollTop - el.clientHeight < 40; }
+      function scrollChat() { var el = chatEl(); if (el) el.scrollTop = el.scrollHeight; }
+      function setChatOpen(on) {
+        body.classList.toggle("chat-open", on);
+        chatToggle.setAttribute("aria-expanded", on ? "true" : "false");
+        if (on) { chatDot.hidden = true; scrollChat(); }
+        try { localStorage.setItem(CHAT_KEY, on ? "1" : "0"); } catch (e) { /* private mode etc.: not persisted */ }
+      }
+      chatToggle.addEventListener("click", function () { setChatOpen(!body.classList.contains("chat-open")); });
+      try {
+        if (localStorage.getItem(CHAT_KEY) === "1") {
+          body.classList.add("chat-open");
+          chatToggle.setAttribute("aria-expanded", "true");
+        }
+      } catch (e) { /* storage unavailable: start collapsed */ }
+
+      function lastSeq(el) {
+        var seqs = el.querySelectorAll("li[data-seq]");
+        return seqs.length ? Number(seqs[seqs.length - 1].getAttribute("data-seq")) : 0;
+      }
+      // Pulls messages newer than what the log holds, and swaps the transient "working" row.
+      function refreshChat() {
+        var log = chatEl();
+        var appId = log ? log.getAttribute("data-app") : "";
+        if (!appId || document.hidden || chatBusy) return Promise.resolve();
+        chatBusy = true;
+        var url = "/generations/" + encodeURIComponent(appId) + "/messages?after=" + lastSeq(log);
+        return fetch(url, { credentials: "same-origin", cache: "no-store" })
+          .then(function (res) { return res.ok ? res.text() : null; })
+          .then(function (html) {
+            var cur = chatEl();
+            // The stage may have moved to another app while this was in flight.
+            if (html === null || !cur || cur.getAttribute("data-app") !== appId) return;
+            var stick = nearBottom(cur);
+            var pending = cur.querySelector("[data-pending]");
+            if (pending) pending.remove();
+            var tpl = document.createElement("template");
+            tpl.innerHTML = html;
+            var added = tpl.content.querySelectorAll("li[data-seq]").length;
+            cur.appendChild(tpl.content);
+            if (added && !body.classList.contains("chat-open")) chatDot.hidden = false;
+            if (stick || added) scrollChat();
+          })
+          .catch(function () {})
+          .then(function () { chatBusy = false; });
+      }
+
+      function tick() { return refreshList().then(refreshChat); }
       function schedule() {
         clearTimeout(timer);
         var delay = hasLiveRows() ? Math.min(SLOW_MS, FAST_MS * (1 + unchanged)) : SLOW_MS;
-        timer = setTimeout(function () { refreshList().then(schedule); }, delay);
+        timer = setTimeout(function () { tick().then(schedule); }, delay);
       }
       document.addEventListener("visibilitychange", function () {
-        if (!document.hidden) { unchanged = 0; refreshList().then(schedule); }
+        if (!document.hidden) { unchanged = 0; tick().then(schedule); }
       });
       schedule();
 
@@ -849,13 +977,15 @@ ${HTMX_CONFIG_META}
           body.classList.remove("creating");
           setStreaming(false);
           markActive();
+          chatDot.hidden = true;
+          setTimeout(scrollChat, 0);
         } else if (verb === "post" && path === "/generations") {
           // A create response is the streaming iframe; it fires "load" when the document
           // has fully arrived, which is also when the app's sidebar badge flips to its final
           // state. A 400 response has no iframe and shows no pill.
           var frame = document.querySelector("#stage iframe");
           setStreaming(!!frame);
-          if (frame) frame.addEventListener("load", function () { setStreaming(false); refreshList(); });
+          if (frame) frame.addEventListener("load", function () { setStreaming(false); refreshList(); refreshChat(); });
         }
       });
 
@@ -900,6 +1030,8 @@ ${HTMX_CONFIG_META}
           document.getElementById("stage").innerHTML = '<p class="placeholder">Your app will appear here.</p>';
           document.getElementById("edit-slot").innerHTML = "";
           document.getElementById("owner-slot").innerHTML = "";
+          var log = chatEl();
+          if (log) { log.setAttribute("data-app", ""); log.innerHTML = ""; }
           body.classList.add("creating");
           setStreaming(false);
         }
@@ -914,12 +1046,12 @@ ${HTMX_CONFIG_META}
       // again the moment it finishes, so the badge flips on and back without waiting for a poll.
       document.body.addEventListener("htmx:beforeRequest", function (event) {
         if (!event.target || event.target.id !== "edit-form") return;
-        setTimeout(function () { unchanged = 0; refreshList().then(schedule); }, 400);
+        setTimeout(function () { unchanged = 0; tick().then(schedule); }, 400);
       });
       document.body.addEventListener("htmx:afterRequest", function (event) {
         if (!event.target || event.target.id !== "edit-form") return;
         listEpoch++;
-        refreshList().then(schedule);
+        tick().then(schedule);
       });
 
       document.body.addEventListener("htmx:afterRequest", function (event) {

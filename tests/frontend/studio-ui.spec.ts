@@ -308,4 +308,35 @@ test.describe("A — studio UI", () => {
     await expect(row).toHaveClass(/active/);
     await expect(page.locator('textarea[name="prompt"]')).toHaveValue("");
   });
+
+  test("A14 — the conversation panel: hidden with nothing selected, shows the prompt, expands to ~30% of the screen, and remembers it", async ({ page }) => {
+    const prompt = `A14 conversation ${Date.now()}`;
+    const sessionId = await establishAnonSession(page);
+    await seedGeneration(databaseUrl, { prompt, document: MINIMAL_DOCUMENT, status: "complete", sessionId });
+    await page.goto("/");
+
+    const panel = page.locator(".chat-panel");
+    const log = page.locator("#chat-log");
+    await expect(panel).toBeHidden();
+
+    await page.locator("#generation-list li", { hasText: prompt }).locator("button").click();
+    await expect(panel).toBeVisible();
+    await expect(page.locator("#chat-toggle")).toHaveAttribute("aria-expanded", "false");
+    await expect(log).toBeHidden(); // collapsed: just the header strip
+
+    await page.locator("#chat-toggle").click();
+    await expect(page.locator("#chat-toggle")).toHaveAttribute("aria-expanded", "true");
+    await expect(log).toBeVisible();
+    await expect(log.locator("li").first()).toContainText(prompt);
+    const viewport = page.viewportSize()!;
+    const height = (await log.boundingBox())!.height;
+    expect(Math.abs(height - viewport.height * 0.3)).toBeLessThan(6);
+
+    // Remembered per browser, and hidden again when the shown app is deleted.
+    await page.reload();
+    await page.locator("#generation-list li", { hasText: prompt }).locator("button").click();
+    await expect(log).toBeVisible();
+    await page.locator("#chat-toggle").click();
+    await expect(log).toBeHidden();
+  });
 });

@@ -6,6 +6,7 @@ import {
   getGeneration,
   getFilledApp,
   listRecentGenerations,
+  listMessages,
   setVisibility,
   deleteGeneration,
   forkGeneration,
@@ -19,9 +20,10 @@ import { internalRouter } from "./internal";
 import { editsRouter } from "./edits";
 import { settingsRouter } from "./settings";
 import { authRouter } from "./auth";
-import { homePage, previewFrame, oobSlot, editProblem, generationList, editForm, ownerControls, remixControl, sharedAppPage, notFoundPage } from "./views";
+import { homePage, previewFrame, oobSlot, chatLogOob, messageItems, editProblem, generationList, editForm, ownerControls, remixControl, sharedAppPage, notFoundPage } from "./views";
 import { currentOwner } from "./session";
 import { isEditing } from "./activity";
+import { firstMessage, fullConversation, pendingText } from "./conversation";
 import { missingCredentials } from "./credential-resolve";
 import { renderFullHead, SHELL_TAIL } from "./shell";
 
@@ -146,8 +148,26 @@ app.post("/generations", async (req, res) => {
     .send(
       previewFrame(generation.id, appOrigin(generation.id), grant) +
         oobSlot("edit-slot", "") +
-        oobSlot("owner-slot", ""),
+        oobSlot("owner-slot", "") +
+        chatLogOob(generation.id, messageItems([firstMessage(generation)], pendingText(generation))),
     );
+});
+
+// Incremental conversation for the bottom panel: only messages after `after` (the highest seq
+// the page already has), plus the transient "working" row. Owner-only — the log is the owner's
+// working history, not part of what a shared link exposes — and a 404 for anyone else, like
+// every other owner-scoped route here. The first message (the prompt) is never included: the
+// frame/create responses render it, and repeating it would duplicate it on every poll.
+app.get("/generations/:id/messages", async (req, res) => {
+  const owner = await currentOwner(req, res);
+  const generation = await getGeneration(req.params.id);
+  if (!generation || !isOwner(generation, owner)) {
+    res.status(404).type("html").send("");
+    return;
+  }
+  const after = Math.max(0, Math.floor(Number(req.query.after ?? 0)) || 0);
+  const rows = await listMessages(generation.id, after);
+  res.set("Cache-Control", "no-store").type("html").send(messageItems(rows, pendingText(generation)));
 });
 
 app.get("/generations/:id/frame", async (req, res) => {
@@ -176,12 +196,17 @@ app.get("/generations/:id/frame", async (req, res) => {
   const shareUrl = `${studioOrigin}/apps/${generation.id}`;
   const ownerHtml = mode === "rw" ? ownerControls(generation.id, generation.visibility, shareUrl) : remixControl(generation.id);
 
+  const chatHtml =
+    mode === "rw"
+      ? chatLogOob(generation.id, messageItems(await fullConversation(generation), pendingText(generation)))
+      : chatLogOob("", "");
   res
     .type("html")
     .send(
       previewFrame(generation.id, appOrigin(generation.id), grant) +
         oobSlot("edit-slot", editFormHtml) +
-        oobSlot("owner-slot", ownerHtml),
+        oobSlot("owner-slot", ownerHtml) +
+        chatHtml,
     );
 });
 

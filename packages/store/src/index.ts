@@ -19,4 +19,6 @@ export type { SessionRow } from "./sessions";
 export { hashPassword, verifyPassword } from "./passwords";
 export { claimAnonymousWork } from "./claim";
 export { recordUsage, billableTokensThisMonth, monthlyLimitFor } from "./usage";
+export { appendMessage, listMessages, MAX_MESSAGE_LENGTH } from "./messages";
+export type { Message, MessageRole, MessageKind, NewMessage } from "./messages";
 export type { UsageEvent } from "./usage";
