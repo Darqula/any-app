@@ -3,6 +3,7 @@ import type { CredentialHint, Owner } from "@any-app/store";
 import type { Role, ProviderId } from "@any-app/generator";
 import type { TokenMode } from "@any-app/protocol";
 import type { RoleProblem } from "./credential-resolve";
+import { THEME_CSS } from "./theme";
 
 /**
  * htmx 2.0.4's shipped default `responseHandling` is
@@ -57,6 +58,36 @@ export function previewFrame(id: string, appOrigin: string, grant: string): stri
     title="Generated app preview"></iframe>`;
 }
 
+/**
+ * The composer dock and the owner controls live OUTSIDE `#stage` (mockup D: one bottom bar,
+ * one header row), but they belong to whichever app `#stage` is showing. htmx's out-of-band
+ * swap lets a single response carry both: the main content replaces `#stage`'s children and
+ * each slot below is swapped into its own element by id. An empty `html` is meaningful — it
+ * clears the slot, which is how a freshly created (still streaming) app removes the previous
+ * app's edit form instead of leaving it pointed at the wrong generation.
+ */
+export function oobSlot(id: "edit-slot" | "owner-slot", html: string): string {
+  return `<div id="${id}" hx-swap-oob="innerHTML">${html}</div>`;
+}
+
+/** Owner-controls row (visibility form / remix form) — shared by the home page's header slot
+ * and the standalone share page's header. */
+const OWNER_CONTROLS_CSS = `
+  .owner-controls { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); min-width: 0; }
+  .owner-controls form { display: flex; align-items: center; gap: 8px; margin: 0; padding: 0; border: 0; }
+  .owner-controls label { display: flex; align-items: center; gap: 8px; }
+  .owner-controls select { font-size: 12px; padding: 4px 8px; border-radius: 8px; }
+  .owner-controls button {
+    border: 1px solid var(--border); background: var(--panel); color: var(--text);
+    border-radius: 8px; padding: 4px 12px; font-size: 12px;
+  }
+  .owner-controls button:hover { background: var(--hover); }
+  .owner-controls button.btn-accent { background: var(--accent); color: var(--accent-fg); border: 0; }
+  .owner-controls button.btn-accent:hover { background: var(--accent-hover); }
+  .owner-controls .hint { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #visibility-result { display: contents; }
+`;
+
 const VISIBILITY_LABELS: Record<Visibility, string> = {
   private: "Private",
   unlisted: "Unlisted (anyone with the link)",
@@ -95,7 +126,7 @@ export function ownerControls(id: string, visibility: Visibility, shareUrl: stri
  * function so the frame-route fragment and the standalone share page render it identically. */
 export function remixControl(id: string): string {
   return `<form hx-post="/generations/${escapeHtml(id)}/fork" hx-target="#stage" hx-swap="none">
-    <button>Remix this app</button>
+    <button class="btn-accent">Remix this app</button>
   </form>
   <p class="hint">Remixing copies the app, not its data — your copy starts empty.</p>`;
 }
@@ -118,25 +149,22 @@ export function sharedAppPage(id: string, title: string, appOrigin: string, gran
 <title>${escapeHtml(title)}</title>
 ${HTMX_CONFIG_META}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/htmx/2.0.4/htmx.min.js"></script>
-<style>
-  :root { color-scheme: light dark; }
-  * { box-sizing: border-box; }
+<style>${THEME_CSS}${OWNER_CONTROLS_CSS}
   html, body { height: 100%; }
-  body { margin: 0; font: 15px/1.5 system-ui, sans-serif; display: flex; flex-direction: column; }
-  header { padding: 10px 16px; border-bottom: 1px solid #8883; display: flex;
-           justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
-  header a { color: inherit; font-weight: 600; text-decoration: none; }
+  body { display: flex; flex-direction: column; }
+  header { padding: 10px 18px; background: var(--panel); border-bottom: 1px solid var(--border);
+           display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+  header .brand { text-decoration: none; }
   .preview-wrap { flex: 1; min-height: 400px; }
-  .preview { width: 100%; height: 100%; border: 0; display: block; }
-  form { margin: 0; }
-  button { font: inherit; padding: 6px 12px; cursor: pointer; }
-  .hint { font-size: 12px; opacity: .6; margin: 0; }
+  .preview { width: 100%; height: 100%; border: 0; display: block; background: #fff; }
 </style>
 </head>
 <body>
   <header>
-    <a href="/">any-app</a>
-    ${mode === "ro" ? remixControl(id) : `<span class="hint">This is your app — open it from your sidebar to edit it.</span>`}
+    <a class="brand" href="/"><span class="brand-mark"></span>any-app</a>
+    <div class="owner-controls">
+      ${mode === "ro" ? remixControl(id) : `<span class="hint">This is your app — open it from your sidebar to edit it.</span>`}
+    </div>
   </header>
   <div class="preview-wrap">${previewFrame(id, appOrigin, grant)}</div>
 </body>
@@ -146,8 +174,9 @@ ${HTMX_CONFIG_META}
 export function notFoundPage(): string {
   return `<!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><title>Not found</title></head>
-<body style="font:15px system-ui;padding:24px"><p>Not found.</p></body>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Not found</title>
+<style>${THEME_CSS} body { padding: 24px; }</style></head>
+<body><p>Not found.</p></body>
 </html>`;
 }
 
@@ -155,6 +184,9 @@ export function editForm(id: string, slots: { id: string }[]): string {
   const options = slots
     .map((s) => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.id)}</option>`)
     .join("");
+  // `#edit-result` is deliberately NOT rendered here: the edit form arrives out-of-band into
+  // the composer dock (see oobSlot) and `#edit-result` lives permanently in homePage next to
+  // it — a second copy would duplicate the id.
   return `<form id="edit-form"
     hx-post="/generations/${escapeHtml(id)}/edits"
     hx-target="#edit-result"
@@ -168,8 +200,7 @@ export function editForm(id: string, slots: { id: string }[]): string {
       ${options}
     </select>
     <button type="submit">Apply</button>
-  </form>
-  <div id="edit-result"></div>`;
+  </form>`;
 }
 
 /**
@@ -300,9 +331,13 @@ export function roleConfigTable(
 // out waiting for whichever one it guessed wasn't visible.
 export function authForms(owner: Owner): string {
   if (owner.kind === "user") {
-    return `<form hx-post="/signout" hx-target="body" hx-swap="none">
-      <button>Sign out</button>
-    </form>`;
+    return `<div class="auth-user">
+      <span class="avatar"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="5.5" r="2.7" fill="currentColor"/><path d="M2.5 14c.4-2.9 2.7-4.4 5.5-4.4s5.1 1.5 5.5 4.4" fill="currentColor"/></svg></span>
+      <span class="who">Signed in</span>
+      <form hx-post="/signout" hx-target="body" hx-swap="none">
+        <button>Sign out</button>
+      </form>
+    </div>`;
   }
   return `<details class="auth">
     <summary>Sign in / sign up</summary>
@@ -323,6 +358,34 @@ export function authForms(owner: Owner): string {
   </details>`;
 }
 
+/** Account block (signed-in row, or the anonymous sign-in/sign-up `<details>`) — used by the
+ * home sidebar and the settings page, so it is one stylesheet rather than two copies. */
+const AUTH_CSS = `
+  .auth-user { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+  .auth-user form { display: flex; margin: 0; padding: 0; max-width: none; }
+  .auth-user .who { flex: 1; min-width: 0; color: var(--muted); }
+  .auth-user button {
+    width: auto; padding: 4px 10px; font-size: 12px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--panel); color: var(--muted);
+  }
+  .auth-user button:hover { background: var(--hover); color: var(--text); }
+  .avatar {
+    width: 28px; height: 28px; border-radius: 50%; flex: none;
+    background: linear-gradient(135deg, #f59e0b, #ef4444); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+  }
+  details.auth summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+  details.auth summary:hover { color: var(--text); }
+  details.auth form { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; padding: 0; border: 0; }
+  details.auth label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+  details.auth input { padding: 6px 10px; font-size: 13px; }
+  details.auth button {
+    width: fit-content; padding: 5px 12px; font-size: 12px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--panel); color: var(--text);
+  }
+  details.auth button:hover { background: var(--hover); }
+`;
+
 export function settingsPage(
   hints: CredentialHint[],
   roleRows: { role: Role; provider: ProviderId; model: string; maxTokens: number }[],
@@ -336,28 +399,30 @@ export function settingsPage(
 <title>any-app settings</title>
 ${HTMX_CONFIG_META}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/htmx/2.0.4/htmx.min.js"></script>
-<style>
-  :root { color-scheme: light dark; }
-  * { box-sizing: border-box; }
-  body { margin: 0; font: 15px/1.5 system-ui, sans-serif; padding: 24px; max-width: 640px; }
-  a { color: inherit; }
-  section { margin-bottom: 32px; }
-  h2 { font-size: 16px; }
+<style>${THEME_CSS}${AUTH_CSS}
+  body { padding: 28px 24px 48px; max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 8px 0 20px; }
+  section { margin-bottom: 20px; padding: 18px 20px; background: var(--panel);
+            border: 1px solid var(--border); border-radius: 14px; }
+  h2 { font-size: 15px; margin: 0 0 12px; }
   form { display: grid; gap: 10px; max-width: 420px; }
-  label { display: grid; gap: 4px; font-size: 13px; opacity: .85; }
-  input, select, button { font: inherit; padding: 6px 8px; }
-  button { cursor: pointer; width: fit-content; }
-  .cred-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+  label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+  button { padding: 7px 14px; width: fit-content; border-radius: 10px;
+           border: 1px solid var(--border); background: var(--panel); color: var(--text); }
+  button:hover { background: var(--hover); }
+  button[type="submit"] { background: var(--accent); color: var(--accent-fg); border: 0; font-weight: 600; }
+  button[type="submit"]:hover { background: var(--accent-hover); }
+  button:disabled { background: var(--btn-disabled); cursor: default; }
+  .cred-list { list-style: none; margin: 0 0 14px; padding: 0; display: grid; gap: 8px; }
   .cred-list li { display: flex; gap: 10px; align-items: center; }
-  .cred-validated { opacity: .6; font-size: 12px; }
-  .role-table { border-collapse: collapse; font-size: 13px; }
-  .role-table th, .role-table td { text-align: left; padding: 4px 12px 4px 0; }
-  .hint { font-size: 12px; opacity: .6; }
-  .edit-ok { color: #0a7d2c; }
-  .edit-problem, .problem { color: #b00020; margin: 4px 0; }
-  .empty { opacity: .6; }
-  .auth form { margin: 8px 0; }
+  .cred-validated { color: var(--muted); font-size: 12px; }
+  .role-table { border-collapse: collapse; font-size: 13px; width: 100%; }
+  .role-table th, .role-table td { text-align: left; padding: 6px 12px 6px 0; border-bottom: 1px solid var(--border); }
+  .role-table th { color: var(--faint); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+  .hint { margin: 8px 0; }
+  .edit-problem, .problem { margin: 4px 0; }
   .auth summary { cursor: pointer; }
+  .auth form { margin: 8px 0; }
 </style>
 </head>
 <body>
@@ -426,53 +491,130 @@ export function homePage(generations: Generation[], missing: RoleProblem[], owne
 <title>any-app studio</title>
 ${HTMX_CONFIG_META}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/htmx/2.0.4/htmx.min.js"></script>
-<style>
-  :root { color-scheme: light dark; }
-  * { box-sizing: border-box; }
-  body { margin: 0; font: 15px/1.5 system-ui, sans-serif; display: grid;
-         grid-template-columns: 320px 1fr; height: 100vh; }
-  .cred-banner { grid-column: 1 / -1; margin: 0; padding: 8px 16px; background: #fff3cd;
-                 color: #664d03; font-size: 13px; }
-  aside { border-right: 1px solid #8883; padding: 16px; overflow-y: auto; }
-  main { display: flex; flex-direction: column; }
-  form { display: flex; gap: 8px; padding: 16px; border-bottom: 1px solid #8883; }
-  textarea { flex: 1; min-height: 64px; font: inherit; padding: 8px; resize: vertical; }
-  button { font: inherit; padding: 8px 14px; cursor: pointer; }
-  #stage { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+<style>${THEME_CSS}${AUTH_CSS}${OWNER_CONTROLS_CSS}
+  html, body { height: 100%; }
+  body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+  .cred-banner {
+    margin: 0; padding: 8px 18px; font-size: 13px;
+    background: var(--warn-bg); color: var(--warn-text); border-bottom: 1px solid var(--warn-border);
+  }
+  .cred-banner a { color: inherit; font-weight: 600; text-decoration: underline; }
+  .shell { flex: 1; min-height: 0; display: grid; grid-template-columns: 300px 1fr; }
+
+  aside { background: var(--panel); border-right: 1px solid var(--border);
+          display: flex; flex-direction: column; min-height: 0; }
+  .side-head { padding: 18px 18px 14px; border-bottom: 1px solid var(--border); }
+  .side-links { display: flex; gap: 14px; margin-top: 10px; font-size: 13px; }
+  .side-links a { color: var(--muted); }
+  .side-links a:hover { color: var(--accent); }
+  .side-auth { padding: 12px 18px; border-bottom: 1px solid var(--border); }
+  .list-label {
+    padding: 14px 18px 6px; display: flex; align-items: center; justify-content: space-between;
+    font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--faint);
+  }
+  .list-label .newapp { text-transform: none; letter-spacing: 0; }
+  body.creating .newapp { background: var(--accent-soft); color: var(--accent); }
+  .app-list { flex: 1; overflow-y: auto; padding: 0 10px 16px; list-style: none; margin: 0; }
+  .app-list li { display: flex; align-items: center; gap: 10px; padding: 0 10px 0 0; border-radius: 9px; }
+  .app-list li:hover { background: var(--hover); }
+  .app-list li.active { background: var(--accent-soft); }
+  .app-list li button {
+    flex: 1; min-width: 0; text-align: left; border: 0; background: transparent; color: var(--text);
+    padding: 9px 10px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .app-list .empty { padding: 9px 10px; margin: 0; }
+  .status { font-size: 10px; font-weight: 600; letter-spacing: .03em; padding: 2px 8px; border-radius: 999px; flex: none; }
+  .status-complete { background: var(--status-complete-bg); color: var(--status-complete-fg); }
+  .status-streaming { background: var(--status-streaming-bg); color: var(--status-streaming-fg); }
+  .status-pending { background: var(--status-pending-bg); color: var(--status-pending-fg); }
+  .status-failed { background: var(--status-failed-bg); color: var(--status-failed-fg); }
+
+  main { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+  .stage-head { display: flex; align-items: center; gap: 10px; padding: 10px 20px 0; min-height: 38px; }
+  .stage-head .owner-controls { margin-left: auto; }
+  .stream-pill {
+    display: none; align-items: center; gap: 7px; font-size: 12px; font-weight: 500;
+    color: var(--accent); background: var(--accent-soft); border: 1px solid var(--pill-border);
+    padding: 4px 11px; border-radius: 999px;
+  }
+  body.streaming .stream-pill { display: inline-flex; }
+  .stream-pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: blink 1.1s infinite; }
+  @keyframes blink { 50% { opacity: .25; } }
+  #stage {
+    flex: 1; min-height: 0; margin: 12px 20px; display: flex; flex-direction: column;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 14px; overflow: hidden;
+  }
   .preview { flex: 1; border: 0; width: 100%; height: 100%; background: #fff; }
-  .placeholder { margin: auto; opacity: .6; }
-  ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-  li { display: grid; gap: 2px; }
-  li button { text-align: left; width: 100%; }
-  .status { font-size: 12px; opacity: .7; }
-  .status-failed { color: #b00020; }
-  .empty { opacity: .6; }
-  #edit-form { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid #8883; }
-  #edit-form input { flex: 1; font: inherit; padding: 6px 8px; }
-  #edit-form select, #edit-form button { font: inherit; padding: 6px 8px; }
-  #edit-result { padding: 0 16px 12px; font-size: 13px; }
-  .edit-ok { color: #0a7d2c; margin: 0; }
-  .edit-problem, .problem { color: #b00020; margin: 0; }
-  .auth form { margin: 8px 0; display: flex; flex-direction: column; gap: 4px; }
-  .auth summary { cursor: pointer; margin: 8px 0; }
-  .hint { font-size: 12px; opacity: .6; }
+  .placeholder { margin: auto; padding: 0 40px; text-align: center; }
+
+  /* One composer, two modes (mockup D): the create form is always in the DOM, the edit form
+     arrives out-of-band into #edit-slot. body.creating picks which one shows. */
+  .dock { display: flex; gap: 10px; align-items: center; padding: 12px 20px;
+          background: var(--panel); border-top: 1px solid var(--border); }
+  body.creating #edit-slot { display: none; }
+  body:not(.creating) #create-form { display: none; }
+  body:not(.creating) .dock:has(#edit-slot:empty) { display: none; }
+  #create-form, #edit-slot, #edit-form { flex: 1; min-width: 0; display: flex; gap: 10px; align-items: center; margin: 0; }
+  #create-form textarea {
+    flex: 1; height: 40px; padding: 9px 13px; line-height: 20px; resize: none;
+  }
+  #edit-form input { flex: 1; min-width: 0; height: 40px; padding: 0 13px; }
+  #edit-form select { font-size: 13px; height: 40px; }
+  .apply, #edit-form button {
+    background: var(--accent); color: var(--accent-fg); border: 0; border-radius: 10px;
+    padding: 9px 18px; font-weight: 600; height: 40px;
+  }
+  .apply:hover, #edit-form button:hover { background: var(--accent-hover); }
+  .apply:disabled, #edit-form button:disabled { background: var(--btn-disabled); cursor: default; }
+
+  /* editApplied / editProblem land in #edit-result; only the inner paragraph is drawn (as a
+     toast), so an empty container shows nothing. The text stays in the DOM after it fades. */
+  #edit-result { position: fixed; left: 50%; bottom: 76px; transform: translateX(-50%); z-index: 50; pointer-events: none; }
+  #edit-result > p {
+    padding: 9px 16px; border-radius: 10px; font-size: 13px; font-weight: 500;
+    box-shadow: var(--shadow); animation: toast-out 4.5s ease forwards;
+  }
+  #edit-result > .edit-ok { background: var(--toast-ok-bg); color: var(--toast-ok-fg); }
+  #edit-result > .edit-problem { background: var(--toast-bad-bg); color: var(--toast-bad-fg); }
+  @keyframes toast-out { 0%, 80% { opacity: 1; } 100% { opacity: 0; } }
+
+  @media (max-width: 760px) {
+    .shell { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+    aside { border-right: 0; border-bottom: 1px solid var(--border); max-height: 38vh; }
+  }
 </style>
 </head>
-<body>
+<body class="creating">
   ${missingCredentialBanner(missing)}
+  <div class="shell">
   <aside>
-    <h1>any-app</h1>
-    <p><a href="/settings">Settings</a></p>
-    ${authForms(owner)}
-    <ul id="generation-list">${generationList(generations)}</ul>
+    <div class="side-head">
+      <div class="brand"><span class="brand-mark"></span>any-app</div>
+      <div class="side-links"><a href="/settings">Settings</a></div>
+    </div>
+    <div class="side-auth">${authForms(owner)}</div>
+    <div class="list-label">
+      Your apps
+      <button class="newapp" id="newapp-btn"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>New app</button>
+    </div>
+    <ul id="generation-list" class="app-list">${generationList(generations)}</ul>
   </aside>
   <main>
-    <form hx-post="/generations" hx-target="#stage" hx-swap="innerHTML">
-      <textarea name="prompt" placeholder="Describe the app you want…" required></textarea>
-      <button type="submit">Generate</button>
-    </form>
+    <div class="stage-head">
+      <span class="stream-pill"><span class="dot"></span>Generating…</span>
+      <div id="owner-slot" class="owner-controls"></div>
+    </div>
     <div id="stage"><p class="placeholder">Your app will appear here.</p></div>
+    <div class="dock">
+      <form id="create-form" hx-post="/generations" hx-target="#stage" hx-swap="innerHTML">
+        <textarea name="prompt" rows="1" placeholder="Describe the app you want…" required></textarea>
+        <button type="submit" class="apply">Create app</button>
+      </form>
+      <div id="edit-slot"></div>
+    </div>
+    <div id="edit-result"></div>
   </main>
+  </div>
   <script>
     // Returns the stage's iframe, but only if it is still showing the app named by
     // generationId. An edit's model call takes seconds — long enough for the user to click
@@ -527,6 +669,59 @@ ${HTMX_CONFIG_META}
         new URL(frame.src).origin,
       );
     }
+
+    // Composer mode + sidebar selection + the "Generating…" pill. Same template-literal rule
+    // as above: no regex literals and no backslashes in here, string methods only.
+    (function () {
+      var body = document.body;
+      var createForm = document.getElementById("create-form");
+      var prompt = createForm.elements["prompt"];
+
+      function setStreaming(on) {
+        body.classList.toggle("streaming", on);
+      }
+
+      document.getElementById("newapp-btn").addEventListener("click", function () {
+        body.classList.add("creating");
+        prompt.focus();
+      });
+
+      // Enter sends, Shift+Enter is a newline. requestSubmit (not submit) so htmx's own
+      // submit listener and the textarea's "required" validation both still run.
+      prompt.addEventListener("keydown", function (event) {
+        if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+          event.preventDefault();
+          createForm.requestSubmit();
+        }
+      });
+
+      document.body.addEventListener("htmx:afterSwap", function (event) {
+        if (!event.target || event.target.id !== "stage") return;
+        var detail = event.detail || {};
+        var path = (detail.pathInfo && detail.pathInfo.requestPath) || "";
+        var verb = String((detail.requestConfig && detail.requestConfig.verb) || "").toLowerCase();
+
+        if (verb === "get" && path.endsWith("/frame")) {
+          // Picking an app from the sidebar switches the composer to edit mode.
+          body.classList.remove("creating");
+          setStreaming(false);
+          var rows = document.querySelectorAll("#generation-list li");
+          for (var i = 0; i < rows.length; i++) rows[i].classList.remove("active");
+          var row = detail.elt && detail.elt.closest ? detail.elt.closest("li") : null;
+          if (row) row.classList.add("active");
+        } else if (verb === "post" && path === "/generations") {
+          // A create response is the streaming iframe; it fires "load" when the document
+          // has fully arrived. A 400 response has no iframe and shows no pill.
+          var frame = document.querySelector("#stage iframe");
+          setStreaming(!!frame);
+          if (frame) frame.addEventListener("load", function () { setStreaming(false); });
+        }
+      });
+
+      document.body.addEventListener("htmx:afterRequest", function (event) {
+        if (event.target === createForm && event.detail && event.detail.successful) prompt.value = "";
+      });
+    })();
   </script>
 </body>
 </html>`;

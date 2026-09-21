@@ -18,7 +18,7 @@ import { internalRouter } from "./internal";
 import { editsRouter } from "./edits";
 import { settingsRouter } from "./settings";
 import { authRouter } from "./auth";
-import { homePage, previewFrame, editForm, ownerControls, remixControl, sharedAppPage, notFoundPage } from "./views";
+import { homePage, previewFrame, oobSlot, editForm, ownerControls, remixControl, sharedAppPage, notFoundPage } from "./views";
 import { currentOwner } from "./session";
 import { missingCredentials } from "./credential-resolve";
 import { renderFullHead, SHELL_TAIL } from "./shell";
@@ -128,7 +128,15 @@ app.post("/generations", async (req, res) => {
   }
   const generation = await createGeneration(prompt, owner);
   const grant = mintViewGrant(generation.id, "rw", Date.now() + VIEW_GRANT_TTL_MS, requireEnv("APP_TOKEN_SECRET"));
-  res.type("html").send(previewFrame(generation.id, appOrigin(generation.id), grant));
+  // The composer/owner slots live outside #stage, so a new (still streaming) app has to clear
+  // the previous app's edit form and owner controls out-of-band — see oobSlot.
+  res
+    .type("html")
+    .send(
+      previewFrame(generation.id, appOrigin(generation.id), grant) +
+        oobSlot("edit-slot", "") +
+        oobSlot("owner-slot", ""),
+    );
 });
 
 app.get("/generations/:id/frame", async (req, res) => {
@@ -157,7 +165,13 @@ app.get("/generations/:id/frame", async (req, res) => {
   const shareUrl = `${studioOrigin}/apps/${generation.id}`;
   const ownerHtml = mode === "rw" ? ownerControls(generation.id, generation.visibility, shareUrl) : remixControl(generation.id);
 
-  res.type("html").send(previewFrame(generation.id, appOrigin(generation.id), grant) + editFormHtml + ownerHtml);
+  res
+    .type("html")
+    .send(
+      previewFrame(generation.id, appOrigin(generation.id), grant) +
+        oobSlot("edit-slot", editFormHtml) +
+        oobSlot("owner-slot", ownerHtml),
+    );
 });
 
 // The page a shared link actually opens — see sharedAppPage's doc comment for why the frame
