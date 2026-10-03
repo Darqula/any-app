@@ -33,7 +33,7 @@ Both apps run TypeScript directly through `tsx`; there is no build step.
 
 ## Setup
 
-**Requirements:** Node.js 22+, PostgreSQL (e.g. `postgres:17` in Docker), and a browser that resolves
+**Requirements:** Node.js 22+, Docker, and a browser that resolves
 `*.localhost` to loopback (Chrome, Edge and Firefox do; for Safari or restrictive DNS, see
 `SANDBOX_APP_ORIGIN_TEMPLATE` below).
 
@@ -41,8 +41,7 @@ Both apps run TypeScript directly through `tsx`; there is no build step.
    ```sh
    npm install
    ```
-2. Create an empty database (named `anyapp` below).
-3. Copy `.env.example` to `.env` and fill in at least:
+2. Copy `.env.example` to `.env` and fill in at least:
    - `DATABASE_URL`: the privileged connection (owner of the `anyapp` database).
    - `SANDBOX_DATABASE_URL`: the `anyapp_sandbox` connection. It falls back to `DATABASE_URL` so a
      fresh checkout boots, but that removes the sandbox's isolation.
@@ -53,21 +52,30 @@ Both apps run TypeScript directly through `tsx`; there is no build step.
      ```
    - `INTERNAL_SECRET`: shared secret for sandbox → studio calls.
    - Model settings and a provider key (see [Model configuration](#model-configuration)).
-4. Apply migrations:
+3. Start the database and finish its setup:
    ```sh
-   npm run migrate
+   npm run db
    ```
-5. Create the sandbox's restricted role, using the password from `SANDBOX_DATABASE_URL`. It may touch
-   the `records` table and nothing else; never give it a broader grant such as `on all tables`:
-   ```sql
-   create role anyapp_sandbox login password 'choose-one';
-   grant usage on schema public to anyapp_sandbox;
-   grant select, insert, update, delete on records to anyapp_sandbox;
-   ```
-6. Start both servers and open `http://localhost:3000`:
+   Starts a dedicated `postgres:17` container (`anyapp-postgres`, defined in `compose.yaml`) on
+   `DATABASE_URL`'s host and port, applies migrations, and creates or re-syncs the sandbox's
+   restricted role from `SANDBOX_DATABASE_URL`. Everything is idempotent, so it is safe to re-run
+   any time. If another postgres already binds the port, change the port in both URLs (the compose
+   default is 5432); the data lives in the `anyapp_pgdata` docker volume.
+4. Start both servers and open `http://localhost:3000` (this runs `npm run db` first, so an already
+   filled-in `.env` needs just this step):
    ```sh
    npm run dev
    ```
+
+Without Docker, set `ANYAPP_DB_AUTOSTART=0` and point the URLs at any PostgreSQL you manage:
+create an empty database, apply migrations with `npm run migrate`, and create the sandbox's
+restricted role with the password from `SANDBOX_DATABASE_URL`. It may touch the `records` table
+and nothing else; never give it a broader grant such as `on all tables`:
+```sql
+create role anyapp_sandbox login password 'choose-one';
+grant usage on schema public to anyapp_sandbox;
+grant select, insert, update, delete on records to anyapp_sandbox;
+```
 
 `npm run dev` restarts a server when a `.ts` file changes, but `.env` is read only once at startup:
 after editing `.env`, stop and restart `npm run dev`.

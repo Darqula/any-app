@@ -8,6 +8,7 @@
     "tests"
   ],
   "scripts": {
+    "db": "node scripts/db.mjs",
     "dev": "node scripts/dev.mjs",
     "dev:studio": "npm run dev --workspace @any-app/studio",
     "dev:sandbox": "npm run dev --workspace @any-app/sandbox",

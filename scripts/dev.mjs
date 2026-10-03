@@ -1,9 +1,22 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import path from "node:path";
 
 const targets = [
   { name: "studio", workspace: "@any-app/studio", color: "\x1b[36m" },
   { name: "sandbox", workspace: "@any-app/sandbox", color: "\x1b[35m" },
 ];
+
+// Database first, idempotently, so dev never boots against a stopped container.
+// ANYAPP_DB_AUTOSTART=0 skips this.
+if (process.env.ANYAPP_DB_AUTOSTART !== "0") {
+  const db = spawnSync("node", [path.join(import.meta.dirname, "db.mjs")], {
+    stdio: "inherit",
+    shell: true,
+  });
+  if (db.status !== 0) process.exit(db.status ?? 1);
+} else {
+  console.log("ANYAPP_DB_AUTOSTART=0 — skipping database startup\n");
+}
 
 const children = targets.map(({ name, workspace, color }) => {
   const child = spawn("npm", ["run", "dev", "--workspace", workspace], {

@@ -15,7 +15,8 @@ create index records_app_collection_idx
 -- equality-only filters compile to.
 create index records_data_idx on records using gin (data jsonb_path_ops);
 
--- The sandbox's restricted role is not created here (it needs a password). Run once by hand:
+-- The restricted role is created by `npm run db` (scripts/db.mjs) from
+-- SANDBOX_DATABASE_URL, which holds the password. By hand:
 --
 --   create role anyapp_sandbox login password 'choose-one';
 --   grant usage on schema public to anyapp_sandbox;
