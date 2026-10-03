@@ -42,10 +42,3 @@ role's whole point (Phase 5 review S1). Duplicating ~15 lines of env loading is 
 - `Referrer-Policy: no-referrer` on previews: the view grant is in the URL and generated apps load CDN libraries.
 - `PREVIEW_TIMEOUT_MS` (900 000) bounds a runaway; the studio's heartbeat stops undici's ~300 s inactivity
   timeout from firing on a merely slow generation.
-
-
-## Local setup
-
-`*.localhost` resolves to loopback in Chrome, Edge and Firefox with no hosts entry. Safari and some corporate
-DNS do not: add hosts entries or point `SANDBOX_APP_ORIGIN_TEMPLATE` at a wildcard service such as
-`http://{id}.127.0.0.1.nip.io:3001`.

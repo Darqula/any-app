@@ -16,6 +16,9 @@ failed). Usage and layout: `tests/quality/README.md`. The S13 probe is the cheap
 - Diagnostics are `DIAG:...` ids in their own tables, never counted in F1-F8, and kept in separate id lists in
   `report.ts` so they never look like a ninth spec case (`DOC_CASE_IDS` also drives the `attemptError` fallback).
   A generation whose attempt threw records every check as `error`, so one bad run cannot shrink the denominator.
+- Replay a saved generated app over a real http origin, never `page.setContent`: its opaque origin makes a
+  top-level `localStorage.getItem` throw and kills the app's whole script, which looks exactly like a broken
+  app (it nearly produced a false negative on the S12 fix).
 - Server logs are written beside the report before `stop()`; `ANYAPP_PLANNER_RAW_DIR` points at the run directory so a
   `PlanError`'s raw response is on disk. Before that, diagnosing a moved `PlanError` needed a second paid run.
 

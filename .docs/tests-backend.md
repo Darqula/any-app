@@ -511,7 +511,7 @@ to per-app origins at the same time. Test them together: an `allow-same-origin` 
 *shared* origin is the failure locked decision #8 exists to prevent, and either half alone
 looks fine.
 
-**I11 is new, and it is subtler than it looks.** `CLAUDE.md` says never move the sandbox to
+**I11 is new, and it is subtler than it looks.** `CLAUDE.md` used to say never move the sandbox to
 `localhost` because it is a different cookie domain from the studio. Phase 5 moved generated
 apps to `<id>.apps.localhost` — a *subdomain* of the studio's own host. The session cookie is
 still not sent there, but no longer for the reason `session.ts`'s comment gives ("a different

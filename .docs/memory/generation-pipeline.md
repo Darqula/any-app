@@ -37,7 +37,7 @@ pre-warm alone. Edit calls build their own contexts and are not part of that sha
 ## Parallel fill (Phase 4)
 
 A **measured cost regression on the default model** (`longcat-2.0`), so `LLM_FILL_MODE` defaults to
-`sequential` (see root `CLAUDE.md`, `open-problems.md` and `model-and-sweep-history.md` before flipping it).
+`sequential` (see `open-problems.md` and `model-and-sweep-history.md` before flipping it).
 
 - Budgets are two variables on purpose: `LLM_FILL_SLOT_MAX_TOKENS` (per region) is not `LLM_FILL_MAX_TOKENS`
   (whole document). One variable with mode-dependent meaning made a controlled sequential-vs-parallel

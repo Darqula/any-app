@@ -12,7 +12,7 @@
     "dev:studio": "npm run dev --workspace @any-app/studio",
     "dev:sandbox": "npm run dev --workspace @any-app/sandbox",
     "migrate": "npm run migrate --workspace @any-app/store",
-    "typecheck": "tsc --build --force && tsc -p tests/frontend",
+    "typecheck": "tsc -p . && tsc -p tests/frontend",
     "test:backend": "npm run test:backend --workspace @any-app/tests",
     "test:frontend": "npm run test:frontend --workspace @any-app/tests",
     "test": "npm run test:backend && npm run test:frontend"

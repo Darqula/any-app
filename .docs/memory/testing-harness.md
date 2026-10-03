@@ -29,6 +29,3 @@ dev server's database).
   `unlisted` so previews need no grant. Since Phase 6 the sidebar is owner-scoped, so seeded rows must carry the
   anonymous session id (the cookie value) of the page that will look at them; direct preview/stream calls need
   the view grant from the iframe `src`.
-
-- Mass backend failures: check that the shared `my-postgres` container is up before reading them as a
-  regression (other projects use it, and it has stopped mid-run before).

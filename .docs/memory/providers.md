@@ -1,6 +1,6 @@
 # Provider adapters: incidents and traps
 
-Background for `packages/generator/src/providers/`. Model selection per role is in the root `CLAUDE.md`;
+Background for `packages/generator/src/providers/`. Model selection per role is in the root `README.md`;
 provider/model investigation history is `model-and-sweep-history.md`, open issues are `open-problems.md`.
 
 ## Gateway session header (opencode.ai "zen")
