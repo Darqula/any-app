@@ -21,15 +21,24 @@ function escapeHtml(value: string): string {
     .replaceAll('"', "&quot;");
 }
 
-/** `grant` is the view grant: minted by the caller, forwarded blind by the sandbox. */
-export function previewFrame(id: string, appOrigin: string, grant: string): string {
+/**
+ * `grant` is the view grant: minted by the caller, forwarded blind by the sandbox. `planning` adds the overlay shown
+ * until the frame's first content, for a frame that will start a generation.
+ */
+export function previewFrame(id: string, appOrigin: string, grant: string, planning = false): string {
   // allow-same-origin is safe only because each app has its own origin; on a shared
   // origin every app could read every other's storage.
-  return `<iframe
+  const frame = `<iframe
     class="preview"
     src="${escapeHtml(appOrigin)}/preview/${escapeHtml(id)}?g=${encodeURIComponent(grant)}"
     sandbox="allow-scripts allow-forms allow-popups allow-same-origin"
     title="Generated app preview"></iframe>`;
+  if (!planning) return frame;
+  return `${frame}<div class="preview-wait" role="status">
+    <span class="wait-spinner" aria-hidden="true"></span>
+    <p class="wait-title">Planning your app…</p>
+    <p class="wait-hint">The layout appears once the plan is ready. Reasoning models can take a few minutes.</p>
+  </div>`;
 }
 
 /**
@@ -535,10 +544,25 @@ ${HTMX_CONFIG_META}
   .stream-pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: blink 1.1s infinite; }
   @keyframes blink { 50% { opacity: .25; } }
   #stage {
-    flex: 1; min-height: 0; margin: 12px 20px; display: flex; flex-direction: column;
+    flex: 1; min-height: 0; margin: 12px 20px; display: flex; flex-direction: column; position: relative;
     background: var(--panel); border: 1px solid var(--border); border-radius: 14px; overflow: hidden;
   }
   .preview { flex: 1; border: 0; width: 100%; height: 100%; background: #fff; }
+  /* Covers the blank frame while the planner runs. The delayed fade keeps a fast plan from flashing it. */
+  .preview-wait {
+    position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 6px; padding: 0 40px; text-align: center; background: var(--panel); pointer-events: none;
+    animation: wait-in .2s ease .3s both;
+  }
+  .preview-wait[hidden] { display: none; }
+  @keyframes wait-in { from { opacity: 0; } }
+  .wait-spinner {
+    width: 26px; height: 26px; margin-bottom: 8px; border-radius: 50%;
+    border: 3px solid var(--border); border-top-color: var(--accent); animation: spin .9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .wait-title { margin: 0; font-weight: 600; }
+  .wait-hint { margin: 0; font-size: 13px; color: var(--muted); max-width: 360px; }
   .placeholder { margin: auto; padding: 0 40px; text-align: center; }
 
   /* Conversation panel: a slim header that expands into a 30vh log. */
@@ -716,6 +740,26 @@ ${HTMX_CONFIG_META}
         new URL(frame.src).origin,
       );
     }
+
+    // Drops a frame's planning overlay at its first content, or at its load when the document carries no signal.
+    (function () {
+      function hideWait(frame) {
+        var wait = frame.parentNode && frame.parentNode.querySelector(".preview-wait");
+        if (wait) wait.hidden = true;
+      }
+      window.addEventListener("message", function (event) {
+        var data = event.data;
+        if (!data || data.channel !== "anyapp" || data.type !== "first-content") return;
+        var frames = document.querySelectorAll("iframe.preview");
+        for (var i = 0; i < frames.length; i++) {
+          if (frames[i].contentWindow === event.source && new URL(frames[i].src).origin === event.origin) hideWait(frames[i]);
+        }
+      });
+      // load does not bubble, but a capturing listener still sees every iframe's.
+      document.addEventListener("load", function (event) {
+        if (event.target && event.target.tagName === "IFRAME") hideWait(event.target);
+      }, true);
+    })();
 
     // Same rule as above: no regex literals or backslashes in here.
     (function () {

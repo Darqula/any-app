@@ -44,6 +44,14 @@ HTML plus htmx 2.0.4 and a small inline script.
   hidden while open (the log says the same thing); polls `/generations/:id/messages?after=<last seq>`.
 - **`allow-same-origin` on the preview iframe is safe only because each app has its own origin** (decision #8).
 - A shell edit reloads the frame (`frame.src = frame.src`; `location.reload()` is blocked cross-origin).
+- **Planning overlay** (2026-10-03): the planner is not streamed, so on a reasoning model the frame stayed blank for
+  minutes with only the small "Generating…" pill to say why. The frame is cross-origin, so the page cannot look inside;
+  the stream writes a live-only `first-content` postMessage (`firstContentSignal`, after the shell head, or before the
+  first chunk of the linear fallback), and the frame's `load` is the fallback for errors and stored documents.
+  Rejected: sending it from `swapRuntime` (it would ship in every stored document, and the linear fallback has no
+  runtime), and drawing a placeholder inside the document before `<html>` (it would end up in the persisted page).
+  Shown only for a `pending` row: a complete app's `load` can wait seconds on CDN assets, and an overlay saying
+  "Planning" over a finished app is worse than none.
 - Dark theme follows the OS (`prefers-color-scheme`), no toggle and no stored preference, so nothing can get out
   of sync; component rules use tokens, and the generated-app iframe is deliberately not themed.
 - `sharedAppPage` exists because the frame route's fragment has no doctype/stylesheet/htmx; opened directly it is

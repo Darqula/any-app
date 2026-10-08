@@ -48,3 +48,11 @@ export function renderFullHead(plan: AppPlan, studioOrigin: string): string {
 }
 
 export const SHELL_TAIL = `</body>\n</html>\n`;
+
+/**
+ * Live-only, never stored: tells the studio page that visible content has started, so it can drop its planning
+ * overlay. A stored document lacks it, and the studio falls back to the frame's load event.
+ */
+export function firstContentSignal(studioOrigin: string): string {
+  return `<script>if (parent !== window) parent.postMessage({ channel: "anyapp", type: "first-content" }, ${JSON.stringify(studioOrigin)});</script>\n`;
+}

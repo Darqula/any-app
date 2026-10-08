@@ -114,7 +114,7 @@ app.post("/generations", async (req, res) => {
   res
     .type("html")
     .send(
-      previewFrame(generation.id, appOrigin(generation.id), grant) +
+      previewFrame(generation.id, appOrigin(generation.id), grant, true) +
         oobSlot("edit-slot", "") +
         oobSlot("owner-slot", "") +
         chatLogOob(generation.id, messageItems([firstMessage(generation)], pendingText(generation))),
@@ -162,7 +162,8 @@ app.get("/generations/:id/frame", async (req, res) => {
   res
     .type("html")
     .send(
-      previewFrame(generation.id, appOrigin(generation.id), grant) +
+      // A pending row starts generating when its frame loads; any other status is served at once.
+      previewFrame(generation.id, appOrigin(generation.id), grant, generation.status === "pending") +
         oobSlot("edit-slot", editFormHtml) +
         oobSlot("owner-slot", ownerHtml) +
         chatHtml,

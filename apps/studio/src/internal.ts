@@ -41,7 +41,7 @@ import {
   monthlyLimitFor,
 } from "@any-app/store";
 import type { UsageEvent, Owner } from "@any-app/store";
-import { renderShellHead, renderFullHead, DOCTYPE_AND_PADDING, SHELL_TAIL } from "./shell";
+import { renderShellHead, renderFullHead, DOCTYPE_AND_PADDING, SHELL_TAIL, firstContentSignal } from "./shell";
 import { credentialForRole } from "./credential-resolve";
 import { recordMessage } from "./conversation";
 
@@ -214,7 +214,7 @@ export function internalRouter(studioOrigin: string): Router {
           // Scrubbed even in a console line: a provider error can quote the credential.
           console.warn(`generation ${id}: planning failed, falling back to linear:`, safeMessage(error, secrets));
           await capturePlannerFailure(id, error, rawPlannerResponse, secrets);
-          await runLinearFallback(id, generation.prompt, fillCred, res, ac.signal, collector("linear", fillResolved));
+          await runLinearFallback(id, generation.prompt, fillCred, res, ac.signal, collector("linear", fillResolved), studioOrigin);
           return;
         } finally {
           clearInterval(heartbeat);
@@ -223,6 +223,7 @@ export function internalRouter(studioOrigin: string): Router {
         // Shell: always the placeholder token. This viewer's live bytes get their real token substituted just
         // before the write; the stored document keeps the placeholder.
         res.write(withAppToken(renderShellHead(plan, studioOrigin), appToken));
+        res.write(firstContentSignal(studioOrigin));
 
         // Fill: LLM_FILL_MODE switches modes without a code change, to compare parallel fan-out with one coherent call.
         // Defaults to sequential: parallel measured slower and ~5.6x the tokens on this model.
@@ -350,12 +351,19 @@ async function runLinearFallback(
   res: Response,
   signal: AbortSignal,
   onUsage: (usage: UsageInfo) => void,
+  studioOrigin: string,
 ): Promise<void> {
   const fenceGuard = createTrailingFenceGuard();
   let document = DOCTYPE_AND_PADDING;
+  let signalled = false;
   for await (const chunk of streamApp(prompt, credential, signal, id, onUsage)) {
     const safe = fenceGuard.push(chunk);
     if (safe) {
+      // Before the model's own <html>: the parser opens an implicit head for it and merges the real tags in.
+      if (!signalled) {
+        res.write(firstContentSignal(studioOrigin));
+        signalled = true;
+      }
       document += safe;
       res.write(safe);
     }
