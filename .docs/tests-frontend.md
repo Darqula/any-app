@@ -102,6 +102,7 @@ generator.
 | A6 | Prompt longer than 80 characters | Sidebar label truncated |
 | A7 | Failed generation | Sidebar shows `failed`, styled by `.status-failed` |
 | A8 | Two rapid submits | Each produces its own row; the second replaces the frame |
+| A16 | Sidebar footer auth | Anonymous: Sign in / Sign up buttons open a dialog showing one form at a time (Escape closes, a wrong sign-in shows its error in the dialog, switching panes clears it). Signing up replaces the buttons with the account chip and menu; Sign out brings the buttons back |
 
 ### A9 — Prompt text is escaped in the sidebar
 

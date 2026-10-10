@@ -1,5 +1,5 @@
 import type { Request, Response } from "express";
-import { createSession, getSession, deleteSession } from "@any-app/store";
+import { createSession, getSession, deleteSession, getUser } from "@any-app/store";
 import type { Owner } from "@any-app/store";
 
 const COOKIE = "anyapp_session";
@@ -35,6 +35,12 @@ export async function currentOwner(req: Request, res: Response): Promise<Owner> 
   const id = await createSession(null);
   setCookie(res, id);
   return { kind: "anon", sessionId: id };
+}
+
+/** The signed-in user's email for the sidebar footer; null for an anonymous owner. */
+export async function accountEmail(owner: Owner): Promise<string | null> {
+  if (owner.kind !== "user") return null;
+  return (await getUser(owner.userId))?.email ?? null;
 }
 
 /** A new session id on sign-in, dropping the old one: reusing it would allow session fixation. */

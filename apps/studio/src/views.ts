@@ -308,68 +308,209 @@ export function roleConfigTable(
   <p class="hint">Set via <code>LLM_MODEL</code> / <code>LLM_&lt;ROLE&gt;_MODEL</code> etc. in <code>.env</code>.</p>`;
 }
 
-// No explicit type="submit" on these buttons: tests find the create button via button[type="submit"] and
-// extra matches break them.
-export function authForms(owner: Owner): string {
+// No button in the auth UI carries an explicit type="submit" (the dialog's form buttons rely on the default, the
+// others are type="button"): tests find the create button via button[type="submit"] and extra matches break them.
+
+/** Sidebar footer: the account menu for a signed-in user, else the sign-in / sign-up buttons. `email` is null for an anonymous owner. */
+export function sidebarFooter(owner: Owner, email: string | null): string {
   if (owner.kind === "user") {
-    return `<div class="auth-user">
-      <span class="avatar"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="5.5" r="2.7" fill="currentColor"/><path d="M2.5 14c.4-2.9 2.7-4.4 5.5-4.4s5.1 1.5 5.5 4.4" fill="currentColor"/></svg></span>
-      <span class="who">Signed in</span>
+    const label = email ?? "Signed in";
+    return `<div class="side-foot">
+      <details class="account-menu">
+        <summary class="user-chip" aria-label="Account menu">
+          <span class="avatar" aria-hidden="true">${escapeHtml((label[0] ?? "?").toUpperCase())}</span>
+          <span class="who">${escapeHtml(label)}</span>
+          <svg class="chevron" width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 10l5-5 5 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </summary>
+        <div class="user-menu">
+          <p class="menu-email">${escapeHtml(label)}</p>
+          <a href="/settings">Settings</a>
+          <form hx-post="/signout" hx-target="body" hx-swap="none">
+            <button>Sign out</button>
+          </form>
+        </div>
+      </details>
+    </div>`;
+  }
+  return `<div class="side-foot">
+    ${authButtons()}
+    <a class="icon-link" href="/settings" title="Settings" aria-label="Settings"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 4h7M12 4h2M2 12h2M7 12h7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="10.5" cy="4" r="1.7" stroke="currentColor" stroke-width="1.6"/><circle cx="5.5" cy="12" r="1.7" stroke="currentColor" stroke-width="1.6"/></svg></a>
+  </div>`;
+}
+
+function authButtons(): string {
+  return `<div class="auth-actions">
+      <button type="button" class="auth-btn" data-auth-open="signin">Sign in</button>
+      <button type="button" class="auth-btn auth-primary" data-auth-open="signup">Sign up</button>
+    </div>`;
+}
+
+/** The settings page's Account section. Anonymous visitors get the same dialog the sidebar opens. */
+export function accountSection(owner: Owner, email: string | null): string {
+  if (owner.kind === "user") {
+    return `<div class="account-row">
+      <p class="account-who">Signed in as <strong>${escapeHtml(email ?? "your account")}</strong></p>
       <form hx-post="/signout" hx-target="body" hx-swap="none">
         <button>Sign out</button>
       </form>
     </div>`;
   }
-  return `<details class="auth">
-    <summary>Sign in / sign up</summary>
-    <form hx-post="/signup" hx-target="#auth-result" hx-swap="innerHTML">
-      <label>Email <input name="email" type="email" required></label>
-      <label>Password (8+ characters) <input name="password" type="password" minlength="8" required></label>
-      <button>Sign up</button>
-    </form>
-    <form hx-post="/signin" hx-target="#auth-result" hx-swap="innerHTML">
-      <label>Email <input name="email" type="email" required></label>
-      <label>Password <input name="password" type="password" required></label>
-      <button>Sign in</button>
-    </form>
-    <div id="auth-result"></div>
-    <p class="hint">Anonymous work is kept while you browse and claimed automatically if you sign up.
-      Signing in to an existing account instead leaves any apps you made in this browser
-      behind — they are not moved into the account.</p>
-  </details>`;
+  return `<p class="hint">You are browsing anonymously. Your apps and credentials live in this browser's session.</p>
+    <div class="account-row">${authButtons()}</div>`;
 }
 
-/** Shared by the home sidebar and the settings page. */
+function authPane(mode: "signin" | "signup"): string {
+  const signup = mode === "signup";
+  return `<div class="auth-pane" data-pane="${mode}" role="group" aria-labelledby="auth-title-${mode}">
+      <h2 id="auth-title-${mode}">${signup ? "Create your account" : "Welcome back"}</h2>
+      <form hx-post="/${mode}" hx-target="#${mode}-result" hx-swap="innerHTML" hx-disabled-elt="find button">
+        <label>Email <input name="email" type="email" autocomplete="email" required></label>
+        <label>${signup ? "Password (8+ characters)" : "Password"} <input name="password" type="password" autocomplete="${signup ? "new-password" : "current-password"}"${signup ? ` minlength="8"` : ""} required></label>
+        <button class="auth-submit">${signup ? "Sign up" : "Sign in"}</button>
+        <div id="${mode}-result" class="auth-result" role="alert"></div>
+      </form>
+      <p class="hint">${signup
+        ? "Apps you made in this browser so far are moved into your new account."
+        : "Apps you made in this browser before signing in stay here; they are not moved into your account."}</p>
+      <p class="auth-switch">${signup ? "Already have an account?" : "No account yet?"}
+        <button type="button" class="link-btn" data-auth-open="${signup ? "signin" : "signup"}">${signup ? "Sign in" : "Sign up"}</button></p>
+    </div>`;
+}
+
+/** Modal with both flows; `data-mode` picks the visible pane. Only for anonymous owners, since a signed-in page has no way to open it. */
+export function authDialog(owner: Owner): string {
+  if (owner.kind === "user") return "";
+  return `<dialog id="auth-dialog" data-mode="signin" aria-label="Account">
+    <button type="button" class="auth-close" data-auth-close aria-label="Close">&times;</button>
+    ${authPane("signin")}
+    ${authPane("signup")}
+  </dialog>`;
+}
+
+/** Opens/closes the auth dialog and the footer menu. Body of a template literal like the home script: no backslashes, backticks or dollar-brace. */
+const AUTH_SCRIPT = `
+  (function () {
+    var dialog = document.getElementById("auth-dialog");
+    function open(mode) {
+      dialog.setAttribute("data-mode", mode);
+      var results = dialog.querySelectorAll(".auth-result");
+      for (var i = 0; i < results.length; i++) results[i].innerHTML = "";
+      if (!dialog.open) dialog.showModal();
+      var input = dialog.querySelector('[data-pane="' + mode + '"] input');
+      if (input) input.focus();
+    }
+    document.addEventListener("click", function (event) {
+      var menus = document.querySelectorAll("details.account-menu[open]");
+      for (var i = 0; i < menus.length; i++) {
+        if (!menus[i].contains(event.target)) menus[i].removeAttribute("open");
+      }
+      if (!dialog || !event.target.closest) return;
+      var trigger = event.target.closest("[data-auth-open], [data-auth-close]");
+      if (!trigger) return;
+      if (trigger.hasAttribute("data-auth-close")) dialog.close();
+      else open(trigger.getAttribute("data-auth-open"));
+    });
+    document.addEventListener("keydown", function (event) {
+      if (event.key !== "Escape") return;
+      var menus = document.querySelectorAll("details.account-menu[open]");
+      for (var i = 0; i < menus.length; i++) menus[i].removeAttribute("open");
+    });
+    // A click on the backdrop (the dialog itself) closes.
+    if (dialog) dialog.addEventListener("click", function (event) {
+      if (event.target === dialog) dialog.close();
+    });
+  })();
+`;
+
+/** Shared by the home sidebar and the settings page. Dialog rules are id-prefixed to beat the settings page's bare form/label/button rules. */
 const AUTH_CSS = `
-  .auth-user { display: flex; align-items: center; gap: 10px; font-size: 13px; }
-  .auth-user form { display: flex; margin: 0; padding: 0; max-width: none; }
-  .auth-user .who { flex: 1; min-width: 0; color: var(--muted); }
-  .auth-user button {
-    width: auto; padding: 4px 10px; font-size: 12px; border-radius: 8px;
-    border: 1px solid var(--border); background: var(--panel); color: var(--muted);
+  .auth-actions { flex: 1; display: flex; gap: 8px; min-width: 0; }
+  .auth-btn {
+    flex: 1; height: 34px; padding: 0 12px; border-radius: 9px; font-size: 13px; font-weight: 600;
+    border: 1px solid var(--border); background: var(--panel); color: var(--text);
   }
-  .auth-user button:hover { background: var(--hover); color: var(--text); }
+  .auth-btn:hover { background: var(--hover); }
+  .auth-btn.auth-primary { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
+  .auth-btn.auth-primary:hover { background: var(--accent-hover); }
+  .icon-link {
+    flex: none; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center;
+    border-radius: 9px; color: var(--muted);
+  }
+  .icon-link:hover { background: var(--hover); color: var(--text); }
+
+  .side-foot { position: relative; display: flex; align-items: center; gap: 8px; padding: 12px; border-top: 1px solid var(--border); }
+  .account-menu { flex: 1; min-width: 0; }
+  .user-chip {
+    display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 10px;
+    cursor: pointer; list-style: none; color: var(--text);
+  }
+  .user-chip::-webkit-details-marker { display: none; }
+  .user-chip:hover, .account-menu[open] .user-chip { background: var(--hover); }
+  .user-chip .who { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+  .user-chip .chevron { flex: none; color: var(--faint); transition: transform .15s; }
+  .account-menu[open] .chevron { transform: rotate(180deg); }
   .avatar {
-    width: 28px; height: 28px; border-radius: 50%; flex: none;
+    width: 28px; height: 28px; border-radius: 50%; flex: none; font-size: 12px; font-weight: 700;
     background: linear-gradient(135deg, #f59e0b, #ef4444); color: #fff;
     display: flex; align-items: center; justify-content: center;
   }
-  details.auth summary { cursor: pointer; font-size: 13px; color: var(--muted); }
-  details.auth summary:hover { color: var(--text); }
-  details.auth form { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; padding: 0; border: 0; }
-  details.auth label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
-  details.auth input { padding: 6px 10px; font-size: 13px; }
-  details.auth button {
-    width: fit-content; padding: 5px 12px; font-size: 12px; border-radius: 8px;
-    border: 1px solid var(--border); background: var(--panel); color: var(--text);
+  .user-menu {
+    position: absolute; left: 12px; right: 12px; bottom: calc(100% + 4px); z-index: 20; padding: 6px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow);
   }
-  details.auth button:hover { background: var(--hover); }
+  .user-menu .menu-email {
+    margin: 0 0 4px; padding: 8px 10px; font-size: 12px; color: var(--muted);
+    border-bottom: 1px solid var(--border); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .user-menu form { display: block; margin: 0; padding: 0; max-width: none; }
+  .user-menu a, .user-menu button {
+    display: block; width: 100%; padding: 8px 10px; border: 0; border-radius: 8px; font-size: 13px;
+    background: transparent; color: var(--text); text-align: left;
+  }
+  .user-menu a:hover, .user-menu button:hover { background: var(--hover); }
+
+  .account-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .account-row .auth-actions { flex: none; }
+  .account-row .auth-btn { flex: none; padding: 0 18px; }
+  .account-who { margin: 0; }
+
+  #auth-dialog {
+    border: 1px solid var(--border); border-radius: 16px; padding: 0; width: min(380px, calc(100vw - 32px));
+    background: var(--panel); color: var(--text); box-shadow: var(--shadow);
+  }
+  #auth-dialog::backdrop { background: rgba(10, 12, 18, .5); backdrop-filter: blur(2px); }
+  #auth-dialog[open] { animation: auth-in .16s ease; }
+  @keyframes auth-in { from { opacity: 0; transform: translateY(6px) scale(.98); } }
+  #auth-dialog[data-mode="signin"] [data-pane="signup"],
+  #auth-dialog[data-mode="signup"] [data-pane="signin"] { display: none; }
+  #auth-dialog .auth-pane { padding: 26px 24px 20px; }
+  #auth-dialog h2 { margin: 0 0 16px; font-size: 18px; }
+  #auth-dialog form { display: flex; flex-direction: column; gap: 12px; max-width: none; margin: 0 0 12px; padding: 0; border: 0; }
+  #auth-dialog label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+  #auth-dialog input { padding: 9px 12px; font-size: 14px; }
+  #auth-dialog .auth-submit {
+    width: 100%; height: 38px; padding: 0 16px; border: 0; border-radius: 10px;
+    background: var(--accent); color: var(--accent-fg); font-weight: 600;
+  }
+  #auth-dialog .auth-submit:hover { background: var(--accent-hover); }
+  #auth-dialog .auth-submit:disabled { background: var(--btn-disabled); cursor: default; }
+  #auth-dialog .auth-result:empty { display: none; }
+  #auth-dialog .auth-switch { margin: 14px 0 0; font-size: 13px; color: var(--muted); }
+  #auth-dialog .link-btn { width: auto; padding: 0; border: 0; background: transparent; color: var(--accent); font-weight: 600; }
+  #auth-dialog .link-btn:hover { background: transparent; text-decoration: underline; }
+  #auth-dialog .auth-close {
+    position: absolute; top: 10px; right: 10px; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 8px;
+    background: transparent; color: var(--faint); font-size: 20px; line-height: 1;
+  }
+  #auth-dialog .auth-close:hover { background: var(--hover); color: var(--text); }
+  #auth-dialog :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 `;
 
 export function settingsPage(
   hints: CredentialHint[],
   roleRows: { role: Role; provider: ProviderId; model: string; maxTokens: number }[],
   owner: Owner,
+  email: string | null,
 ): string {
   return `<!doctype html>
 <html lang="en">
@@ -401,8 +542,6 @@ ${HTMX_CONFIG_META}
   .role-table th { color: var(--faint); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
   .hint { margin: 8px 0; }
   .edit-problem, .problem { margin: 4px 0; }
-  .auth summary { cursor: pointer; }
-  .auth form { margin: 8px 0; }
 </style>
 </head>
 <body>
@@ -411,7 +550,7 @@ ${HTMX_CONFIG_META}
 
   <section>
     <h2>Account</h2>
-    ${authForms(owner)}
+    ${accountSection(owner, email)}
   </section>
 
   <section>
@@ -429,6 +568,8 @@ ${HTMX_CONFIG_META}
     <h2>Per-role configuration</h2>
     ${roleConfigTable(roleRows)}
   </section>
+  ${authDialog(owner)}
+  <script>${AUTH_SCRIPT}</script>
 </body>
 </html>`;
 }
@@ -467,7 +608,7 @@ export function generationList(generations: Generation[], isUpdating: (id: strin
 }
 
 // `owner` is required so a future caller cannot silently drop the auth UI.
-export function homePage(generations: Generation[], missing: RoleProblem[], owner: Owner): string {
+export function homePage(generations: Generation[], missing: RoleProblem[], owner: Owner, email: string | null): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -489,10 +630,6 @@ ${HTMX_CONFIG_META}
   aside { background: var(--panel); border-right: 1px solid var(--border);
           display: flex; flex-direction: column; min-height: 0; }
   .side-head { padding: 18px 18px 14px; border-bottom: 1px solid var(--border); }
-  .side-links { display: flex; gap: 14px; margin-top: 10px; font-size: 13px; }
-  .side-links a { color: var(--muted); }
-  .side-links a:hover { color: var(--accent); }
-  .side-auth { padding: 12px 18px; border-bottom: 1px solid var(--border); }
   .list-label {
     padding: 14px 18px 6px; display: flex; align-items: center; justify-content: space-between;
     font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--faint);
@@ -658,14 +795,13 @@ ${HTMX_CONFIG_META}
   <aside>
     <div class="side-head">
       <div class="brand"><span class="brand-mark"></span>any-app</div>
-      <div class="side-links"><a href="/settings">Settings</a></div>
     </div>
-    <div class="side-auth">${authForms(owner)}</div>
     <div class="list-label">
       Your apps
       <button class="newapp" id="newapp-btn"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>New app</button>
     </div>
     <ul id="generation-list" class="app-list">${generationList(generations)}</ul>
+    ${sidebarFooter(owner, email)}
   </aside>
   <main>
     <div class="stage-head">
@@ -700,7 +836,9 @@ ${HTMX_CONFIG_META}
       </div>
     </form>
   </dialog>
+  ${authDialog(owner)}
   </div>
+  <script>${AUTH_SCRIPT}</script>
   <script>
     // Returns the stage's iframe only if it still shows generationId: a slow edit can land after the user
     // opened another app, and slot ids repeat across apps.

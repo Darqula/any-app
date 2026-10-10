@@ -3,7 +3,7 @@ import { build, roleConfig, safeMessage } from "@any-app/generator";
 import type { ProviderId, Role } from "@any-app/generator";
 import { saveCredential, listCredentialHints, deleteCredential } from "@any-app/store";
 import { settingsPage, credentialSaved, editProblem } from "./views";
-import { currentOwner } from "./session";
+import { currentOwner, accountEmail } from "./session";
 
 const PROVIDER_IDS: ProviderId[] = ["openai", "anthropic"];
 const ROLES: Role[] = ["planner", "fill", "edit", "router"];
@@ -15,7 +15,7 @@ export function settingsRouter(): Router {
     const owner = await currentOwner(req, res);
     const hints = await listCredentialHints(owner);
     const roleRows = ROLES.map((role) => ({ role, ...roleConfig(role) }));
-    res.type("html").send(settingsPage(hints, roleRows, owner));
+    res.type("html").send(settingsPage(hints, roleRows, owner, await accountEmail(owner)));
   });
 
   router.post("/settings/credentials", async (req, res) => {

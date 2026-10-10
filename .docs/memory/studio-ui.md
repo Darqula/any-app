@@ -22,10 +22,22 @@ HTML plus htmx 2.0.4 and a small inline script.
 - **The delete cross uses `:has(:focus-visible)`, not `:focus-within`**: a mouse click on the row's name also
   satisfies `:focus-within`, which left the cross stuck open after the pointer left.
 - `homePage`'s `owner` is required (one caller): an optional parameter would let a future caller drop the whole
-  auth UI silently.
+  auth UI silently. `email` is required for the same reason (null for an anonymous owner; `accountEmail` in
+  `session.ts` looks it up).
+- **Auth UI follows the same button rule**: the dialog's form buttons carry no `type` (default submit, not matched
+  by `[type="submit"]`), every other auth button is `type="button"`. `AUTH_SCRIPT` is another template-literal
+  script: no backslashes, backticks or `${`.
 
 ## Design decisions
 
+- **Account lives in the sidebar footer** (claude.ai style): anonymous owners get Sign in / Sign up buttons (plus a
+  Settings icon, since anonymous users keep credentials there too); signed-in owners get an avatar + email chip
+  opening a menu (Settings, Sign out). Both buttons open one `<dialog id="auth-dialog">` holding a sign-in and a
+  sign-up pane, `data-mode` picks the visible one, each pane posts to its own route and has its own result div.
+  The settings page reuses the dialog. The old design showed both email+password forms at once. The footer menu is
+  a `<details>`, not the Popover API: it must open upward from a footer, and in the narrow layout the sidebar sits
+  above the stage, where a fixed-position popover would land in the wrong place. The dialog is only rendered for
+  anonymous owners. The sign-in/sign-up hints keep saying that sign-up claims anonymous apps and sign-in does not.
 - **Out-of-band composition.** The composer, owner controls and conversation log live outside `#stage` but
   belong to the app it shows; one response carries all of them via OOB swaps. An *empty* slot is meaningful: it
   is how a new (still streaming) app clears the previous app's edit form. `#chat-log` is replaced as a whole

@@ -21,7 +21,7 @@ import { editsRouter } from "./edits";
 import { settingsRouter } from "./settings";
 import { authRouter } from "./auth";
 import { homePage, previewFrame, oobSlot, chatLogOob, messageItems, editProblem, generationList, editForm, ownerControls, remixControl, sharedAppPage, notFoundPage } from "./views";
-import { currentOwner } from "./session";
+import { currentOwner, accountEmail } from "./session";
 import { isEditing } from "./activity";
 import { firstMessage, fullConversation, pendingText } from "./conversation";
 import { missingCredentials } from "./credential-resolve";
@@ -90,7 +90,7 @@ app.get("/", async (req, res) => {
   const owner = await currentOwner(req, res);
   const generations = await listRecentGenerations(owner);
   const missing = await missingCredentials(owner);
-  res.type("html").send(homePage(generations, missing, owner));
+  res.type("html").send(homePage(generations, missing, owner, await accountEmail(owner)));
 });
 
 // The sidebar's live refresh: the list fragment, owner-scoped, never cached.

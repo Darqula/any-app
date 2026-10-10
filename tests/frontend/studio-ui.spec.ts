@@ -1,5 +1,5 @@
 /**
- * A1-A15: studio UI. Needs the real servers and database (global-setup.ts) but no model: existing generations are seeded. A2/A3/A8/A9/A13/A15 use
+ * A1-A16: studio UI. Needs the real servers and database (global-setup.ts) but no model: existing generations are seeded. A2/A3/A8/A9/A13/A15 use
  * the live POST /generations form. A1 also lives in smoke.spec.ts.
  */
 import { readFile } from "node:fs/promises";
@@ -345,5 +345,47 @@ test.describe("A — studio UI", () => {
     await box.press("Enter");
     await box.fill("new draft");
     await expect(box).toHaveValue("new draft");
+  });
+
+  test("A16 — the sidebar footer: Sign in / Sign up open one form at a time in a dialog; signing up swaps in the account menu, signing out brings the buttons back", async ({ page }) => {
+    const email = `a16-${Date.now()}@example.invalid`;
+    await page.goto("/");
+    const foot = page.locator(".side-foot");
+    const dialog = page.locator("#auth-dialog");
+    const visible = (selector: string) => dialog.locator(`${selector}:visible`);
+
+    await expect(foot.getByRole("button", { name: "Sign in" })).toBeVisible();
+    await expect(foot.getByRole("button", { name: "Sign up" })).toBeVisible();
+    await expect(dialog).toBeHidden();
+
+    await foot.getByRole("button", { name: "Sign in" }).click();
+    await expect(dialog).toBeVisible();
+    await expect(visible('input[name="email"]')).toHaveCount(1);
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+
+    // A wrong sign-in shows its error inside the dialog and leaves it open.
+    await foot.getByRole("button", { name: "Sign in" }).click();
+    await visible('input[name="email"]').fill(email);
+    await visible('input[name="password"]').fill("not-a-real-password");
+    await visible(".auth-submit").click();
+    await expect(visible(".auth-result")).toContainText("Wrong email or password");
+
+    // Switching panes keeps exactly one form on screen and clears the stale error.
+    await dialog.locator('[data-pane="signin"] [data-auth-open="signup"]').click();
+    await expect(visible('input[name="email"]')).toHaveCount(1);
+    await expect(visible(".auth-submit")).toHaveText("Sign up");
+    await visible('input[name="email"]').fill(email);
+    await visible('input[name="password"]').fill("a-long-enough-password");
+    await visible(".auth-submit").click();
+
+    await expect(page.locator(".user-chip .who")).toHaveText(email);
+    await expect(foot.locator(".auth-btn")).toHaveCount(0);
+
+    await page.locator(".user-chip").click();
+    await expect(page.locator(".user-menu")).toBeVisible();
+    await page.locator(".user-menu").getByRole("button", { name: "Sign out" }).click();
+    await expect(foot.getByRole("button", { name: "Sign in" })).toBeVisible();
+    await expect(page.locator(".user-chip")).toHaveCount(0);
   });
 });
