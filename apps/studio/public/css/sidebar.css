@@ -1,0 +1,294 @@
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+}
+
+.side-head {
+  padding: 18px 18px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.list-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.newapp {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+/* While the composer is creating a new app, the button shows it as the current mode. */
+.page-home.creating .newapp {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.app-list {
+  flex: 1;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0 10px 16px;
+  list-style: none;
+}
+
+.app-list .empty {
+  margin: 0;
+  padding: 9px 10px;
+}
+
+.app-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px 0 0;
+  border-radius: 9px;
+}
+
+.app-row:hover {
+  background: var(--hover);
+}
+
+.app-row.active {
+  background: var(--accent-soft);
+}
+
+.app-row-open {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 10px;
+  overflow: hidden;
+  color: var(--text);
+  font-weight: 500;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Zero width until the row is hovered, so it takes no room at rest. Keyboard reveal uses :focus-visible, not
+   :focus-within, which a mouse click on the row would leave stuck open. */
+.app-delete {
+  flex: none;
+  width: 0;
+  height: 22px;
+  margin-left: -10px;
+  padding: 0;
+  border-radius: 6px;
+  overflow: hidden;
+  color: var(--faint);
+  font-size: 16px;
+  line-height: 1;
+  opacity: 0;
+  pointer-events: none;
+  transition: width .15s ease, margin-left .15s ease, opacity .15s ease, background .12s, color .12s;
+}
+
+.app-row:hover .app-delete,
+.app-row:has(:focus-visible) .app-delete {
+  width: 22px;
+  margin-left: 0;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.app-delete:focus-visible {
+  outline: 0;
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.app-delete:hover,
+.app-delete:focus-visible {
+  background: var(--status-failed-bg);
+  color: var(--bad);
+}
+
+@media (hover: none) {
+  .app-delete {
+    width: 22px;
+    margin-left: 0;
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+.status {
+  flex: none;
+  width: 76px;
+  padding: 2px 0;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .03em;
+  text-align: center;
+}
+
+.status-complete {
+  background: var(--status-complete-bg);
+  color: var(--status-complete-fg);
+}
+
+.status-streaming,
+.status-updating {
+  background: var(--status-streaming-bg);
+  color: var(--status-streaming-fg);
+}
+
+.status-updating {
+  animation: blink 1.4s infinite;
+}
+
+.status-pending {
+  background: var(--status-pending-bg);
+  color: var(--status-pending-fg);
+}
+
+.status-failed {
+  background: var(--status-failed-bg);
+  color: var(--status-failed-fg);
+}
+
+.side-foot {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.icon-link {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  color: var(--muted);
+}
+
+.icon-link:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.account-menu {
+  flex: 1;
+  min-width: 0;
+}
+
+.user-chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  color: var(--text);
+  cursor: pointer;
+  list-style: none;
+}
+
+.user-chip::-webkit-details-marker {
+  display: none;
+}
+
+.user-chip:hover,
+.account-menu[open] .user-chip {
+  background: var(--hover);
+}
+
+.user-chip .who {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-chip .chevron {
+  flex: none;
+  color: var(--faint);
+  transition: transform .15s;
+}
+
+.account-menu[open] .chevron {
+  transform: rotate(180deg);
+}
+
+.avatar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--gradient-avatar);
+  color: var(--avatar-fg);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.user-menu {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: calc(100% + 4px);
+  z-index: 20;
+  padding: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+
+.menu-email {
+  margin: 0 0 4px;
+  padding: 8px 10px;
+  overflow: hidden;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.menu-item {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+}
+
+.menu-item:hover {
+  background: var(--hover);
+}
+
+/* Narrow screens stack the sidebar above the workspace. */
+@media (max-width: 760px) {
+  .sidebar {
+    max-height: 38vh;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+}

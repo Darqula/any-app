@@ -42,7 +42,9 @@ repo, so project knowledge goes into these in-repo files, never only into an age
   from `@any-app/records`, which is also why `records` must stay out of `store`.
 - `openai` / `@anthropic-ai/sdk` are imported only in `packages/generator/src/providers/`.
 - No `compression` middleware (it buffers and breaks streaming). No build step, bundler or
-  Dockerfile for `apps/*`.
+  Dockerfile for `apps/*` — meaning no build *output*: plain static files (`apps/studio/public/`,
+  served with `express.static`, no fingerprinting) and TypeScript that `tsx` compiles in memory
+  are not a build.
 - Generated apps stay on per-app origins (`SANDBOX_APP_ORIGIN_TEMPLATE`). That's what makes
   `allow-same-origin` on the preview iframe safe. `STUDIO_PUBLIC_URL` must exactly match the
   studio origin shown in the browser.

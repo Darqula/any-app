@@ -1,0 +1,144 @@
+@keyframes blink {
+  50% { opacity: .25; }
+}
+
+@keyframes dialog-in {
+  from { opacity: 0; transform: translateY(6px) scale(.98); }
+}
+
+/* `.btn` is the secondary button; `--primary` and `--danger` change its emphasis and `--sm` its size. Any other
+   size belongs to the component using the button, which sets its own padding, height and radius on top. */
+.btn {
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+}
+
+.btn:hover {
+  background: var(--hover);
+}
+
+.btn--primary {
+  border-width: 0;
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 600;
+}
+
+.btn--primary:hover {
+  background: var(--accent-hover);
+}
+
+.btn--danger {
+  border-color: transparent;
+  background: var(--bad);
+  color: var(--danger-fg);
+}
+
+.btn--danger:hover {
+  background: var(--bad);
+  filter: brightness(1.1);
+}
+
+.btn--sm {
+  padding: 4px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+/* Last, so a disabled button stays disabled under every variant's :hover. */
+.btn:disabled {
+  background: var(--btn-disabled);
+  cursor: default;
+}
+
+/* A button that takes its look from its surroundings. */
+.btn-bare {
+  border: 0;
+  background: transparent;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* Set --dialog-width on the dialog to change its width. */
+.dialog {
+  width: min(var(--dialog-width, 420px), calc(100vw - 32px));
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+.dialog::backdrop {
+  background: var(--backdrop);
+  backdrop-filter: blur(2px);
+}
+
+.dialog[open] {
+  animation: dialog-in .16s ease;
+}
+
+.dialog :focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Notices: where one is drawn depends on its container. */
+.hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.edit-ok {
+  margin: 0;
+  color: var(--ok);
+}
+
+.edit-problem,
+.problem {
+  margin: 0;
+  color: var(--bad);
+}
+
+.empty,
+.placeholder {
+  color: var(--faint);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--text);
+}
+
+.brand-mark {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  background: var(--gradient-brand);
+}
+
+/* White on purpose: the generated app brings its own colours. */
+.preview {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--frame-bg);
+}

@@ -1,0 +1,367 @@
+.workspace {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.stage-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 10px 20px 0;
+}
+
+.stage-owner {
+  margin-left: auto;
+}
+
+.stream-pill {
+  display: none;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 11px;
+  background: var(--accent-soft);
+  border: 1px solid var(--pill-border);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.page-home.streaming .stream-pill {
+  display: inline-flex;
+}
+
+.stream-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: blink 1.1s infinite;
+}
+
+.stage {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  margin: 12px 20px;
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+
+.stage > .preview {
+  flex: 1;
+}
+
+.stage > .placeholder {
+  margin: auto;
+  padding: 0 40px;
+  text-align: center;
+}
+
+/* Covers the blank frame while the planner runs. The delayed fade keeps a fast plan from flashing it. */
+.preview-wait {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 40px;
+  background: var(--panel);
+  text-align: center;
+  pointer-events: none;
+  animation: wait-in .2s ease .3s both;
+}
+
+.preview-wait[hidden] {
+  display: none;
+}
+
+@keyframes wait-in {
+  from { opacity: 0; }
+}
+
+.wait-spinner {
+  width: 26px;
+  height: 26px;
+  margin-bottom: 8px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin .9s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.wait-title {
+  margin: 0;
+  font-weight: 600;
+}
+
+.wait-hint {
+  margin: 0;
+  max-width: 360px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.chat-panel {
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+}
+
+.chat-panel:has(.chat-log[data-app=""]) {
+  display: none;
+}
+
+.chat-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 20px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.chat-head:hover {
+  color: var(--text);
+}
+
+.chat-chevron {
+  margin-left: auto;
+  transition: transform .15s;
+}
+
+.page-home.chat-open .chat-chevron {
+  transform: rotate(180deg);
+}
+
+.chat-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.chat-dot[hidden] {
+  display: none;
+}
+
+.chat-log {
+  display: none;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 4px 20px 12px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.page-home.chat-open .chat-log {
+  display: flex;
+  height: 30vh;
+}
+
+.chat-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 78%;
+}
+
+.chat-user {
+  align-items: flex-end;
+  align-self: flex-end;
+}
+
+.chat-assistant {
+  align-self: flex-start;
+}
+
+.chat-body {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 12px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.chat-user .chat-body {
+  background: var(--accent);
+  border-bottom-right-radius: 4px;
+  color: var(--accent-fg);
+}
+
+.chat-assistant .chat-body {
+  background: var(--hover);
+  border-bottom-left-radius: 4px;
+  color: var(--text);
+}
+
+.chat-error .chat-body {
+  background: var(--status-failed-bg);
+  color: var(--status-failed-fg);
+}
+
+.chat-meta {
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.chat-pending .chat-body {
+  color: var(--muted);
+  animation: blink 1.4s infinite;
+}
+
+/* The log already says what the toast would; showing both is noise. */
+.page-home.chat-open .toasts > .edit-ok,
+.page-home.chat-open .toasts > .edit-problem,
+.page-home.chat-open .toasts > .problem {
+  display: none;
+}
+
+.dock {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 20px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+}
+
+.composer-row {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+}
+
+/* The create form is always in the DOM and the edit form arrives out-of-band; `.creating` shows one of the two. */
+.page-home.creating .composer-slot {
+  display: none;
+}
+
+.page-home:not(.creating) .composer-create {
+  display: none;
+}
+
+.page-home:not(.creating) .dock:has(.composer-slot:empty) {
+  display: none;
+}
+
+.composer-textarea {
+  flex: 1;
+  height: 40px;
+  padding: 9px 13px;
+  line-height: 20px;
+  resize: none;
+}
+
+.composer-input {
+  flex: 1;
+  min-width: 0;
+  height: 40px;
+  padding: 0 13px;
+}
+
+.composer-select {
+  height: 40px;
+  font-size: 13px;
+}
+
+.composer-submit {
+  height: 40px;
+  padding: 9px 18px;
+}
+
+/* Only the notice inside is drawn, so an empty container shows nothing. */
+.toasts {
+  position: fixed;
+  left: 50%;
+  bottom: 76px;
+  z-index: 50;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.toasts > .edit-ok,
+.toasts > .edit-problem,
+.toasts > .problem {
+  padding: 9px 16px;
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  font-size: 13px;
+  font-weight: 500;
+  animation: toast-out 4.5s ease forwards;
+}
+
+.toasts > .edit-ok {
+  background: var(--toast-ok-bg);
+  color: var(--toast-ok-fg);
+}
+
+.toasts > .edit-problem {
+  background: var(--toast-bad-bg);
+  color: var(--toast-bad-fg);
+}
+
+@keyframes toast-out {
+  0%, 80% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+.confirm-form {
+  margin: 0;
+  padding: 22px 22px 18px;
+}
+
+.confirm-title {
+  margin: 0 0 6px;
+  font-size: 16px;
+}
+
+.confirm-name {
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  overflow: hidden;
+  background: var(--hover);
+  border-radius: 8px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.confirm-body {
+  margin: 0;
+  color: var(--muted);
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.confirm-btn {
+  height: 36px;
+  padding: 0 16px;
+  font-weight: 600;
+}

@@ -192,7 +192,7 @@ export async function openSidebarApp(
   origin?: string,
 ): Promise<{ frame: Frame; src: string }> {
   await page.goto(origin ? `${origin}/` : "/");
-  await page.locator("#generation-list li", { hasText: prompt }).locator("button").click();
+  await page.locator("#generation-list li", { hasText: prompt }).locator(".app-row-open").click();
   await expect(page.locator("#stage iframe")).toHaveCount(1);
   const src = await page.locator("#stage iframe").getAttribute("src");
   if (!src) throw new Error("iframe has no src");
@@ -211,7 +211,7 @@ export async function submitPrompt(
 ): Promise<{ id: string; frame: Frame; src: string }> {
   await page.goto(origin ? `${origin}/` : "/");
   await page.fill('textarea[name="prompt"]', prompt);
-  await page.click('button[type="submit"]');
+  await page.click('#create-form button[type="submit"]');
   await expect(page.locator("#stage iframe")).toHaveCount(1);
   const src = await page.locator("#stage iframe").getAttribute("src");
   if (!src) throw new Error("iframe has no src");

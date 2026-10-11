@@ -1,5 +1,5 @@
 /**
- * Section I: architecture guards (I1-I11). Static checks on the source tree: no Postgres, servers or ports.
+ * Section I: architecture guards (I1-I12a). Static checks on the source tree: no Postgres, servers or ports.
  * Several enforce the root CLAUDE.md "Don't" list.
  */
 import { test } from "node:test";
@@ -7,6 +7,8 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { REPO_ROOT } from "../harness/db";
+import { previewFrame } from "../../apps/studio/src/views";
+import { cssViolations } from "../harness/css";
 
 function read(relPath: string): string {
   return readFileSync(path.join(REPO_ROOT, relPath), "utf8");
@@ -105,14 +107,10 @@ test("I4 — no compression package anywhere in the repo", () => {
 // Inverted from an older spec on purpose: do not "correct" it back.
 
 test("I5 — preview iframe: allow-scripts + allow-same-origin together, src host derived per app", () => {
-  const views = read("apps/studio/src/views.ts");
+  // Rendered, not read as source: the attributes are what the browser sees.
+  const rendered = previewFrame("abc123", "http://abc123.apps.example", "grant").toString();
 
-  // Find the previewFrame function body specifically, not just anywhere in the file.
-  const match = /export function previewFrame[\s\S]*?\n}/.exec(views);
-  assert.ok(match, "expected to find an exported previewFrame function in views.ts");
-  const body = match![0];
-
-  const sandboxAttrMatch = /sandbox="([^"]*)"/.exec(body);
+  const sandboxAttrMatch = /sandbox="([^"]*)"/.exec(rendered);
   assert.ok(sandboxAttrMatch, "previewFrame must set a sandbox attribute");
   const tokens = sandboxAttrMatch![1]!.split(/\s+/);
   assert.ok(tokens.includes("allow-scripts"), "sandbox attribute must include allow-scripts");
@@ -122,18 +120,10 @@ test("I5 — preview iframe: allow-scripts + allow-same-origin together, src hos
       "fetch(\"/data/...\") from inside the frame; only safe because origins are per-app",
   );
 
-  // The src must be built from a per-app origin parameter, not a single hardcoded host —
-  // i.e. previewFrame takes an appOrigin argument and interpolates it into `src`.
-  assert.match(
-    body,
-    /function previewFrame\([^)]*appOrigin[^)]*\)/,
-    "previewFrame must take an appOrigin parameter",
-  );
-  assert.match(
-    body,
-    /src="\$\{escapeHtml\(appOrigin\)\}/,
-    "previewFrame's src must be built from the per-app appOrigin parameter",
-  );
+  // The src must be built from a per-app origin parameter, not a single hardcoded host: two origins in, two hosts out.
+  assert.match(rendered, /src="http:\/\/abc123\.apps\.example\/preview\/abc123\?g=grant"/);
+  const other = previewFrame("def456", "http://def456.apps.example", "grant").toString();
+  assert.match(other, /src="http:\/\/def456\.apps\.example\/preview\/def456\?g=grant"/);
 
   // And the caller must actually derive a distinct origin per app id, not reuse one
   // constant for every generation — apps/studio/src/index.ts's appOrigin(id) function.
@@ -268,18 +258,86 @@ test("I9 — apps/sandbox/src/data.ts reads app_id only from res.locals", () => 
 });
 
 
-test("I10 — apps/studio/src/views.ts never postMessages to \"*\"", () => {
-  const content = read("apps/studio/src/views.ts");
-  const calls = [...content.matchAll(/postMessage\(([^;]*?)\)/gs)];
-  assert.ok(calls.length > 0, "expected at least one postMessage call in views.ts");
+test("I10 — studio browser code (public/js, and the view modules) never postMessages to \"*\"", () => {
+  // The studio's browser code: the view modules and the classic scripts under public/js.
+  const candidates = [
+    ...walkTsFiles("apps/studio/src/views"),
+    ...readdirSync(path.join(REPO_ROOT, "apps", "studio", "public", "js"))
+      .filter((f) => f.endsWith(".js"))
+      .map((f) => path.join("apps/studio/public/js", f)),
+  ];
+  assert.ok(candidates.length > 0, "expected to find studio view modules and/or client scripts");
+  const sources = candidates.map(read).join("\n");
+  // Up to the end of the statement, so a nested call such as postMessage(wrap(x), "*") cannot hide the target.
+  const calls = [...sources.matchAll(/postMessage\(([^;]*)/g)];
+  assert.ok(calls.length > 0, `expected at least one postMessage call in ${candidates.join(", ")}`);
   for (const call of calls) {
-    assert.doesNotMatch(
-      call[1]!,
-      /["']\*["']\s*\)?\s*$/,
-      `postMessage call targets "*": postMessage(${call[1]})`,
-    );
-    assert.doesNotMatch(call[1]!, /,\s*["']\*["']/, `postMessage call targets "*": postMessage(${call[1]})`);
+    assert.doesNotMatch(call[1]!, /["']\*["']/, `postMessage call targets "*": postMessage(${call[1]}`);
   }
+});
+
+test("I12 — studio CSS conventions: no ID selectors, no !important, no nesting, element selectors only in base.css, literal colours only in theme.css", () => {
+  const dir = "apps/studio/public/css";
+  const files = readdirSync(path.join(REPO_ROOT, dir)).filter((f) => f.endsWith(".css"));
+  assert.ok(files.includes("theme.css") && files.includes("base.css"), "expected the studio's theme.css and base.css");
+  const violations = files.flatMap((file) =>
+    cssViolations(file, read(`${dir}/${file}`), { allowElementSelectors: file === "base.css", allowLiteralColours: file === "theme.css" }),
+  );
+  assert.deepEqual(violations, []);
+});
+
+test("I12a — the CSS guard itself: each way of breaking a convention is reported, and conforming CSS is not", () => {
+  const page = { allowElementSelectors: false, allowLiteralColours: false };
+  const bad: [string, string][] = [
+    ["an ID", "#stage { margin: 0; }"],
+    ["an ID inside :not()", ".a:not(#b) { margin: 0; }"],
+    ["an ID after a statement at-rule", ['@import "x.css";', "#x { margin: 0; }"].join("\n")],
+    ["an element", "p { margin: 0; }"],
+    ["an element after a statement at-rule", ['@charset "utf-8";', "div { margin: 0; }"].join("\n")],
+    ["a descendant element", ".a p { margin: 0; }"],
+    ["an element inside :not()", ".a:not(div) { margin: 0; }"],
+    ["an element inside :has()", ".a:has(button) { margin: 0; }"],
+    ["an element inside :where()", ":where(button) { margin: 0; }"],
+    ["an element in a selector list", ".a, .b > li { margin: 0; }"],
+    ["an element inside @layer", "@layer components { p { margin: 0; } }"],
+    ["an element inside @container", "@container (min-width: 10px) { p { margin: 0; } }"],
+    ["an element inside @media", "@media (max-width: 760px) { p { margin: 0; } }"],
+    ["!important", ".a { margin: 0 !important; }"],
+    ["! important with a space", ".a { margin: 0 ! important; }"],
+    ["!IMPORTANT", ".a { margin: 0 !IMPORTANT; }"],
+    ["nesting", ".a { color: var(--x); div { margin: 0; } }"],
+    ["nesting an ID", ".a { #x { margin: 0; } }"],
+    ["a missing brace", [".a { margin: 0;", "#x { margin: 0; }"].join("\n")],
+    ["a hex colour", ".a { color: #123456; }"],
+    ["a short hex colour", ".a { color: #fff; }"],
+    ["rgba()", ".a { background: rgba(0, 0, 0, .5); }"],
+    ["hsl()", ".a { background: hsl(10 20% 30%); }"],
+    ["oklch()", ".a { background: oklch(60% 0.1 200); }"],
+    ["color-mix()", ".a { background: color-mix(in srgb, red, blue); }"],
+    ["a named colour", ".a { color: white; }"],
+    ["a named colour in a gradient", ".a { background: linear-gradient(red, var(--x)); }"],
+    ["a colour inside @keyframes", "@keyframes k { from { color: #fff; } }"],
+    ["a colour inside @media", "@media (hover: none) { .a { color: red; } }"],
+  ];
+  for (const [what, css] of bad) {
+    assert.ok(cssViolations("t.css", css, page).length > 0, `not reported: ${what}`);
+  }
+  const good: [string, string][] = [
+    ["classes with pseudo-classes and attributes", '.a:hover, .b[open] > .c:not(.d)::before { margin: 0; }'],
+    ["an ID-looking string in an attribute", '.a[href="#top"] { color: var(--accent); }'],
+    ["a space inside an attribute value", '.a[data-x="a b"] { color: var(--accent); }'],
+    ["white-space and transparent", ".a { white-space: nowrap; background: transparent; color: currentColor; }"],
+    ["keyframes steps", "@keyframes k { 0%, 80% { opacity: 1; } to { opacity: 0; } }"],
+    ["nth-child arguments", ".a:nth-child(2n + 1) { margin: 0; }"],
+    ["a comment mentioning #id and p", "/* #stage p { color: #fff !important; } */ .a { margin: 0; }"],
+    ["a comma in an :is() list", ".a:is(.b, .c) { margin: 0; }"],
+    ["a custom property reference", ".a { color: var(--ok); box-shadow: 0 0 0 3px var(--focus-ring); }"],
+  ];
+  for (const [what, css] of good) {
+    assert.deepEqual(cssViolations("t.css", css, page), [], `falsely reported: ${what}`);
+  }
+  assert.deepEqual(cssViolations("base.css", "p { margin: 0; } a:hover { color: var(--accent); }", { allowElementSelectors: true, allowLiteralColours: false }), []);
+  assert.deepEqual(cssViolations("theme.css", ":root { --a: #fff; --b: rgba(0, 0, 0, .5); }", { allowElementSelectors: false, allowLiteralColours: true }), []);
 });
 
 // Host-only cookie (no Domain) so it cannot reach <id>.apps.localhost, and SameSite=Lax: Strict is not sent on a cross-site

@@ -1,4 +1,6 @@
 import express from "express";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 import {
   loadEnv,
   requireEnv,
@@ -20,7 +22,8 @@ import { internalRouter } from "./internal";
 import { editsRouter } from "./edits";
 import { settingsRouter } from "./settings";
 import { authRouter } from "./auth";
-import { homePage, previewFrame, oobSlot, chatLogOob, messageItems, editProblem, generationList, editForm, ownerControls, remixControl, sharedAppPage, notFoundPage } from "./views";
+import { homePage, previewFrame, oobSlot, chatLogOob, messageItems, editProblem, editOk, problem, placeholder, generationList, editForm, ownerControls, remixControl, sharedAppPage, notFoundPage, join } from "./views";
+import { sendHtml } from "./respond";
 import { currentOwner, accountEmail } from "./session";
 import { isEditing } from "./activity";
 import { firstMessage, fullConversation, pendingText } from "./conversation";
@@ -61,6 +64,12 @@ function mayView(generation: Generation, owner: Owner): boolean {
 
 app.use(express.urlencoded({ extended: false }));
 
+// Resolved from this module, not the cwd: tests spawn the server from elsewhere.
+const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "public");
+// Mounted per directory so nothing else under public/ is served and a file can't shadow a route.
+app.use("/css", express.static(path.join(publicDir, "css")));
+app.use("/js", express.static(path.join(publicDir, "js")));
+
 // Rejects mutating requests with a positive cross-site signal (Sec-Fetch-Site or Origin). SameSite alone does
 // not stop a generated app's fetch() on a same-site deployment. Non-browser callers send neither header and
 // are not the threat.
@@ -71,12 +80,12 @@ app.use((req, res, next) => {
   }
   const site = req.get("sec-fetch-site");
   if (site !== undefined && site !== "same-origin" && site !== "none") {
-    res.status(403).type("html").send(`<p class="problem">Cross-origin request refused.</p>`);
+    sendHtml(res, problem("Cross-origin request refused."), 403);
     return;
   }
   const origin = req.get("origin");
   if (origin !== undefined && origin !== studioOrigin) {
-    res.status(403).type("html").send(`<p class="problem">Cross-origin request refused.</p>`);
+    sendHtml(res, problem("Cross-origin request refused."), 403);
     return;
   }
   next();
@@ -90,35 +99,37 @@ app.get("/", async (req, res) => {
   const owner = await currentOwner(req, res);
   const generations = await listRecentGenerations(owner);
   const missing = await missingCredentials(owner);
-  res.type("html").send(homePage(generations, missing, owner, await accountEmail(owner)));
+  sendHtml(res, homePage(generations, missing, owner, await accountEmail(owner)));
 });
 
 // The sidebar's live refresh: the list fragment, owner-scoped, never cached.
 app.get("/generations", async (req, res) => {
   const owner = await currentOwner(req, res);
   const generations = await listRecentGenerations(owner);
-  res.set("Cache-Control", "no-store").type("html").send(generationList(generations));
+  res.set("Cache-Control", "no-store");
+  sendHtml(res, generationList(generations));
 });
 
 app.post("/generations", async (req, res) => {
   const owner = await currentOwner(req, res);
   const prompt = String(req.body.prompt ?? "").trim();
   if (!prompt) {
-    res.status(400).type("html").send(`<p class="placeholder">A prompt is required.</p>`);
+    sendHtml(res, placeholder("A prompt is required."), 400);
     return;
   }
   const generation = await createGeneration(prompt, owner);
   const grant = mintViewGrant(generation.id, "rw", Date.now() + VIEW_GRANT_TTL_MS, requireEnv("APP_TOKEN_SECRET"));
   // The composer/owner slots live outside #stage, so a new (still streaming) app has to clear
   // the previous app's edit form and owner controls out-of-band — see oobSlot.
-  res
-    .type("html")
-    .send(
-      previewFrame(generation.id, appOrigin(generation.id), grant, true) +
-        oobSlot("edit-slot", "") +
-        oobSlot("owner-slot", "") +
-        chatLogOob(generation.id, messageItems([firstMessage(generation)], pendingText(generation))),
-    );
+  sendHtml(
+    res,
+    join(
+      previewFrame(generation.id, appOrigin(generation.id), grant, true),
+      oobSlot("edit-slot"),
+      oobSlot("owner-slot"),
+      chatLogOob(generation.id, messageItems([firstMessage(generation)], pendingText(generation))),
+    ),
+  );
 });
 
 // Messages after `after`, plus the transient working row. Owner-only (404 otherwise). The prompt (message zero)
@@ -132,7 +143,8 @@ app.get("/generations/:id/messages", async (req, res) => {
   }
   const after = Math.max(0, Math.floor(Number(req.query.after ?? 0)) || 0);
   const rows = await listMessages(generation.id, after);
-  res.set("Cache-Control", "no-store").type("html").send(messageItems(rows, pendingText(generation)));
+  res.set("Cache-Control", "no-store");
+  sendHtml(res, messageItems(rows, pendingText(generation)));
 });
 
 app.get("/generations/:id/frame", async (req, res) => {
@@ -141,7 +153,7 @@ app.get("/generations/:id/frame", async (req, res) => {
   // so a private app is indistinguishable from a missing one.
   const generation = await getGeneration(req.params.id);
   if (!generation || !mayView(generation, owner)) {
-    res.status(404).type("html").send(`<p class="placeholder">Not found.</p>`);
+    sendHtml(res, placeholder("Not found."), 404);
     return;
   }
 
@@ -150,7 +162,7 @@ app.get("/generations/:id/frame", async (req, res) => {
 
   // Only a complete, decomposed app can be edited.
   const loaded = mode === "rw" ? await getFilledApp(generation.id, owner) : null;
-  const editFormHtml = loaded ? editForm(generation.id, loaded.filled.slots) : "";
+  const editFormHtml = loaded ? editForm(generation.id, loaded.filled.slots) : undefined;
   // The standalone share page: the frame route's fragment is unusable on its own.
   const shareUrl = `${studioOrigin}/apps/${generation.id}`;
   const ownerHtml = mode === "rw" ? ownerControls(generation.id, generation.visibility, shareUrl) : remixControl(generation.id);
@@ -158,16 +170,17 @@ app.get("/generations/:id/frame", async (req, res) => {
   const chatHtml =
     mode === "rw"
       ? chatLogOob(generation.id, messageItems(await fullConversation(generation), pendingText(generation)))
-      : chatLogOob("", "");
-  res
-    .type("html")
-    .send(
+      : chatLogOob("");
+  sendHtml(
+    res,
+    join(
       // A pending row starts generating when its frame loads; any other status is served at once.
-      previewFrame(generation.id, appOrigin(generation.id), grant, generation.status === "pending") +
-        oobSlot("edit-slot", editFormHtml) +
-        oobSlot("owner-slot", ownerHtml) +
-        chatHtml,
-    );
+      previewFrame(generation.id, appOrigin(generation.id), grant, generation.status === "pending"),
+      oobSlot("edit-slot", editFormHtml),
+      oobSlot("owner-slot", ownerHtml),
+      chatHtml,
+    ),
+  );
 });
 
 // What a shared link opens. A separate route keeps the frame route a plain fragment for htmx.
@@ -175,28 +188,28 @@ app.get("/apps/:id", async (req, res) => {
   const owner = await currentOwner(req, res);
   const generation = await getGeneration(req.params.id);
   if (!generation || !mayView(generation, owner)) {
-    res.status(404).type("html").send(notFoundPage());
+    sendHtml(res, notFoundPage(), 404);
     return;
   }
   const mode: TokenMode = isOwner(generation, owner) ? "rw" : "ro";
   const grant = mintViewGrant(generation.id, mode, Date.now() + VIEW_GRANT_TTL_MS, requireEnv("APP_TOKEN_SECRET"));
   const title = isFilledApp(generation.plan) ? generation.plan.title : generation.prompt.slice(0, 80);
-  res.type("html").send(sharedAppPage(generation.id, title, appOrigin(generation.id), grant, mode));
+  sendHtml(res, sharedAppPage(generation.id, title, appOrigin(generation.id), grant, mode));
 });
 
 app.post("/generations/:id/visibility", async (req, res) => {
   const owner = await currentOwner(req, res);
   const visibility = String(req.body.visibility ?? "");
   if (visibility !== "private" && visibility !== "unlisted" && visibility !== "public") {
-    res.status(400).type("html").send(`<p class="problem">Unknown visibility.</p>`);
+    sendHtml(res, problem("Unknown visibility."), 400);
     return;
   }
   const ok = await setVisibility(req.params.id, owner, visibility);
   if (!ok) {
-    res.status(404).type("html").send(`<p class="problem">Not found.</p>`);
+    sendHtml(res, problem("Not found."), 404);
     return;
   }
-  res.type("html").send(`<p class="edit-ok">Set to ${visibility}.</p>`);
+  sendHtml(res, editOk(`Set to ${visibility}.`));
 });
 
 // Owner-only (404 for others). A 200 empty body makes the page remove the row; problems show as the toast.
@@ -204,11 +217,11 @@ app.delete("/generations/:id", async (req, res) => {
   const owner = await currentOwner(req, res);
   const result = await deleteGeneration(req.params.id, owner, isEditing);
   if (result === "missing") {
-    res.status(404).type("html").send(editProblem("That app no longer exists."));
+    sendHtml(res, editProblem("That app no longer exists."), 404);
     return;
   }
   if (result === "busy") {
-    res.status(409).type("html").send(editProblem("Still generating or updating — delete it once that finishes."));
+    sendHtml(res, editProblem("Still generating or updating — delete it once that finishes."), 409);
     return;
   }
   res.status(200).type("html").send("");
@@ -220,12 +233,12 @@ app.post("/generations/:id/fork", async (req, res) => {
   // must work, forking a private one you don't own must 404 like it doesn't exist.
   const source = await getGeneration(req.params.id);
   if (!source || !mayView(source, owner)) {
-    res.status(404).type("html").send(`<p class="placeholder">Not found.</p>`);
+    sendHtml(res, placeholder("Not found."), 404);
     return;
   }
   // isFilledApp, not plan !== null: forkGeneration casts the plan, so anything weaker turns a 409 into a 500.
   if (source.status !== "complete" || !isFilledApp(source.plan)) {
-    res.status(409).type("html").send(`<p class="problem">This app cannot be remixed yet.</p>`);
+    sendHtml(res, problem("This app cannot be remixed yet."), 409);
     return;
   }
 

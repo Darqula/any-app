@@ -233,7 +233,14 @@ whole point.
 | ID | Case | Passes when |
 |---|---|---|
 | A7.1 | `errorBanner` with `<script>` in the message | Escaped, cannot break out of the `<pre>` |
-| A7.2 | `escapeHtml` in `views.ts` with a `"` | Escaped — it is used in an attribute context |
+| A7.2 | The views' escaping (`views/escape.ts`, via `previewFrame`) with a `"` | Escaped; it is used in an attribute context |
+| A7.3 | `html` tagged template with text, both quote kinds, numbers, booleans, null, undefined | Text and quotes are escaped; the rest renders nothing |
+| A7.4 | Nesting: an `Html` fragment, the same text as a plain string, arrays, `join` | The fragment is embedded as is; the string is escaped; arrays flatten |
+| A7.5 | A plain string assigned to `Html` | Does not compile (`@ts-expect-error`): the type is nominal, not structural |
+| A7.6a | The sweep's list of views against the views barrel's exports | Equal, so a new exported view cannot skip the sweep |
+| A7.6 | Every exported view, rendered with hostile text in each place it takes text | No unescaped hostile markup, and no view escapes its own markup (the sweep). Add each new view to it |
+| A7.7 | Every full page (home, settings, share; anonymous and signed in) | Carries the htmx-config meta, the htmx script and the theme stylesheet as real markup |
+| A7.8 | Every class in every rendered view's markup | Has a rule in a stylesheet the page links (a fragment: in any stylesheet); a typo or a missing `<link>` fails here instead of silently unstyling |
 
 ### A8 — `mintAppToken` / `verifyAppToken` (P5)
 
@@ -307,6 +314,7 @@ non-atomic code.
 | C14 | Planner returns unparseable output (P2) | Falls back to the linear path; app still renders; row `complete` |
 | C15 | Planner call is **aborted** (P2) | Does **not** fall back to linear — abort must propagate |
 | C16 | Fill call fails after the shell was written (P2) | Error banner appended to the already-open response; row `failed` |
+| C17 | Every studio page (home, settings, a share page, not-found) | Full page; each `/css/*` and `/js/*` it links is served with the right content type; every file on disk under `public/` (except its `tsconfig.json`) is a linked `.css` or `.js`; nothing outside `/css` and `/js` is served |
 
 C15 is a real branch in the Phase 2 route (`if (ac.signal.aborted) throw error` inside the
 planner catch). It is easy to get wrong in a way no other test notices: a viewer who closes
@@ -488,13 +496,15 @@ issues. `architecture.md` says npm's flat `node_modules` cannot enforce these, s
 | I2 | `apps/sandbox/src/**` | Contains no import of `@any-app/generator` |
 | I3 | `apps/sandbox/package.json` (P5) | Does **not** list `@any-app/store` at all |
 | I4 | Repository-wide grep | No `compression` package anywhere |
-| I5 | `views.ts` (P5) | The preview iframe's `sandbox` attribute contains **both** `allow-scripts` and `allow-same-origin`, **and** its `src` host is derived per app — the two must move together |
+| I5 | `previewFrame` output (P5) | The rendered `sandbox` attribute contains **both** `allow-scripts` and `allow-same-origin`, **and** the `src` host comes from the per-app origin argument — the two must move together |
 | I6 | `packages/generator/src/**` (P3.5) | No provider SDK is imported outside the adapter directory — the rest of the generator sees only the interface |
 | I7 | Repository-wide grep (P3.5) | No route or view interpolates a raw credential; error persistence always goes through the scrubber |
 | I8 | `apps/sandbox/src/**` (P5) | No `Access-Control-Allow-Origin` anywhere — the data API is same-origin by construction |
 | I9 | `apps/sandbox/src/data.ts` (P5) | `app_id` is only ever read from `res.locals`, never from `req.body`, `req.query`, `req.params`, or a header |
-| I10 | `apps/studio/src/views.ts` (P5) | No `postMessage(..., "*")` — every call pins a specific target origin |
+| I10 | `apps/studio/public/js/*.js` and `apps/studio/src/views/*` (P5) | No `postMessage(..., "*")` — every call pins a specific target origin |
 | I11 | `session.ts` (P5) | The session cookie is set with no `Domain` attribute |
+| I12 | `apps/studio/public/css/*.css` | No ID selectors, no `!important` (any case or spacing), no nesting, no element selectors outside `base.css` (also inside `:not/:is/:where/:has` and every at-rule body), no literal colours (hex, `rgb/hsl/oklch/color-mix`, named) outside `theme.css` |
+| I12a | The guard's own parser (`tests/harness/css.ts`) on 29 violating and 9 conforming snippets | Every violation is reported (statement at-rules, `@layer/@container/@media`, missing braces, nesting, strings containing `#` or spaces) and no conforming snippet is |
 
 **I3 changed shape, and the new shape is the point.** It used to read "imports nothing from
 `@any-app/store` except `loadEnv`" — a statement about import specifiers, checkable only by

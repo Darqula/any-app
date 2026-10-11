@@ -63,7 +63,7 @@ test.describe("A — studio UI", () => {
   test("A2 — submitting a prompt puts an iframe in #stage", async ({ page }) => {
     await page.goto("/");
     await page.fill('textarea[name="prompt"]', `A2 submit ${Date.now()}`);
-    await page.click('button[type="submit"]');
+    await page.click('#create-form button[type="submit"]');
     await expect(page.locator("#stage iframe")).toHaveCount(1);
   });
 
@@ -73,14 +73,14 @@ test.describe("A — studio UI", () => {
 
     // Fully empty: the textarea's native `required` attribute should block submission before
     // any request is even sent.
-    await page.click('button[type="submit"]');
+    await page.click('#create-form button[type="submit"]');
     await page.waitForTimeout(200);
     await expect(page.locator("#stage iframe")).toHaveCount(0);
     expect(await countGenerations()).toBe(before);
 
     // Whitespace passes the browser's `required` check, so it reaches the server, which has to reject it.
     await page.fill('textarea[name="prompt"]', "   ");
-    await page.click('button[type="submit"]');
+    await page.click('#create-form button[type="submit"]');
     await page.waitForTimeout(300);
     await expect(page.locator("#stage iframe")).toHaveCount(0);
     expect(await countGenerations()).toBe(before);
@@ -103,7 +103,7 @@ test.describe("A — studio UI", () => {
     const seeded = await seedGeneration(databaseUrl, { prompt, document: MINIMAL_DOCUMENT, status: "complete", sessionId });
 
     await page.goto("/");
-    await page.locator("#generation-list li", { hasText: prompt }).locator("button").click();
+    await page.locator("#generation-list li", { hasText: prompt }).locator(".app-row-open").click();
 
     const iframe = page.locator("#stage iframe");
     await expect(iframe).toHaveCount(1);
@@ -150,12 +150,12 @@ test.describe("A — studio UI", () => {
     await page.goto("/");
 
     await page.fill('textarea[name="prompt"]', promptA);
-    await page.click('button[type="submit"]');
+    await page.click('#create-form button[type="submit"]');
     await expect(page.locator("#stage iframe")).toHaveCount(1);
     const srcA = await page.locator("#stage iframe").getAttribute("src");
 
     await page.fill('textarea[name="prompt"]', promptB);
-    await page.click('button[type="submit"]');
+    await page.click('#create-form button[type="submit"]');
     await expect(page.locator("#stage iframe")).toHaveCount(1); // still exactly one — replaced, not stacked
     // toHaveCount(1) is already true for the first iframe, so wait for the src to change before reading it.
     await expect(page.locator("#stage iframe")).not.toHaveAttribute("src", srcA!);
@@ -179,7 +179,7 @@ test.describe("A — studio UI", () => {
 
     await page.goto("/");
     await page.fill('textarea[name="prompt"]', prompt);
-    await page.click('button[type="submit"]');
+    await page.click('#create-form button[type="submit"]');
     await expect(page.locator("#stage iframe")).toHaveCount(1);
 
     // A fresh page load, so this asserts what the server renders, not the live refresh.
@@ -216,7 +216,7 @@ test.describe("A — studio UI", () => {
 
     // A mouse click on the row's name focuses it; the cross must not stay open once the
     // pointer has left (it used to, via :focus-within).
-    await row.locator("button").click();
+    await row.locator(".app-row-open").click();
     await page.mouse.move(600, 300);
     await expect.poll(async () => (await cross.boundingBox())!.width).toBe(0);
   });
@@ -285,7 +285,7 @@ test.describe("A — studio UI", () => {
     const prompt = `A13 composer ${Date.now()}`;
     await page.goto("/");
     await page.fill('textarea[name="prompt"]', prompt);
-    await page.click('button[type="submit"]');
+    await page.click('#create-form button[type="submit"]');
     const row = page.locator("#generation-list li", { hasText: prompt });
     await expect(row).toBeVisible({ timeout: 5_000 });
     await expect(row).toHaveClass(/active/);
@@ -302,7 +302,7 @@ test.describe("A — studio UI", () => {
     const log = page.locator("#chat-log");
     await expect(panel).toBeHidden();
 
-    await page.locator("#generation-list li", { hasText: prompt }).locator("button").click();
+    await page.locator("#generation-list li", { hasText: prompt }).locator(".app-row-open").click();
     await expect(panel).toBeVisible();
     await expect(page.locator("#chat-toggle")).toHaveAttribute("aria-expanded", "false");
     await expect(log).toBeHidden(); // collapsed: just the header strip
@@ -317,7 +317,7 @@ test.describe("A — studio UI", () => {
 
     // Remembered per browser, and hidden again when the shown app is deleted.
     await page.reload();
-    await page.locator("#generation-list li", { hasText: prompt }).locator("button").click();
+    await page.locator("#generation-list li", { hasText: prompt }).locator(".app-row-open").click();
     await expect(log).toBeVisible();
     await page.locator("#chat-toggle").click();
     await expect(log).toBeHidden();
@@ -329,7 +329,7 @@ test.describe("A — studio UI", () => {
     const box = page.locator('textarea[name="prompt"]');
 
     await box.fill(prompt);
-    await page.click('button[type="submit"]');
+    await page.click('#create-form button[type="submit"]');
     await expect(box).toHaveValue("");
     await expect(page.locator("#stage iframe")).toHaveCount(1);
     expect(await promptsMatching(prompt)).toEqual([prompt]); // cleared in the UI, sent in full
@@ -337,7 +337,7 @@ test.describe("A — studio UI", () => {
     // Whitespace passes the browser's "required" check but the server rejects it (400): the
     // text comes back so it can be fixed instead of retyped.
     await box.fill("   ");
-    await page.click('button[type="submit"]');
+    await page.click('#create-form button[type="submit"]');
     await expect(box).toHaveValue("   ");
 
     // ...but not over something the user has typed since.

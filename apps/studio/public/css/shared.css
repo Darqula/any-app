@@ -1,0 +1,26 @@
+.page-shared {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.shared-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 18px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.preview-wrap {
+  flex: 1;
+  min-height: 400px;
+}
+
+/* What a shared link shows when the app can't be opened. */
+.page-not-found {
+  padding: 24px;
+}

@@ -65,7 +65,7 @@ test.describe("H — generated-app data", () => {
     expect(created.id).toBeTruthy();
 
     // Reload the SAME app — a fresh iframe, a fresh load.
-    await page.locator("#generation-list li", { hasText: prompt }).locator("button").click();
+    await page.locator("#generation-list li", { hasText: prompt }).locator(".app-row-open").click();
     const frame2 = await waitForFrameBySrc(page, src, { excludeFrame: frame });
     const list = await frame2.evaluate(async () => {
       const anyapp = (window as unknown as { anyapp: { data: DataApiBrowser } }).anyapp;
@@ -136,7 +136,7 @@ test.describe("H — generated-app data", () => {
 
       fake.queueComplete({ text: "<p>edited region</p>" });
       await page.goto("/");
-      await page.locator("#generation-list li", { hasText: prompt }).locator("button").click();
+      await page.locator("#generation-list li", { hasText: prompt }).locator(".app-row-open").click();
       // Kept so the next reload can exclude this frame: an uncaptured intermediate frame lets the reload race against itself (waitForFrameBySrc).
       const srcAfterFirstReload = await page.locator("#stage iframe").getAttribute("src");
       const frameAfterFirstReload = await waitForFrameBySrc(page, srcAfterFirstReload!);
@@ -146,7 +146,7 @@ test.describe("H — generated-app data", () => {
       await expect(page.locator("#edit-result")).toContainText("Updated");
 
       // Reload fresh: every edit re-renders the document, which must reproduce the same token; otherwise this list() call would 401.
-      await page.locator("#generation-list li", { hasText: prompt }).locator("button").click();
+      await page.locator("#generation-list li", { hasText: prompt }).locator(".app-row-open").click();
       const frame2 = await waitForFrameBySrc(page, src, { excludeFrame: frameAfterFirstReload });
       const list = await frame2.evaluate(async () => {
         const anyapp = (window as unknown as { anyapp: { data: DataApiBrowser } }).anyapp;

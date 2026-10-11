@@ -853,7 +853,7 @@ test("M21 — the page frame is editable: a caption can be removed, damaged regi
   stack.fake.queueComplete({ text: `<h1>No regions here</h1>` });
   const damaged = await post({ instruction: "simplify", target: "@shell" });
   assert.equal(damaged.status, 502);
-  assert.match(await damaged.text(), /damaged the page's regions/);
+  assert.match(await damaged.text(), /damaged the page(?:'|&#39;)s regions/);
   assert.equal(await version(), v2);
 
   // 4. An unchanged frame, and an unchanged region, are 422s — not "Updated".

@@ -1,0 +1,39 @@
+.owner-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.owner-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.owner-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.owner-select {
+  padding: 4px 8px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.owner-controls .hint {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The result of the visibility form takes part in the row's layout instead of forming a box. */
+.result-inline {
+  display: contents;
+}

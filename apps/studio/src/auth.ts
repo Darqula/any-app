@@ -1,6 +1,8 @@
 import { Router } from "express";
 import { createUser, authenticate, claimAnonymousWork } from "@any-app/store";
 import { currentOwner, signInAs, signOut } from "./session";
+import { problem } from "./views";
+import { sendHtml } from "./respond";
 
 /**
  * `express.urlencoded({ extended: false })` is already mounted in `index.ts`, so form posts
@@ -13,13 +15,13 @@ export function authRouter(): Router {
     const email = String(req.body.email ?? "").trim();
     const password = String(req.body.password ?? "");
     if (!email.includes("@") || password.length < 8) {
-      res.status(400).type("html").send(`<p class="problem">Enter an email and a password of at least 8 characters.</p>`);
+      sendHtml(res, problem("Enter an email and a password of at least 8 characters."), 400);
       return;
     }
     const before = await currentOwner(req, res);
     const user = await createUser(email, password);
     if (!user) {
-      res.status(409).type("html").send(`<p class="problem">That email is already registered.</p>`);
+      sendHtml(res, problem("That email is already registered."), 409);
       return;
     }
     // Claim BEFORE rotating: the work is keyed to the old session id.
@@ -33,7 +35,7 @@ export function authRouter(): Router {
     const before = await currentOwner(req, res);
     const user = await authenticate(String(req.body.email ?? ""), String(req.body.password ?? ""));
     if (!user) {
-      res.status(401).type("html").send(`<p class="problem">Wrong email or password.</p>`);
+      sendHtml(res, problem("Wrong email or password."), 401);
       return;
     }
     // Deliberately NO claim here — a shared/kiosk browser signing in to an existing account

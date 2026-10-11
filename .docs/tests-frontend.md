@@ -107,7 +107,7 @@ generator.
 ### A9 — Prompt text is escaped in the sidebar
 
 Submit a prompt of `"><img src=x onerror=alert(1)>` and assert no dialog fires and no `img`
-element exists in the sidebar. `escapeHtml` covers this today; the test exists because the
+element exists in the sidebar. The `html` tagged template (`views/escape.ts`) covers this today; the test exists because the
 sidebar is the one place user text is interpolated into studio HTML, and studio is the
 trusted origin.
 

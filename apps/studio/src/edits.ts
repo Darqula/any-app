@@ -26,6 +26,7 @@ import {
 import type { UsageEvent } from "@any-app/store";
 import { renderFullHead, SHELL_TAIL } from "./shell";
 import { editApplied, editProblem } from "./views";
+import { sendHtml } from "./respond";
 import { currentOwner } from "./session";
 import { credentialForRole } from "./credential-resolve";
 import { beginEdit } from "./activity";
@@ -48,7 +49,7 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
     const chosen = String(req.body.target ?? "").trim();
 
     if (!instruction) {
-      res.status(400).type("html").send(editProblem("Describe the change you want."));
+      sendHtml(res, editProblem("Describe the change you want."), 400);
       return;
     }
 
@@ -58,7 +59,7 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
     if (owner.kind === "user") {
       const limit = await monthlyLimitFor(owner.userId);
       if (limit !== null && (await billableTokensThisMonth(owner.userId)) >= limit) {
-        res.status(503).type("html").send(editProblem("Monthly token limit reached."));
+        sendHtml(res, editProblem("Monthly token limit reached."), 503);
         return;
       }
     }
@@ -66,7 +67,7 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
     // Owner-scoped: a non-owner gets the same 404 as a missing app.
     const loaded = await getFilledApp(id, owner);
     if (!loaded) {
-      res.status(404).type("html").send(editProblem("This app cannot be edited yet."));
+      sendHtml(res, editProblem("This app cannot be edited yet."), 404);
       return;
     }
     const { filled, version } = loaded;
@@ -88,7 +89,7 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
       secrets = [...routerResolved.secrets, ...editResolved.secrets];
     } catch (error) {
       if (error instanceof NoCredentialError) {
-        res.status(503).type("html").send(editProblem(error.message));
+        sendHtml(res, editProblem(error.message), 503);
         return;
       }
       throw error;
@@ -116,9 +117,9 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
     const endEdit = beginEdit(id);
     // Recorded when accepted, not on success, so a failed edit still shows what was asked.
     await recordMessage(id, { role: "user", kind: "edit", target: chosen || null, body: instruction });
-    async function problem(status: number, message: string): Promise<void> {
+    async function sendProblem(status: number, message: string): Promise<void> {
       await recordMessage(id, { role: "assistant", kind: "error", target: chosen || null, body: message });
-      res.status(status).type("html").send(editProblem(message));
+      sendHtml(res, editProblem(message), status);
     }
     try {
       let target;
@@ -130,7 +131,7 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
       } else if (chosen) {
         // An unknown region id would write an orphan key into content and cost a model call for nothing.
         if (!filled.slots.some((s) => s.id === chosen)) {
-          await problem(400, `Unknown region "${chosen}".`);
+          await sendProblem(400, `Unknown region "${chosen}".`);
           return;
         }
         target = { kind: "slot" as const, id: chosen };
@@ -147,13 +148,13 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
           console.warn(
             `edit ${id}: css rewrite came back as ${after.length} chars against ${before.length} before — looks like a fragment, not a full stylesheet. Discarding.`,
           );
-          await problem(502, "That came back as a fragment, not the whole stylesheet. Try rephrasing, or try again.");
+          await sendProblem(502, "That came back as a fragment, not the whole stylesheet. Try rephrasing, or try again.");
           return;
         }
         // An identical stylesheet means the model declined or the request was already met. Say so; do not
         // save a version or report an update.
         if (after.trim() === before.trim()) {
-          await problem(
+          await sendProblem(
             422,
             "The stylesheet came back unchanged. Styling can only change what is already there — if you asked for a new control or feature, pick the region that should hold it instead of Styling and ask again.",
           );
@@ -167,15 +168,15 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
         const checked = checkShellEdit(filled, raw);
         if (!checked.ok) {
           console.warn(`edit ${id}: shell rewrite rejected: ${checked.problem}`);
-          await problem(502, checked.problem);
+          await sendProblem(502, checked.problem);
           return;
         }
         if (looksTruncated(before, checked.shell)) {
-          await problem(502, "That came back as a fragment, not the whole page frame. Try rephrasing, or try again.");
+          await sendProblem(502, "That came back as a fragment, not the whole page frame. Try rephrasing, or try again.");
           return;
         }
         if (checked.shell.trim() === before.trim()) {
-          await problem(422, "The page frame came back unchanged. Name the text or element you mean (for example the heading, subtitle or footer) and ask again.");
+          await sendProblem(422, "The page frame came back unchanged. Name the text or element you mean (for example the heading, subtitle or footer) and ask again.");
           return;
         }
         next.shell = checked.shell;
@@ -208,11 +209,11 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
           console.warn(
             `edit ${id}: slot "${target.id}" came back as ${after.length} chars against ${before.length} before — looks like a fragment, not a full region. Discarding.`,
           );
-          await problem(502, "That came back as a fragment, not the whole region. Try rephrasing, or try again.");
+          await sendProblem(502, "That came back as a fragment, not the whole region. Try rephrasing, or try again.");
           return;
         }
         if (after.trim() === before.trim()) {
-          await problem(
+          await sendProblem(
             422,
             `Nothing changed in "${target.id}". What you mean may not be in that region — name the part you mean, or pick a different part of the page in the target list.`,
           );
@@ -226,7 +227,7 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
       const document = renderDocument(next, (p) => renderFullHead(p, studioOrigin), SHELL_TAIL);
 
       if (!(await saveEditedApp(id, owner, next, document, version))) {
-        await problem(409, "This app changed while your edit was running. Try again.");
+        await sendProblem(409, "This app changed while your edit was running. Try again.");
         return;
       }
 
@@ -237,20 +238,20 @@ export function editsRouter(studioOrigin: string, appOrigin: (id: string) => str
         target: target.kind === "slot" ? target.id : target.kind,
         body: `Updated ${label}.`,
       });
-      res.type("html").send(editApplied(id, appOrigin(id), target, next));
+      sendHtml(res, editApplied(id, appOrigin(id), target, next));
     } catch (error) {
       if (isAbortError(error)) return;
       if (error instanceof RoutingError) {
         console.warn(`edit ${id}: routing failed`, error);
-        // Not `problem()`: this answers 200 (the form's own "pick one" hint), unlike the failures above.
+        // Not `sendProblem()`: this answers 200 (the form's own "pick one" hint), unlike the failures above.
         const hint = "I could not tell which part to change — pick one below.";
         await recordMessage(id, { role: "assistant", kind: "error", body: hint });
-        res.type("html").send(editProblem(hint));
+        sendHtml(res, editProblem(hint));
         return;
       }
       const message = safeMessage(error, secrets);
       console.error(`edit ${id} failed:`, message);
-      await problem(500, message);
+      await sendProblem(500, message);
     } finally {
       try {
         await recordUsage(usageEvents);

@@ -58,7 +58,7 @@ test.describe("G — provider settings and BYOK", () => {
 
       fake.queueComplete({ text: "<p>changed</p>" });
       await page.goto("/");
-      await page.locator("#generation-list li", { hasText: prompt }).locator("button").click();
+      await page.locator("#generation-list li", { hasText: prompt }).locator(".app-row-open").click();
       await page.fill('#edit-form input[name="instruction"]', "change it");
       await page.selectOption('#edit-form select[name="target"]', "alpha");
       await page.click('#edit-form button[type="submit"]');
@@ -91,7 +91,7 @@ test.describe("G — provider settings and BYOK", () => {
     }
   });
 
-  // G3 checks both halves: the message is scrubbed AND reaches the DOM. htmx drops 4xx/5xx bodies by default; views.ts swaps them, and this pins it.
+  // G3 checks both halves: the message is scrubbed AND reaches the DOM. htmx drops 4xx/5xx bodies by default; the studio's htmx-config meta swaps them in, and this pins it.
   test("G3 — an invalid key is rejected with a readable, scrubbed message that is actually shown", async ({ page }) => {
     const fake = await startFakeProvider();
     try {
@@ -194,7 +194,7 @@ test.describe("G — provider settings and BYOK", () => {
         body: { error: { message: `Incorrect API key provided: ${apiKey}`, type: "invalid_request_error" } },
       });
       await page.goto("/");
-      await page.locator("#generation-list li", { hasText: prompt }).locator("button").click();
+      await page.locator("#generation-list li", { hasText: prompt }).locator(".app-row-open").click();
       await page.fill('#edit-form input[name="instruction"]', "change it");
       await page.selectOption('#edit-form select[name="target"]', "alpha");
 

@@ -1,5 +1,5 @@
 /**
- * Cases C1-C6, C8-C16; C7 lives in studio-stream.test.ts. Each test gets its own scratch database, fake
+ * Cases C1-C6, C8-C17; C7 lives in studio-stream.test.ts. Each test gets its own scratch database, fake
  * provider and server pair. Cleanup order: t.after() runs in registration order, so drop() is registered before stop(); raw pg pools
  * are closed inline.
  */
@@ -8,7 +8,9 @@ import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import pg from "pg";
 import { INTERNAL_SECRET_HEADER } from "@any-app/protocol";
-import { createScratchDatabase } from "../harness/db";
+import { readdirSync } from "node:fs";
+import path from "node:path";
+import { createScratchDatabase, REPO_ROOT } from "../harness/db";
 import { startServers } from "../harness/servers";
 import { findFreePorts } from "../harness/ports";
 import { startFakeProvider } from "../harness/fake-provider";
@@ -440,4 +442,62 @@ test("C16 — fill call fails after the shell was written: error banner appended
 
   const row = await queryGeneration(scratch.databaseUrl, id);
   assert.equal(row?.status, "failed");
+});
+
+test("C17 — every studio page's stylesheets and scripts are served (a 404 link would unstyle the page and no behavioural test would notice)", async (t) => {
+  const { servers } = await setup(t);
+  const origin = servers.studioOrigin;
+
+  // A creator's own page, an unknown app's not-found page, and the two top-level pages.
+  const created = await fetch(`${origin}/generations`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ prompt: "C17 page" }).toString(),
+  });
+  const cookie = created.headers.get("set-cookie")!.split(";")[0]!;
+  const { id } = extractPreview(await created.text());
+  const pages = [
+    { path: "/", headers: {} as Record<string, string> },
+    { path: "/settings", headers: {} },
+    { path: `/apps/${id}`, headers: { cookie } as Record<string, string> },
+    { path: "/apps/00000000-0000-4000-8000-000000000000", headers: {} },
+  ];
+
+  const assets = new Set<string>();
+  for (const page of pages) {
+    const res = await fetch(`${origin}${page.path}`, { headers: page.headers });
+    const body = await res.text();
+    assert.ok(body.includes("<!doctype html>"), `${page.path}: expected a full page`);
+    if (res.status === 200) {
+      assert.match(body, /<meta name="htmx-config" content='/, `${page.path}: the htmx-config meta must be real markup`);
+    }
+    for (const match of body.matchAll(/(?:href|src)="(\/(?:css|js)\/[^"]+)"/g)) assets.add(match[1]!);
+  }
+
+  assert.ok(assets.has("/css/theme.css") && assets.has("/js/home.js") && assets.has("/js/auth.js"), `expected the pages to reference the studio assets, saw: ${[...assets].join(", ")}`);
+  for (const asset of assets) {
+    const res = await fetch(`${origin}${asset}`);
+    assert.equal(res.status, 200, `${asset} must be served`);
+    const type = res.headers.get("content-type") ?? "";
+    assert.match(type, asset.endsWith(".css") ? /^text\/css/ : /javascript/, `${asset} content-type was ${type}`);
+    assert.ok((await res.text()).length > 0, `${asset} must not be empty`);
+  }
+
+  // Whatever sits in css/ and js/ is published, so each file must be a stylesheet or script some page links. The exception,
+  // public/tsconfig.json, sits beside the two mounted directories and must stay unreachable (checked below).
+  const publicDir = path.join(REPO_ROOT, "apps", "studio", "public");
+  const onDisk = readdirSync(publicDir, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => `/${path.relative(publicDir, path.join(entry.parentPath, entry.name)).split(path.sep).join("/")}`)
+    .filter((file) => file !== "/tsconfig.json");
+  assert.ok(onDisk.length >= assets.size, "expected the studio's asset files under apps/studio/public");
+  for (const file of onDisk) {
+    assert.match(file, /^\/(css\/[^/]+\.css|js\/[^/]+\.js)$/, `${file} must not live under public/`);
+    assert.ok(assets.has(file), `${file} is not linked from any page`);
+  }
+
+  // Files beside the mounted directories are not served.
+  for (const url of ["/tsconfig.json", "/js/tsconfig.json", "/package.json"]) {
+    assert.equal((await fetch(`${origin}${url}`)).status, 404, `${url} must not be served`);
+  }
 });

@@ -1,0 +1,93 @@
+.page-settings {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 28px 24px 48px;
+}
+
+.page-title {
+  margin: 8px 0 20px;
+  font-size: 20px;
+}
+
+.card {
+  margin-bottom: 20px;
+  padding: 18px 20px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+
+.card-title {
+  margin: 0 0 12px;
+  font-size: 15px;
+}
+
+.card .hint {
+  margin: 8px 0;
+}
+
+.card .edit-problem,
+.card .problem {
+  margin: 4px 0;
+}
+
+/* Fields stacked in a column; a button in the stack hugs its text instead of stretching. */
+.form-stack {
+  display: grid;
+  gap: 10px;
+  max-width: 420px;
+}
+
+.form-stack > .btn {
+  justify-self: start;
+}
+
+.account-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.account-who {
+  margin: 0;
+}
+
+.cred-list {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 14px;
+  padding: 0;
+  list-style: none;
+}
+
+.cred-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.cred-validated {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.role-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.role-cell {
+  padding: 6px 12px 6px 0;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+
+.role-head {
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}

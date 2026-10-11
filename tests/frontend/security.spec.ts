@@ -30,7 +30,7 @@ test.describe("B — security invariants", () => {
     const sessionId = await establishAnonSession(page);
     await seedGeneration(databaseUrl, { prompt, document: buildStaticDoc("b1"), sessionId });
     await page.goto("/");
-    await page.locator("#generation-list li", { hasText: prompt }).locator("button").click();
+    await page.locator("#generation-list li", { hasText: prompt }).locator(".app-row-open").click();
     const iframe = page.locator("#stage iframe");
     const src = await iframe.getAttribute("src");
     expect(src).not.toBeNull();
@@ -50,7 +50,7 @@ test.describe("B — security invariants", () => {
     const sessionId = await establishAnonSession(page);
     await seedGeneration(databaseUrl, { prompt, document: buildStaticDoc("b2"), sessionId });
     await page.goto("/");
-    await page.locator("#generation-list li", { hasText: prompt }).locator("button").click();
+    await page.locator("#generation-list li", { hasText: prompt }).locator(".app-row-open").click();
     const iframe = page.locator("#stage iframe");
     const sandboxAttr = (await iframe.getAttribute("sandbox")) ?? "";
     const tokens = sandboxAttr.split(/\s+/);
@@ -108,7 +108,7 @@ test.describe("B — security invariants", () => {
 
     // Reload the SAME app — clicking the sidebar entry again swaps in a fresh iframe with
     // the same src, forcing a real re-navigation — and confirm the write persisted.
-    await page.locator("#generation-list li", { hasText: promptA }).locator("button").click();
+    await page.locator("#generation-list li", { hasText: promptA }).locator(".app-row-open").click();
     const frame2 = await waitForFrameBySrc(page, src, { excludeFrame: frame });
     const after = await frame2.evaluate(() => localStorage.getItem("b5-key"));
     expect(after).toBe("secret-value");
@@ -260,7 +260,7 @@ test.describe("B — security invariants", () => {
 
       fake.queueComplete({ text: "<p>replaced</p>" }); // regenerateSlot's edit-role call
       await page.goto("/");
-      await page.locator("#generation-list li", { hasText: prompt }).locator("button").click();
+      await page.locator("#generation-list li", { hasText: prompt }).locator(".app-row-open").click();
       const src = await page.locator("#stage iframe").getAttribute("src");
       await waitForFrameBySrc(page, src!);
 
