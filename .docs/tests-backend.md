@@ -401,8 +401,8 @@ call, N isolated calls will be worse.
 **F6 changed shape on 2026-09-08 — do not "fix" it back to a byte-exact match.** The old case
 ("every placeholder matches the exact required shape") asserted a shape the planner prompt no
 longer writes: `<div data-slot="chart" class="card"></div>`, a placeholder carrying the
-region's own class, is now the *correct*, prompt-required output (the fix for S13 —
-`testing-review.md`), and the exact-shape assertion was penalising it — in the 2026-09-07
+region's own class, is now the *correct*, prompt-required output (the fix for S13, see
+`memory/model-and-sweep-history.md`), and the exact-shape assertion was penalising it — in the 2026-09-07
 sweep it read 2/14, and every failure was a placeholder correctly carrying a class. Separately,
 `parsePlan` now runs `sanitizePlaceholders` before a plan is persisted, which deterministically
 strips non-whitespace content out of a `data-slot` element — so "the model wrote content inside
@@ -736,7 +736,7 @@ gap between the claim and the actual test file, which supplied no `onUsage` at a
 fix.) N1 covers the complementary studio-side half: that whatever the adapter reports for a
 *normal* completion actually reaches `usage_events` with the right `billable` flag.
 
-## S — regression cases from reviews (`testing-review.md`)
+## S — regression cases from reviews
 
 | Case | Scenario | Expected |
 |---|---|---|

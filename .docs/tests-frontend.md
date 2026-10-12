@@ -215,7 +215,7 @@ covers the fiddliest code in the phase.
 
 D3 is the single most important case in this document — but only its postMessage sub-case
 actually pins the reason the re-creation loop (`rerunScripts` in `SWAP_RUNTIME`) exists.
-Measured directly (testing-review.md's S6): a `<script>` the *document* parser placed inside
+Measured directly (finding S6): a `<script>` the *document* parser placed inside
 a `<template>` — the shape `swap()` consumes on initial fill — has no "already started" flag
 set, and executes on its own the moment its content is moved into the live document, loop or
 not. It is specifically a `<script>` parsed via the *fragment*-parsing algorithm —

@@ -174,7 +174,7 @@ provider:
 `roleConfig()` throws a plain `Error` — not `NoCredentialError` — if no model is configured
 for a role at all (`LLM_MODEL` / `LLM_<ROLE>_MODEL` both unset). This used to propagate out of
 `missingCredentials()` (which only caught `NoCredentialError`) and turn a plain empty-state
-page load into a 500 — see testing-review.md **S3**, fixed 2026-09-01: `missingCredentials()`
+page load into a 500 — finding **S3**, fixed 2026-09-01: `missingCredentials()`
 now catches that too and reports it the same way as a missing credential (a banner, not a
 crash). The placeholder default here stays regardless, since a real deployment should always
 have a model configured and this harness has no reason to be the one exception.

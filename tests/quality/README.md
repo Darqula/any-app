@@ -150,7 +150,7 @@ After every mode requested has run, it prints the stdout table (per-case pass ra
 
 `probe.ts` (plus its two helper modules, `probe-reconstruct.ts` and `probe-stub.ts`) is a
 **separate, much cheaper tool**, not a smaller version of `runner.ts`. It exists to answer one
-specific question — did S13's prompt fix (`.docs/testing-review.md`) actually change model
+specific question — did S13's prompt fix (`.docs/memory/model-and-sweep-history.md`) actually change model
 behaviour? — without paying for a full 20-generation sweep, and without conflating "the
 planner half of the fix worked" with "the fill half of the fix worked" the way one full
 generation necessarily does (a generation that still fails could be either half, or both).

@@ -8,8 +8,8 @@ Verify changes with `npm run typecheck` and `npm test`.
 
 - `.docs/overview.md`: read first. `.docs/architecture.md`: locked decisions and dependency rules.
 - `.docs/open-problems.md`: open provider/model/quality issues. Read before changing any `LLM_*` setting.
-- `.docs/testing-review.md`: active source defects found by tests (resolved ones are deleted). Record a
-  production defect found while writing a test there; never change source just to make a test pass.
+- A production defect found while writing a test: report it to the user and fix it as a separate step; never
+  change source just to make a test pass.
 - `.docs/review-phase-N.md`: exists only while a review has open findings. If it's absent, nothing is open.
   Verify each finding, and especially its suggested fix, against the code before applying it.
 - `.docs/tests-backend.md`, `.docs/tests-frontend.md`, `tests/README.md`: test case lists and harness.

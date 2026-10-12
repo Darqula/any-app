@@ -57,3 +57,23 @@ already had classed placeholders and are used as-is. `--dry-run` proves the pipe
 runs report a **paired** before/after (corpus number labelled background, flips counted both ways); `--only-wrapped`
 restricts to slots the fix can move; `--limit` no longer takes alphabetical order (every `parallel-*` sorts before every
 `sequential-*`, draining one mode), using a deterministic mode-interleaved round-robin instead, printed before any spend.
+
+## Known gaps (not fixed)
+
+- **Rendered F8 cannot drive an app whose interaction starts with typing, so its rate is not a quality measure.**
+  `checkF8Interactive` clicks up to five `button, a[href="#"], input[type=button], [role=button]` elements and compares
+  `document.body.innerText`. All three F8 failures in the 2026-09-08 sweep (`sequential/todo-list`,
+  `sequential/expense-tracker`, `parallel/todo-list`) are add-an-item apps whose only clickable control is an "Add"
+  button; the check never touches the text field, and clicking Add on an empty field correctly does nothing.
+  `sequential/counter` has three direct buttons and passes. Fix: fill visible text/number inputs first (reuse
+  `plausibleValueFor`), and report "no drivable control" as a skip instead of a failure.
+- **F4 is labelled for the wrong failure.** The label says "Plan output parses without a `PlanError`" but the check is
+  `isFilledApp(plan)`, so any planner failure fails it, including the `TruncationError` added by S14. Both F4 failures
+  in the 2026-09-08 sweep (`sequential/notes-app`) were truncations and reported an empty `detail`, because
+  `capturePlannerFailure` only writes on the `PlanError` path; a truncation throws inside `completeText`, before
+  `parsePlan` and before `onRawResponse` fires. The F4 rate blends two causes with opposite fixes (a bigger budget vs.
+  a prompt or parser change). Fix: split them, and capture the partial response on the truncation path.
+- **Server logs are written only at mode teardown, so a killed run loses them.** `runMode` writes
+  `studio-<mode>.log` / `sandbox-<mode>.log` from `servers.logs()` just before `stop()`. The 2026-09-08 sweep was killed
+  by the OS partway through `parallel`: `report.json` (rewritten after every generation) held all 16 completed
+  generations, but no `studio-parallel.log` existed. Fix: flush the logs incrementally like the report.
