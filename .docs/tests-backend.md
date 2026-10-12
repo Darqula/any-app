@@ -1,12 +1,13 @@
 # Test Cases — Backend
 
-**Status:** resynced against the Phase 5 code · 2026-08-31
+**Status:** in sync with the suite · 2026-10-12. A letter suffix on a case (A5.2b, M12b) marks a variant of that
+case; a variant without its own row is covered by its parent row.
 **Scope:** `apps/studio`, `apps/sandbox`, and everything in `packages/`.
 Browser-side behaviour is in [`tests-frontend.md`](./tests-frontend.md).
 
-**Nothing here has been implemented yet.** Phases 0–5 shipped verified by hand. This document
-was written during Phase 2 and last updated at Phase 3.5, so this pass brings it back in line
-with the code as it actually stands: five assertions that would now fail on *correct* code
+**Implemented:** these cases are the backend suite in `tests/backend/`. Phases 0–5 first shipped verified by hand. This document
+was written during Phase 2 and last updated at Phase 3.5, so the 2026-08-31 pass brought it back in line
+with the code as it then stood: five assertions that would now fail on *correct* code
 have been corrected, three references to deleted functions repaired, and two new sections
 added for Phases 4 and 5.
 
@@ -185,6 +186,10 @@ still refuses to touch, so `PlanError` still fires for those.
 | A5.5 | `slotIdsInShell` | Returns ids in document order |
 | A5.6 | **Duplicate slot id in shell** | `parsePlan` throws `PlanError` naming the repeated id |
 | A5.7 | `renderDocument` emits slots in **plan** order (P4) | True even when `content` was populated in completion order — the live stream and the replay are no longer byte-identical, and that is correct |
+| A5.8 | Bare boolean attribute (`hidden`) on a placeholder | Parses; no `PlanError` |
+| A5.9 | Class plus a trailing boolean attribute on a placeholder | Parses; no `PlanError` |
+| A5.10 | A digit in an attribute name (`data-col2`) on a placeholder | Parses; no `PlanError` |
+| A5.11 | Unquoted attribute value (`class=x`) on a placeholder | Parses; no `PlanError` |
 | A5.12 | Real content inside a `data-slot` element | `parsePlan` no longer throws — `sanitizePlaceholders` strips it first (reversed; see A4 table) |
 | A5.13 | `sanitizePlaceholders`: simple content | Stripped; `stripped` reports `{id, removed}` |
 | A5.14 | `sanitizePlaceholders`: nested element of the same tag name | Depth tracking closes on the correct (outer) close tag |
@@ -700,6 +705,16 @@ view-grant query param, the real internal-route grant check).
 | M10 | A well-signed but expired grant, for an unlisted app the caller owns | The response says the link expired — it does NOT silently render the actual app read-only |
 | M11 | A `status='complete'` row whose `plan` is not a `FilledApp` (e.g. a Phase-2-era shape) is forked | 409, not a 500 from the cast inside `forkGeneration` |
 | M12 | A mutating request (`POST .../visibility`) carries a valid owner cookie AND `Sec-Fetch-Site: cross-site` | 403; the row's `visibility` is unchanged |
+| M12b | The same request with `Sec-Fetch-Site: same-site` | Refused too, not just cross-site |
+| M13 | `GET /apps/:id` for an unlisted app with no cookie; for a private app; the owner's frame | The unlisted app renders the full share page; the private app 404s; the owner's frame links to the share page |
+| M14 | The owner deletes an app | 200; the row and its records are gone; the frame 404s afterwards |
+| M15 | Another owner, or no cookie, deletes a private app | 404; the app is untouched |
+| M16 | Delete while the generation is still streaming; usage events and remixes across a delete | 409 until the row goes stale; usage events and remixes survive the delete |
+| M17 | `GET /generations` | The sidebar list fragment for the caller only, uncached, so the page can refresh it live |
+| M18 | A follow-up edit is running | The list shows `updating` and the app cannot be deleted; both clear when the edit finishes |
+| M19 | The conversation log | Prompt first, then the build result and each follow-up; owner-only; cursor-based; deleted with the app |
+| M20 | A stylesheet edit that comes back unchanged | Refused honestly (422), nothing saved, logged as an error, never reported as `Updated styling.` |
+| M21 | Editing the page frame: remove a caption; damage a region; a no-op edit | The caption goes; damaged regions are refused; no-op edits are not reported as updates |
 
 M1/M2's "404, never 403" is the load-bearing property, not incidental: a private app must not
 confirm its own existence to someone who cannot see it.
@@ -720,3 +735,12 @@ note claimed this coverage already existed; it did not — a follow-up review ca
 gap between the claim and the actual test file, which supplied no `onUsage` at all until this
 fix.) N1 covers the complementary studio-side half: that whatever the adapter reports for a
 *normal* completion actually reaches `usage_events` with the right `billable` flag.
+
+## S — regression cases from reviews (`testing-review.md`)
+
+| Case | Scenario | Expected |
+|---|---|---|
+| S13 | `shell.test.ts`: the real artifact's pre-fix shape; a B-shaped plan; the two halves of the fix applied separately | Documents the bug (`[data-slot=...]` carries none of the CSS's toggle classes); the placeholder carries the region's class merged with `anyapp-skeleton`, with id and `data-slot` still forced; applying only the placeholder half, without the fill call's wrapper change, doubles the class, nested |
+| S14 | `provider-adapters.test.ts`: `finish_reason: length` (OpenAI) and `stop_reason: max_tokens` (Anthropic) on `streamText` and `completeText` | `TruncationError`, not `RefusalError`; `onUsage` still fires once first (see the note under N) |
+| S14 | A truncated response with no visible text yet | `TruncationError`, not `RefusalError('empty response')` |
+| S14 | A normal `stop` / `end_turn` response | Unaffected |

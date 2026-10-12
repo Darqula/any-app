@@ -1,5 +1,5 @@
 /**
- * D10: the inlined data runtime. No generation or database; a throwaway http server plays the sandbox's /data/* so request headers and
+ * D12: the inlined data runtime. No generation or database; a throwaway http server plays the sandbox's /data/* so request headers and
  * bodies can be inspected.
  */
 import http from "node:http";
@@ -90,7 +90,7 @@ async function startFixture(
   };
 }
 
-test("D10 — window.anyapp.data exposes create/list/get/update/remove, sends the bearer token, and rejects with the server's error string on non-2xx", async ({
+test("D12 — window.anyapp.data exposes create/list/get/update/remove, sends the bearer token, and rejects with the server's error string on non-2xx", async ({
   page,
 }) => {
   const TOKEN = "test-data-token-abc123";

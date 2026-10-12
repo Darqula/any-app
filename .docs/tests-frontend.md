@@ -1,12 +1,12 @@
 # Test Cases — Frontend
 
-**Status:** resynced against the Phase 5 code · 2026-08-31
+**Status:** in sync with the suite · 2026-10-12
 **Scope:** the studio UI, the streamed preview document, the `swap()` runtime, and the
 rendered behaviour of generated apps. Server-side behaviour is in
 [`tests-backend.md`](./tests-backend.md).
 
-**Nothing here has been implemented yet.** This document was written during Phase 2 and last
-updated at Phase 3.5; this pass brings it back in line with the code.
+**Implemented:** these cases are the frontend suite in `tests/frontend/`. This document was written during Phase 2 and last
+updated at Phase 3.5; the 2026-08-31 pass brought it back in line with the code as it then stood.
 
 Phase markers (**P2**, **P4**, **P5**) record *when a case became relevant*, not what is still
 pending — every phase they refer to has landed.
@@ -102,6 +102,12 @@ generator.
 | A6 | Prompt longer than 80 characters | Sidebar label truncated |
 | A7 | Failed generation | Sidebar shows `failed`, styled by `.status-failed` |
 | A8 | Two rapid submits | Each produces its own row; the second replaces the frame |
+| A10 | Status badges, and the delete cross | Every badge is one width; the cross takes no room until the row is hovered |
+| A11 | Delete an app | The in-page confirmation dialog opens; Cancel and Escape keep the app; Delete removes it |
+| A12 | The server changes while the page is open | The sidebar follows without a reload: status flips, and rows created elsewhere appear |
+| A13 | Create an app from the composer | Its row shows at once, as pending or beyond, and is highlighted |
+| A14 | The conversation panel | Hidden with nothing selected; shows the prompt; expands to about 30% of the screen; remembers its state |
+| A15 | Submit from the create box | The box empties and the prompt still reaches the server; a rejected prompt is put back |
 | A16 | Sidebar footer auth | Anonymous: Sign in / Sign up buttons open a dialog showing one form at a time (Escape closes, a wrong sign-in shows its error in the dialog, switching panes clears it). Signing up replaces the buttons with the account chip and menu; Sign out brings the buttons back |
 
 ### A9 — Prompt text is escaped in the sidebar
@@ -203,7 +209,9 @@ covers the fiddliest code in the phase.
 | D7 | `swap("nope")` — no such template or slot | No-op, no exception |
 | D8 | `swap("x")` called twice | Second call is a no-op; content is not duplicated |
 | D9 | Shell script vs. slot script ordering | The shell script has already run when a slot script executes |
+| D10 | `slot:ready` after a swap, on both dispatch paths (S15) | `detail.element` is a live reference the shell can query into, and the queried content is real |
 | D11 | A slot script's execution count, both via initial `swap()` **and** a postMessage edit | **Executes exactly once — not twice — on either path (S16)** |
+| D12 | The inlined data runtime (P5; details below) | `window.anyapp.data` has `create`/`list`/`get`/`update`/`remove`, sends the bearer token, and rejects with the server's error string on non-2xx |
 
 D3 is the single most important case in this document — but only its postMessage sub-case
 actually pins the reason the re-creation loop (`rerunScripts` in `SWAP_RUNTIME`) exists.
@@ -242,7 +250,7 @@ and it is now the *only* browser-side coverage of out-of-order landing, because
 `LLM_FILL_MODE` defaults to `sequential`: an end-to-end generation no longer exercises it.
 Drive `swap()` directly rather than through a generation.
 
-**D10 (P5) — the data runtime.** Serve a page containing `dataRuntime(token)` and assert
+**D12 (P5) — the data runtime.** Serve a page containing `dataRuntime(token)` and assert
 `window.anyapp.data` exposes `create`/`list`/`get`/`update`/`remove`, that each sends
 `Authorization: Bearer <token>`, and that a non-2xx response rejects with the server's `error`
 string rather than resolving. The runtime is inlined into every data-backed app and is the
