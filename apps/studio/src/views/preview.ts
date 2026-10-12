@@ -1,4 +1,4 @@
-import { html, type Html } from "./escape";
+import { html, type Html } from "./escape.ts";
 
 /**
  * `grant` is the view grant: minted by the caller, forwarded blind by the sandbox. `planning` adds the overlay shown

@@ -1,5 +1,5 @@
 import type { Response } from "express";
-import type { Html } from "./views";
+import type { Html } from "./views/index.ts";
 
 /**
  * Sends a view as an HTML response. Views return `Html` objects, and `res.send(object)` would JSON-encode one,

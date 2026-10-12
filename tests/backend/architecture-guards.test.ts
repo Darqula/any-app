@@ -1,10 +1,10 @@
 /**
- * Section I: architecture guards (I1-I12a). Static checks on the source tree: no Postgres, servers or ports.
+ * Section I: architecture guards (I1-I14). Static checks on the source tree: no Postgres, servers or ports.
  * Several enforce the root CLAUDE.md "Don't" list.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { REPO_ROOT } from "../harness/db";
 import { previewFrame } from "../../apps/studio/src/views";
@@ -370,4 +370,159 @@ test("I11 — session cookie is set with no Domain attribute, and SameSite=Lax (
       "guard in index.ts is what actually defends against the same-site generated-app CSRF " +
       "Strict looked like it was for",
   );
+});
+
+// Production runs the tsc output (dist/) with the `production` export condition; dev, tests and typecheck resolve src/.
+// These checks pin the start path, the exports maps, the build wiring and the README against drifting back.
+interface Manifest {
+  scripts?: Record<string, string>;
+  dependencies?: Record<string, string>;
+  exports?: Record<string, unknown>;
+}
+interface BuildConfig {
+  compilerOptions?: { rootDir?: string; outDir?: string };
+  references?: { path: string }[];
+}
+interface DeployInputs {
+  root: Manifest;
+  /** Every workspace manifest by directory (apps/*, packages/*, tests). */
+  workspaces: Record<string, Manifest>;
+  /** tsconfig.build.json per server workspace; "." is the root one. */
+  builds: Record<string, BuildConfig>;
+  readme: string;
+  fileExists: (relPath: string) => boolean;
+}
+
+const SERVER_APPS = ["apps/studio", "apps/sandbox"];
+const SERVER_PACKAGES = ["packages/protocol", "packages/records", "packages/store", "packages/generator"];
+const WATCHER = /watch|nodemon/i;
+
+/** Every way the production start path can drift back to dev tooling; empty when it is sound. */
+function deploymentProblems({ root, workspaces, builds, readme, fileExists }: DeployInputs): string[] {
+  const problems: string[] = [];
+
+  for (const dir of SERVER_APPS) {
+    const name = dir.split("/")[1]!;
+    const start = workspaces[dir]?.scripts?.start;
+    if (!start) problems.push(`${dir} has no start script`);
+    else if (!/^node\s+--conditions=production\s+dist\/index\.js$/.test(start)) {
+      problems.push(`${dir}'s start script must be "node --conditions=production dist/index.js": ${start}`);
+    }
+    if (start && (WATCHER.test(start) || /tsx/.test(start))) problems.push(`${dir}'s start script uses tsx or a watcher: ${start}`);
+    const rootStart = root.scripts?.[`start:${name}`];
+    if (!rootStart) problems.push(`root has no start:${name} script`);
+    else if (!rootStart.includes(`--workspace @any-app/${name}`) || !/run start(\s|$)/.test(rootStart) || /run dev/.test(rootStart)) {
+      problems.push(`root start:${name} must run the workspace start script, not dev: ${rootStart}`);
+    }
+    if (!readme.includes(`node --conditions=production ${dir}/dist/index.js`)) problems.push(`README's production commands do not name ${dir}/dist/index.js`);
+    if (!fileExists(`${dir}/src/index.ts`)) problems.push(`${dir}/src/index.ts does not exist (dist/index.js mirrors it)`);
+  }
+
+  for (const [dir, pkg] of Object.entries(workspaces)) {
+    if (pkg.dependencies?.tsx) problems.push(`${dir} lists tsx in runtime dependencies; production runs compiled JavaScript`);
+  }
+
+  for (const dir of SERVER_PACKAGES) {
+    const entry = workspaces[dir]?.exports?.["."] as Record<string, unknown> | undefined;
+    if (!entry || typeof entry !== "object") problems.push(`${dir} has no conditional exports for "."`);
+    else {
+      if (entry.production !== "./dist/index.js") problems.push(`${dir} exports must map production to ./dist/index.js`);
+      if (entry.default !== "./src/index.ts") problems.push(`${dir} exports must map default to ./src/index.ts`);
+      if (Object.keys(entry)[0] !== "production") problems.push(`${dir} exports must list production first (conditions match in order)`);
+    }
+    if (!fileExists(`${dir}/src/index.ts`)) problems.push(`${dir}/src/index.ts does not exist (dist/index.js mirrors it)`);
+  }
+
+  const migrateProd = workspaces["packages/store"]?.scripts?.["migrate:prod"];
+  if (!migrateProd) problems.push("packages/store has no migrate:prod script");
+  else if (!/^node\s+--conditions=production\s+dist\/migrate-cli\.js$/.test(migrateProd) || /tsx|watch|nodemon/i.test(migrateProd)) {
+    problems.push(`packages/store's migrate:prod must run the compiled dist/migrate-cli.js: ${migrateProd}`);
+  }
+  if (!root.scripts?.["migrate:prod"]?.includes("run migrate:prod --workspace @any-app/store")) problems.push("root migrate:prod must run the store workspace's migrate:prod");
+  if (!readme.includes("npm run migrate:prod")) problems.push("README does not name npm run migrate:prod");
+
+  if (!root.scripts?.["build:server"]?.startsWith("tsc -b ")) problems.push("root build:server must be a tsc -b build");
+  if (!/build:server/.test(root.scripts?.["build:prod"] ?? "")) problems.push("root build:prod must run build:server");
+
+  for (const dir of [...SERVER_APPS, ...SERVER_PACKAGES]) {
+    const options = builds[dir]?.compilerOptions;
+    if (options?.rootDir !== "src" || options?.outDir !== "dist") problems.push(`${dir}/tsconfig.build.json must compile src to dist (rootDir "src", outDir "dist")`);
+    if (!builds["."]?.references?.some((ref) => ref.path === `${dir}/tsconfig.build.json`)) {
+      problems.push(`root tsconfig.build.json does not reference ${dir}`);
+    }
+  }
+  return problems;
+}
+
+function realDeployInputs(): DeployInputs {
+  const dirs = [...SERVER_APPS, ...SERVER_PACKAGES, "packages/tsconfig", "tests"];
+  return {
+    root: readJson("package.json") as Manifest,
+    workspaces: Object.fromEntries(dirs.map((dir) => [dir, readJson(`${dir}/package.json`) as Manifest])),
+    builds: {
+      ".": readJson("tsconfig.build.json") as BuildConfig,
+      ...Object.fromEntries([...SERVER_APPS, ...SERVER_PACKAGES].map((dir) => [dir, readJson(`${dir}/tsconfig.build.json`) as BuildConfig])),
+    },
+    readme: read("README.md"),
+    fileExists: (relPath) => existsSync(path.join(REPO_ROOT, relPath)),
+  };
+}
+
+test("I13 — production starts compiled JavaScript with the production condition; exports, builds and README agree", () => {
+  assert.deepEqual(deploymentProblems(realDeployInputs()), []);
+});
+
+test("I13a — the guard itself: each way of drifting back to src/tsx is reported", () => {
+  const real = realDeployInputs();
+  const fresh = (): DeployInputs => ({ ...structuredClone({ ...real, fileExists: undefined }), fileExists: real.fileExists }) as DeployInputs;
+  const breakages: [string, (i: DeployInputs) => void, RegExp][] = [
+    ["studio start removed", (i) => delete i.workspaces["apps/studio"]!.scripts!.start, /apps\/studio has no start script/],
+    ["sandbox start runs src through tsx", (i) => (i.workspaces["apps/sandbox"]!.scripts!.start = "node --import tsx src/index.ts"), /sandbox's start script must be/],
+    ["sandbox start is tsx watch", (i) => (i.workspaces["apps/sandbox"]!.scripts!.start = "tsx watch src/index.ts"), /uses tsx or a watcher/],
+    ["studio start uses nodemon", (i) => (i.workspaces["apps/studio"]!.scripts!.start = "nodemon node --conditions=production dist/index.js"), /studio's start script must be/],
+    ["studio start uses node --watch", (i) => (i.workspaces["apps/studio"]!.scripts!.start = "node --watch --conditions=production dist/index.js"), /studio's start script must be/],
+    ["studio start forgets the condition", (i) => (i.workspaces["apps/studio"]!.scripts!.start = "node dist/index.js"), /studio's start script must be/],
+    ["studio start runs src", (i) => (i.workspaces["apps/studio"]!.scripts!.start = "node --conditions=production src/index.ts"), /studio's start script must be/],
+    ["tsx in the studio's dependencies", (i) => (i.workspaces["apps/studio"]!.dependencies!.tsx = "^4"), /apps\/studio lists tsx in runtime dependencies/],
+    ["tsx in the store's dependencies", (i) => (i.workspaces["packages/store"]!.dependencies!.tsx = "^4"), /packages\/store lists tsx in runtime dependencies/],
+    ["tsx in the tests' dependencies", (i) => ((i.workspaces.tests!.dependencies ??= {}).tsx = "^4"), /tests lists tsx in runtime dependencies/],
+    ["root start:studio points at dev", (i) => (i.root.scripts!["start:studio"] = "npm run dev --workspace @any-app/studio"), /start:studio must run the workspace start script/],
+    ["root start:sandbox points at the wrong workspace", (i) => (i.root.scripts!["start:sandbox"] = "npm run start --workspace @any-app/studio"), /start:sandbox must run the workspace start script/],
+    ["root start:sandbox removed", (i) => delete i.root.scripts!["start:sandbox"], /no start:sandbox script/],
+    ["exports points production at src", (i) => ((i.workspaces["packages/protocol"]!.exports!["."] as Record<string, string>).production = "./src/index.ts"), /packages\/protocol exports must map production/],
+    ["exports default points at dist", (i) => ((i.workspaces["packages/records"]!.exports!["."] as Record<string, string>).default = "./dist/index.js"), /packages\/records exports must map default/],
+    ["exports is a plain string", (i) => (i.workspaces["packages/generator"]!.exports!["."] = "./src/index.ts"), /packages\/generator has no conditional exports/],
+    ["exports lists production last", (i) => (i.workspaces["packages/store"]!.exports!["."] = { default: "./src/index.ts", production: "./dist/index.js" }), /packages\/store exports must list production first/],
+    ["migrate:prod runs tsx", (i) => (i.workspaces["packages/store"]!.scripts!["migrate:prod"] = "tsx src/migrate-cli.ts"), /migrate:prod must run the compiled/],
+    ["migrate:prod runs src", (i) => (i.workspaces["packages/store"]!.scripts!["migrate:prod"] = "node --conditions=production src/migrate-cli.ts"), /migrate:prod must run the compiled/],
+    ["migrate:prod removed", (i) => delete i.workspaces["packages/store"]!.scripts!["migrate:prod"], /no migrate:prod script/],
+    ["build:prod skips the server build", (i) => (i.root.scripts!["build:prod"] = "node scripts/build.mjs --prod"), /build:prod must run build:server/],
+    ["a workspace compiles to the wrong dir", (i) => (i.builds["apps/sandbox"]!.compilerOptions!.outDir = "build"), /apps\/sandbox\/tsconfig.build.json must compile src to dist/],
+    ["the root build drops a project", (i) => (i.builds["."]!.references = i.builds["."]!.references!.filter((ref) => !ref.path.startsWith("packages/records"))), /does not reference packages\/records/],
+    ["README names the old tsx command", (i) => (i.readme = i.readme.split("node --conditions=production apps/studio/dist/index.js").join("node --import tsx apps/studio/src/index.ts")), /README's production commands do not name apps\/studio\/dist\/index.js/],
+    ["README drops migrate:prod", (i) => (i.readme = i.readme.split("npm run migrate:prod").join("npm run migrate")), /README does not name npm run migrate:prod/],
+  ];
+  for (const [label, breakIt, expected] of breakages) {
+    const inputs = fresh();
+    breakIt(inputs);
+    const problems = deploymentProblems(inputs);
+    assert.ok(problems.some((p) => expected.test(p)), `${label}: expected a problem matching ${expected}, got ${JSON.stringify(problems)}`);
+  }
+  assert.ok(
+    deploymentProblems({ ...fresh(), fileExists: () => false }).some((p) => /does not exist/.test(p)),
+    "a missing source entry file is reported",
+  );
+});
+
+// Node's ESM loader needs explicit specifiers; tsc (nodenext) enforces it in `npm run build:server`, this catches it without a build.
+test("I14 — relative imports in server source carry an explicit .ts extension (tsc rewrites it to .js)", () => {
+  const offenders: string[] = [];
+  for (const dir of [...SERVER_APPS, ...SERVER_PACKAGES]) {
+    for (const file of walkTsFiles(`${dir}/src`)) {
+      for (const match of read(file).matchAll(/(?:\bfrom|\bimport)\s*\(?\s*["'](\.{1,2}(?:\/[^"'\n]*)?)["']/g)) {
+        if (!/\.ts$/.test(match[1]!)) offenders.push(`${file}: ${match[1]}`);
+      }
+    }
+  }
+  assert.deepEqual(offenders, []);
 });

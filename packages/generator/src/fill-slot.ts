@@ -1,9 +1,9 @@
 import type { AppPlan, SlotSpec } from "@any-app/protocol";
-import { appContext } from "./fill-prompt";
-import { SLOT_FILL_PROMPT } from "./fill-slot-prompt";
-import { createFenceStripper, stripTrailingFence } from "./fence-stripper";
-import type { Provider } from "./providers/types";
-import type { UsageInfo } from "./providers/usage";
+import { appContext } from "./fill-prompt.ts";
+import { SLOT_FILL_PROMPT } from "./fill-slot-prompt.ts";
+import { createFenceStripper, stripTrailingFence } from "./fence-stripper.ts";
+import type { Provider } from "./providers/types.ts";
+import type { UsageInfo } from "./providers/usage.ts";
 
 export function slotRoster(plan: AppPlan, self: string): string {
   return plan.slots

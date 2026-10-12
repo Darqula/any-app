@@ -1,8 +1,8 @@
 import type { AppPlan } from "@any-app/protocol";
-import { resolve } from "./resolve";
-import type { ProviderCredential } from "./providers/types";
-import type { UsageInfo } from "./providers/usage";
-import { FILL_SYSTEM_PROMPT, fillContext, fillUserPrompt } from "./fill-prompt";
+import { resolve } from "./resolve.ts";
+import type { ProviderCredential } from "./providers/types.ts";
+import type { UsageInfo } from "./providers/usage.ts";
+import { FILL_SYSTEM_PROMPT, fillContext, fillUserPrompt } from "./fill-prompt.ts";
 
 /** Streams the fill call's raw sectioned output. The caller transforms it. */
 export async function* streamFill(

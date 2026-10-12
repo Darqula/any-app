@@ -1,5 +1,5 @@
-import { pool } from "./db";
-import { MAX_RECORDS_PER_APP, MAX_RECORD_BYTES } from "./quota";
+import { pool } from "./db.ts";
+import { MAX_RECORDS_PER_APP, MAX_RECORD_BYTES } from "./quota.ts";
 import { UUID_PATTERN } from "@any-app/protocol";
 
 // Single source is @any-app/protocol; re-exported for the sandbox routes.

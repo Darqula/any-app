@@ -1,4 +1,4 @@
-import { pool } from "./db";
+import { pool } from "./db.ts";
 
 export type MessageRole = "user" | "assistant";
 export type MessageKind = "create" | "edit" | "error" | "note";

@@ -1,10 +1,10 @@
-import { SYSTEM_PROMPT } from "./system-prompt";
-import { createFenceStripper } from "./fence-stripper";
-import { resolve } from "./resolve";
-import type { ProviderCredential } from "./providers/types";
-import type { UsageInfo } from "./providers/usage";
+import { SYSTEM_PROMPT } from "./system-prompt.ts";
+import { createFenceStripper } from "./fence-stripper.ts";
+import { resolve } from "./resolve.ts";
+import type { ProviderCredential } from "./providers/types.ts";
+import type { UsageInfo } from "./providers/usage.ts";
 
-export { RefusalError, TruncationError } from "./providers/types";
+export { RefusalError, TruncationError } from "./providers/types.ts";
 
 /**
  * Single-call path, the fallback when planning fails. Streams the HTML body without

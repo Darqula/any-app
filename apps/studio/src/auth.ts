@@ -1,8 +1,8 @@
 import { Router } from "express";
 import { createUser, authenticate, claimAnonymousWork } from "@any-app/store";
-import { currentOwner, signInAs, signOut } from "./session";
-import { problem } from "./views";
-import { sendHtml } from "./respond";
+import { currentOwner, signInAs, signOut } from "./session.ts";
+import { problem } from "./views/index.ts";
+import { sendHtml } from "./respond.ts";
 
 /**
  * `express.urlencoded({ extended: false })` is already mounted in `index.ts`, so form posts

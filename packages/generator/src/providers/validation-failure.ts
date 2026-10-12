@@ -1,4 +1,4 @@
-import { findBlockedAddressError } from "./net-guard";
+import { findBlockedAddressError } from "./net-guard.ts";
 
 /**
  * A fixed, user-facing sentence for a failed credential check. Never built from the provider's reply: the SDK errors

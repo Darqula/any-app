@@ -1,6 +1,6 @@
 import type { Generation } from "@any-app/store";
-import { isEditing } from "../activity";
-import { html, type Html } from "./escape";
+import { isEditing } from "../activity.ts";
+import { html, type Html } from "./escape.ts";
 
 /**
  * The sidebar's rows. `isUpdating` defaults to the live edit tracker (activity.ts): an edit leaves the stored status

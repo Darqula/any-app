@@ -42,12 +42,18 @@ repo, so project knowledge goes into these in-repo files, never only into an age
   from `@any-app/records`, which is also why `records` must stay out of `store`.
 - `openai` / `@anthropic-ai/sdk` are imported only in `packages/generator/src/providers/`.
 - No `compression` middleware (it buffers and breaks streaming). No Dockerfile for `apps/*`.
-- The only build is the studio's browser code: `npm run build` (esbuild, `scripts/build.mjs`) bundles
-  `apps/studio/client/*.ts` into the gitignored `apps/studio/dist/js/`. Server code still runs through `tsx` with
-  no build, and CSS is plain static files in `apps/studio/public/css/`. The studio refuses to boot without the
-  bundle; `npm run dev`, `test:backend` and `test:frontend` build first, but a bare `node --test` or
-  `npx playwright test` does not, so run `npm run build` before those. A deploy uses `npm run build:prod`
-  (minified, no source maps).
+- Two builds, both into gitignored `dist/` folders. Server code (`apps/*`, `packages/*`) is compiled by `tsc`
+  (`npm run build:server`) into each workspace's `dist/`, mirroring `src/`. The studio's browser code is bundled
+  by esbuild (`npm run build`, `scripts/build.mjs`) from `apps/studio/client/*.ts` into `apps/studio/dist/js/`.
+  CSS is plain static files in `apps/studio/public/css/`.
+- Production runs compiled JavaScript only: `npm run build:prod` builds both (the bundle minified, no source maps),
+  and servers start with `node --conditions=production apps/<app>/dist/index.js`. `tsx` is a devDependency.
+- Each workspace package's `exports` maps the `production` condition to `dist/` and everything else to `src/`,
+  so dev (`tsx`), tests and typecheck never read `dist/`, and a stale build cannot leak into them. Relative
+  imports carry the `.ts` extension, which `tsc` rewrites to `.js`. Paths computed from `import.meta.url` must
+  resolve the same from `src/` and `dist/`.
+- The studio refuses to boot without the browser bundle. `npm run dev`, `test:backend` and `test:frontend` build it
+  first, but a bare `node --test` or `npx playwright test` does not, so run `npm run build` before those.
 - Generated apps stay on per-app origins (`SANDBOX_APP_ORIGIN_TEMPLATE`). That's what makes
   `allow-same-origin` on the preview iframe safe. `STUDIO_PUBLIC_URL` must exactly match the
   studio origin shown in the browser.

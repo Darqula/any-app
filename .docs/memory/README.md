@@ -21,6 +21,7 @@ Content that a short comment or the code already states is deliberately not repe
 | [`data-api.md`](data-api.md) | why `records` is separate, microsecond cursor incident, query-parser trap, sandbox error handling |
 | [`studio-server.md`](studio-server.md) | stream-route incidents (owner from the row, persist-before-end), planner-failure capture, serving-path traps, what is deliberately not built |
 | [`studio-ui.md`](studio-ui.md) | where the views and assets live, the escaping contract, htmx traps, out-of-band composition, live sidebar, dialogs |
+| [`server-build.md`](server-build.md) | the tsc `dist/` build, project references, the `production` exports condition, import extensions, location-relative paths |
 | [`testing-harness.md`](testing-harness.md) | scratch-database, process, port and fake-provider traps |
 | [`test-case-notes.md`](test-case-notes.md) | suite traps, verified-by-breaking cases, flake history |
 | [`model-and-sweep-history.md`](model-and-sweep-history.md) | resolved provider/model investigations and the quality sweeps, with their numbers |

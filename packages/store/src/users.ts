@@ -1,5 +1,5 @@
-import { pool } from "./db";
-import { hashPassword, verifyPassword } from "./passwords";
+import { pool } from "./db.ts";
+import { hashPassword, verifyPassword } from "./passwords.ts";
 
 export interface User {
   id: string;

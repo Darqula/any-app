@@ -2,9 +2,9 @@ import { Router } from "express";
 import { build, roleConfig, safeMessage, checkProviderBaseUrl, describeValidationFailure, refusedAddress } from "@any-app/generator";
 import type { ProviderId, Role } from "@any-app/generator";
 import { saveCredential, listCredentialHints, deleteCredential } from "@any-app/store";
-import { settingsPage, credentialSaved, editProblem } from "./views";
-import { sendHtml } from "./respond";
-import { currentOwner, accountEmail } from "./session";
+import { settingsPage, credentialSaved, editProblem } from "./views/index.ts";
+import { sendHtml } from "./respond.ts";
+import { currentOwner, accountEmail } from "./session.ts";
 
 const PROVIDER_IDS: ProviderId[] = ["openai", "anthropic"];
 const ROLES: Role[] = ["planner", "fill", "edit", "router"];

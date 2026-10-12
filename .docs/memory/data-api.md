@@ -36,8 +36,8 @@ role's whole point (Phase 5 review S1). Duplicating ~15 lines of env loading is 
   in process memory: with several sandbox instances the fix is a shared counter, not a bigger `Map`.
 - `updateRecord` merges cumulatively, so per-request body limits are not enough: the size cap lives in the SQL
   `where`. Zero rows back is ambiguous (missing vs too large); the route disambiguates with `getRecord`.
-- Express's default error handler writes stack traces into responses when `NODE_ENV` is unset (it is, here), so
-  the sandbox has its own terminal handler; 4xx pass through (a 413 was once collapsed to 500), 5xx stay opaque.
+- Express's default error handler writes stack traces into responses unless `NODE_ENV` is `production` (dev and the
+  test servers leave it unset), so the sandbox has its own terminal handler, needed either way; 4xx pass through (a 413 was once collapsed to 500), 5xx stay opaque.
 - A shared viewer's token is read-only: a public app's data must not be world-writable.
 - `Referrer-Policy: no-referrer` on previews: the view grant is in the URL and generated apps load CDN libraries.
 - `PREVIEW_TIMEOUT_MS` (900 000) bounds a runaway; the studio's heartbeat stops undici's ~300 s inactivity

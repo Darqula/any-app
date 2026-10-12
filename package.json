@@ -2,6 +2,9 @@
   "name": "any-app",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "workspaces": [
     "apps/*",
     "packages/*",
@@ -12,9 +15,13 @@
     "dev": "node scripts/dev.mjs",
     "dev:studio": "npm run dev --workspace @any-app/studio",
     "dev:sandbox": "npm run dev --workspace @any-app/sandbox",
+    "start:studio": "npm run start --workspace @any-app/studio",
+    "start:sandbox": "npm run start --workspace @any-app/sandbox",
     "migrate": "npm run migrate --workspace @any-app/store",
+    "migrate:prod": "npm run migrate:prod --workspace @any-app/store",
     "build": "node scripts/build.mjs",
-    "build:prod": "node scripts/build.mjs --prod",
+    "build:server": "tsc -b tsconfig.build.json",
+    "build:prod": "npm run build:server && node scripts/build.mjs --prod",
     "typecheck": "tsc -p . && tsc -p tests/frontend && tsc -p apps/studio/client",
     "test:backend": "npm run test:backend --workspace @any-app/tests",
     "test:frontend": "npm run test:frontend --workspace @any-app/tests",

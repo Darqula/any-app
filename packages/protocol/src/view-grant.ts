@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { UUID_PATTERN } from "./app-token";
-import type { TokenMode } from "./app-token";
+import { UUID_PATTERN } from "./app-token.ts";
+import type { TokenMode } from "./app-token.ts";
 
 /**
  * Bearer capability to view one app until it expires. Carries mode ("rw" only for the owner)

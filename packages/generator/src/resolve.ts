@@ -1,8 +1,8 @@
-import { roleConfig } from "./roles";
-import type { Role } from "./roles";
-import { createOpenAIProvider } from "./providers/openai";
-import { createAnthropicProvider } from "./providers/anthropic";
-import type { Provider, ProviderCredential, ProviderId, ProviderOptions } from "./providers/types";
+import { roleConfig } from "./roles.ts";
+import type { Role } from "./roles.ts";
+import { createOpenAIProvider } from "./providers/openai.ts";
+import { createAnthropicProvider } from "./providers/anthropic.ts";
+import type { Provider, ProviderCredential, ProviderId, ProviderOptions } from "./providers/types.ts";
 
 export interface Resolved {
   provider: Provider;

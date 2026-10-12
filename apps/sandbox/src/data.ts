@@ -203,7 +203,7 @@ export function dataRouter(secret: string, appOriginTemplate: string): Router {
     res.status(204).end();
   });
 
-  // Terminal handler, so Express's default never writes a stack trace into the response (NODE_ENV is unset here).
+  // Terminal handler, so Express's default never writes a stack trace into the response, whatever NODE_ENV is.
   router.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
     if (res.headersSent) {
       next(err);

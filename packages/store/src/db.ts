@@ -1,5 +1,5 @@
 import pg from "pg";
-import { requireEnv } from "./env";
+import { requireEnv } from "./env.ts";
 
 // `pg` is a CommonJS package. Import the default export and destructure it;
 // named imports are not reliable here.

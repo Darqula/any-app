@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { pool } from "./db";
+import { pool } from "./db.ts";
 
 export interface SessionRow {
   id: string;

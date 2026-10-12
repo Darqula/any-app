@@ -1,7 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { pool } from "./db";
+import { pool } from "./db.ts";
 
 // `__dirname` does not exist in ES modules. Derive the directory from import.meta.url.
 const here = path.dirname(fileURLToPath(import.meta.url));

@@ -1,4 +1,4 @@
-import type { ProviderId } from "./types";
+import type { ProviderId } from "./types.ts";
 
 /** Token consumption for one call, normalized across providers' differently-shaped usage objects. */
 export interface UsageInfo {

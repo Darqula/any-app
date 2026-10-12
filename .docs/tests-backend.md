@@ -493,7 +493,7 @@ not after.
 ## I. Architecture guards
 
 Cheap static tests that enforce rules the review flagged as security bugs rather than style
-issues. `architecture.md` says npm's flat `node_modules` cannot enforce these, so CI must.
+issues (I13 is the exception: a deployment rule about how the servers are started). `architecture.md` says npm's flat `node_modules` cannot enforce these, so CI must.
 
 | ID | Case | Passes when |
 |---|---|---|
@@ -510,6 +510,9 @@ issues. `architecture.md` says npm's flat `node_modules` cannot enforce these, s
 | I11 | `session.ts` (P5) | The session cookie is set with no `Domain` attribute |
 | I12 | `apps/studio/public/css/*.css` | No ID selectors, no `!important` (any case or spacing), no nesting, no element selectors outside `base.css` (also inside `:not/:is/:where/:has` and every at-rule body), no literal colours (hex, `rgb/hsl/oklch/color-mix`, named) outside `theme.css` |
 | I12a | The guard's own parser (`tests/harness/css.ts`) on 29 violating and 9 conforming snippets | Every violation is reported (statement at-rules, `@layer/@container/@media`, missing braces, nesting, strings containing `#` or spaces) and no conforming snippet is |
+| I13 | `package.json`, `apps/*/package.json`, `packages/*/package.json`, `tsconfig.build.json` files, `README.md` | Each app's `start` is exactly `node --conditions=production dist/index.js` (no tsx, no watcher, no `src/`); the root `start:*` run the workspace `start`, not `dev`; no workspace lists `tsx` in runtime `dependencies`; each of the four packages' `exports["."]` lists `production` first and maps it to `./dist/index.js`, with `default` at `./src/index.ts`; `packages/store`'s `migrate:prod` runs the compiled `dist/migrate-cli.js` and the root `migrate:prod` calls it; `build:server` is a `tsc -b` build and `build:prod` runs it; each server workspace compiles `src` to `dist` and is referenced by the root build; the README names both `node --conditions=production apps/<app>/dist/index.js` commands and `npm run migrate:prod`; every `dist/index.js` has its `src/index.ts` |
+| I13a | The guard's own logic (`deploymentProblems`) on 24 broken variants (tsx or a watcher in `start`, a missing condition, `src/` in `start`, tsx dependencies in an app, the store and `tests`, a root script on `dev` or the wrong workspace, each exports mistake, `migrate:prod` on tsx or `src/`, `build:prod` without the server build, a wrong `outDir`, a dropped project reference, README with the old command) and a missing source entry | Every one is reported |
+| I14 | Every relative import in the six server workspaces' `src/` | Carries an explicit `.ts` extension (a directory import is `/index.ts`), which `tsc` rewrites to `.js` for Node's ESM loader; `npm run build:server` enforces the same through `nodenext` |
 
 **I3 changed shape, and the new shape is the point.** It used to read "imports nothing from
 `@any-app/store` except `loadEnv`" — a statement about import specifiers, checkable only by

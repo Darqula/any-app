@@ -1,11 +1,11 @@
 export const INTERNAL_SECRET_HEADER = "x-internal-secret";
 
-export * from "./slots";
-export { swapRuntime } from "./swap-runtime";
-export { dataRuntime, APP_TOKEN_PLACEHOLDER, withAppToken } from "./data-runtime";
-export { mintAppToken, verifyAppToken, UUID_PATTERN } from "./app-token";
-export type { TokenMode } from "./app-token";
-export { mintViewGrant, verifyViewGrant, VIEW_GRANT_TTL_MS } from "./view-grant";
+export * from "./slots.ts";
+export { swapRuntime } from "./swap-runtime.ts";
+export { dataRuntime, APP_TOKEN_PLACEHOLDER, withAppToken } from "./data-runtime.ts";
+export { mintAppToken, verifyAppToken, UUID_PATTERN } from "./app-token.ts";
+export type { TokenMode } from "./app-token.ts";
+export { mintViewGrant, verifyViewGrant, VIEW_GRANT_TTL_MS } from "./view-grant.ts";
 
 /** Written into the streamed document when generation fails partway through. */
 export function errorBanner(message: string): string {

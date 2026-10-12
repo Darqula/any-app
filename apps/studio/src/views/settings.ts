@@ -1,9 +1,9 @@
 import type { CredentialHint, Owner } from "@any-app/store";
 import type { Role, ProviderId } from "@any-app/generator";
-import { html, type Html } from "./escape";
-import { editOk } from "./notices";
-import { HTMX_CONFIG_META, HTMX_SCRIPT, cssLinks, scriptTag } from "./layout";
-import { authDialog, accountSection } from "./sidebar-footer";
+import { html, type Html } from "./escape.ts";
+import { editOk } from "./notices.ts";
+import { HTMX_CONFIG_META, HTMX_SCRIPT, cssLinks, scriptTag } from "./layout.ts";
+import { authDialog, accountSection } from "./sidebar-footer.ts";
 
 type RoleRow = { role: Role; provider: ProviderId; model: string; maxTokens: number };
 

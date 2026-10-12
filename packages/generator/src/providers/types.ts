@@ -17,7 +17,7 @@ export interface ProviderOptions {
    */
   userSupplied?: boolean;
   /** Overrides the default network policy; only for tests. */
-  netPolicy?: import("./net-guard").NetPolicy;
+  netPolicy?: import("./net-guard.ts").NetPolicy;
   /** Overrides the credential-check timeout; only for tests. */
   validateTimeoutMs?: number;
 }
@@ -39,7 +39,7 @@ export interface ProviderRequest {
    * Called with each call's token usage even when the call then throws: a cost record, not a
    * success record. Keep it beside logUsage in every adapter; must not throw.
    */
-  onUsage?: (usage: import("./usage").UsageInfo) => void;
+  onUsage?: (usage: import("./usage.ts").UsageInfo) => void;
 }
 
 export interface Provider {

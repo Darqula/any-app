@@ -1,6 +1,6 @@
 import { appendMessage, listMessages } from "@any-app/store";
 import type { Generation, Message, NewMessage } from "@any-app/store";
-import { isEditing } from "./activity";
+import { isEditing } from "./activity.ts";
 
 /** Best-effort: the log sits on top of work already done, so a failure to record must not fail it. */
 export async function recordMessage(generationId: string, message: NewMessage): Promise<void> {

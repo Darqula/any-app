@@ -1,4 +1,4 @@
-import { html, type Html } from "./escape";
+import { html, type Html } from "./escape.ts";
 
 // One-line messages, shared by every route and view that answers with a status. They differ only in the CSS class, which
 // decides where they are drawn.

@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { requireEnv } from "./env";
+import { requireEnv } from "./env.ts";
 
 function key(): Buffer {
   const raw = Buffer.from(requireEnv("CREDENTIAL_KEY"), "base64");

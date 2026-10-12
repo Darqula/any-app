@@ -1,9 +1,9 @@
 import type { Generation, Owner } from "@any-app/store";
-import type { RoleProblem } from "../credential-resolve";
-import { html, type Html } from "./escape";
-import { HTMX_CONFIG_META, HTMX_SCRIPT, cssLinks, scriptTag } from "./layout";
-import { generationList } from "./app-list";
-import { sidebarFooter, authDialog } from "./sidebar-footer";
+import type { RoleProblem } from "../credential-resolve.ts";
+import { html, type Html } from "./escape.ts";
+import { HTMX_CONFIG_META, HTMX_SCRIPT, cssLinks, scriptTag } from "./layout.ts";
+import { generationList } from "./app-list.ts";
+import { sidebarFooter, authDialog } from "./sidebar-footer.ts";
 
 /** Shown when a generation would fail right now, before anyone waits on a failed one. */
 export function missingCredentialBanner(missing: RoleProblem[]): Html | null {

@@ -1,5 +1,5 @@
-import { isOpenAIAbort } from "./providers/openai";
-import { isAnthropicAbort } from "./providers/anthropic";
+import { isOpenAIAbort } from "./providers/openai.ts";
+import { isAnthropicAbort } from "./providers/anthropic.ts";
 
 /**
  * True for either SDK's abort error. Use instanceof: neither class overrides `name`, so an

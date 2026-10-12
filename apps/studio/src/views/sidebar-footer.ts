@@ -1,5 +1,5 @@
 import type { Owner } from "@any-app/store";
-import { html, raw, type Html } from "./escape";
+import { html, raw, type Html } from "./escape.ts";
 
 /** Sidebar footer: the account menu for a signed-in user, else the sign-in / sign-up buttons. `email` is null for an anonymous owner. */
 export function sidebarFooter(owner: Owner, email: string | null): Html {

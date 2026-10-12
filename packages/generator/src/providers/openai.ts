@@ -1,11 +1,11 @@
 import OpenAI from "openai";
-import type { Provider, ProviderCredential, ProviderOptions, ProviderRequest } from "./types";
-import { RefusalError, TruncationError } from "./types";
-import { logUsage } from "./usage";
-import type { UsageInfo } from "./usage";
-import { conversationHeaders } from "./session";
-import { guardedFetch } from "./net-guard";
-import { validateRequestOptions } from "./validate-options";
+import type { Provider, ProviderCredential, ProviderOptions, ProviderRequest } from "./types.ts";
+import { RefusalError, TruncationError } from "./types.ts";
+import { logUsage } from "./usage.ts";
+import type { UsageInfo } from "./usage.ts";
+import { conversationHeaders } from "./session.ts";
+import { guardedFetch } from "./net-guard.ts";
+import { validateRequestOptions } from "./validate-options.ts";
 
 function messagesFor(req: ProviderRequest) {
   // Caching is automatic on a stable prefix: stable half in system, volatile half in user.

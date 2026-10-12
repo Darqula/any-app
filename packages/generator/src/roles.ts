@@ -1,4 +1,4 @@
-import type { ProviderId } from "./providers/types";
+import type { ProviderId } from "./providers/types.ts";
 
 export type Role = "planner" | "fill" | "edit" | "router";
 

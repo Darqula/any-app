@@ -1,4 +1,4 @@
-import { pool } from "./db";
+import { pool } from "./db.ts";
 
 /**
  * Re-keys one anonymous session's work to a new user, atomically. Sign-up only, not sign-in: on a

@@ -1,3 +1,4 @@
+import "./production-condition.ts";
 import express from "express";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -20,17 +21,17 @@ import { mintViewGrant, VIEW_GRANT_TTL_MS, renderDocument, isFilledApp } from "@
 import type { TokenMode } from "@any-app/protocol";
 import type { FilledApp } from "@any-app/protocol";
 import { allowPrivateProviderUrls, escapeHatchProblem } from "@any-app/generator";
-import { internalRouter } from "./internal";
-import { editsRouter } from "./edits";
-import { settingsRouter } from "./settings";
-import { authRouter } from "./auth";
-import { homePage, previewFrame, oobSlot, chatLogOob, messageItems, editProblem, editOk, problem, placeholder, generationList, editForm, ownerControls, remixControl, sharedAppPage, notFoundPage, join } from "./views";
-import { sendHtml } from "./respond";
-import { currentOwner, accountEmail } from "./session";
-import { isEditing } from "./activity";
-import { firstMessage, fullConversation, pendingText } from "./conversation";
-import { missingCredentials } from "./credential-resolve";
-import { renderFullHead, SHELL_TAIL } from "./shell";
+import { internalRouter } from "./internal.ts";
+import { editsRouter } from "./edits.ts";
+import { settingsRouter } from "./settings.ts";
+import { authRouter } from "./auth.ts";
+import { homePage, previewFrame, oobSlot, chatLogOob, messageItems, editProblem, editOk, problem, placeholder, generationList, editForm, ownerControls, remixControl, sharedAppPage, notFoundPage, join } from "./views/index.ts";
+import { sendHtml } from "./respond.ts";
+import { currentOwner, accountEmail } from "./session.ts";
+import { isEditing } from "./activity.ts";
+import { firstMessage, fullConversation, pendingText } from "./conversation.ts";
+import { missingCredentials } from "./credential-resolve.ts";
+import { renderFullHead, SHELL_TAIL } from "./shell.ts";
 
 loadEnv();
 // A missing or malformed CREDENTIAL_KEY should fail the boot, not surface silently on the

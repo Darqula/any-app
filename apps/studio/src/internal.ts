@@ -41,9 +41,9 @@ import {
   monthlyLimitFor,
 } from "@any-app/store";
 import type { UsageEvent, Owner } from "@any-app/store";
-import { renderShellHead, renderFullHead, DOCTYPE_AND_PADDING, SHELL_TAIL, firstContentSignal } from "./shell";
-import { credentialForRole } from "./credential-resolve";
-import { recordMessage } from "./conversation";
+import { renderShellHead, renderFullHead, DOCTYPE_AND_PADDING, SHELL_TAIL, firstContentSignal } from "./shell.ts";
+import { credentialForRole } from "./credential-resolve.ts";
+import { recordMessage } from "./conversation.ts";
 
 export function internalRouter(studioOrigin: string): Router {
   const router = Router();

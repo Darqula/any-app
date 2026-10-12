@@ -1,8 +1,8 @@
 import type { Visibility } from "@any-app/store";
 import type { TokenMode } from "@any-app/protocol";
-import { html, type Html } from "./escape";
-import { HTMX_CONFIG_META, HTMX_SCRIPT, cssLinks } from "./layout";
-import { previewFrame } from "./preview";
+import { html, type Html } from "./escape.ts";
+import { HTMX_CONFIG_META, HTMX_SCRIPT, cssLinks } from "./layout.ts";
+import { previewFrame } from "./preview.ts";
 
 const VISIBILITY_LABELS: Record<Visibility, string> = {
   private: "Private",

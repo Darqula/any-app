@@ -6,12 +6,12 @@ import {
   sanitizePlaceholders,
 } from "@any-app/protocol";
 import type { AppPlan, SlotSpec, CollectionSpec } from "@any-app/protocol";
-import { resolve } from "./resolve";
-import type { ProviderCredential } from "./providers/types";
-import type { UsageInfo } from "./providers/usage";
-import { PLANNER_PROMPT } from "./planner-prompt";
-import { parseSections } from "./section-parser";
-import { stripTrailingFence } from "./fence-stripper";
+import { resolve } from "./resolve.ts";
+import type { ProviderCredential } from "./providers/types.ts";
+import type { UsageInfo } from "./providers/usage.ts";
+import { PLANNER_PROMPT } from "./planner-prompt.ts";
+import { parseSections } from "./section-parser.ts";
+import { stripTrailingFence } from "./fence-stripper.ts";
 
 export class PlanError extends Error {
   constructor(message: string) {

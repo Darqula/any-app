@@ -1,8 +1,8 @@
 import type { AppPlan } from "@any-app/protocol";
-import { resolve } from "./resolve";
-import type { ProviderCredential } from "./providers/types";
-import type { UsageInfo } from "./providers/usage";
-import { createFenceStripper, stripTrailingFence } from "./fence-stripper";
+import { resolve } from "./resolve.ts";
+import type { ProviderCredential } from "./providers/types.ts";
+import type { UsageInfo } from "./providers/usage.ts";
+import { createFenceStripper, stripTrailingFence } from "./fence-stripper.ts";
 import { slotIdsInShell, unmatchedSlotAttributes, sanitizePlaceholders } from "@any-app/protocol";
 
 const SLOT_EDIT_PROMPT = `You rewrite one region of an existing web app.

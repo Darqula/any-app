@@ -1,0 +1,22 @@
+{
+  "extends": "@any-app/tsconfig/server.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "tsBuildInfoFile": "dist/tsconfig.build.tsbuildinfo"
+  },
+  "include": [
+    "src/**/*.ts"
+  ],
+  "references": [
+    {
+      "path": "../../packages/protocol/tsconfig.build.json"
+    },
+    {
+      "path": "../../packages/store/tsconfig.build.json"
+    },
+    {
+      "path": "../../packages/generator/tsconfig.build.json"
+    }
+  ]
+}

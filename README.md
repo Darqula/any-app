@@ -29,16 +29,17 @@ packages/tsconfig/   shared TypeScript config
 tests/               backend (node:test) and frontend (Playwright) suites
 ```
 
-Both apps run TypeScript directly through `tsx`. The studio's view layer works the same way:
+In development both apps run TypeScript directly through `tsx`; production runs the same code compiled by `tsc`
+(`npm run build:server`, one `dist/` per workspace; see "Running in production"). The studio's view layer:
 server-rendered pages from `apps/studio/src/views/` (an auto-escaping `html` tagged template owns every
 interpolation), with stylesheets as plain static files under `apps/studio/public/css/`. The studio's browser
 code is TypeScript in `apps/studio/client/`, bundled by esbuild into `apps/studio/dist/js/` with
-`npm run build` (`npm run dev` rebuilds on change; `npm test` builds first; `npm run build:prod` minifies and
-writes no source maps).
+`npm run build` (`npm run dev` rebuilds on change; `npm test` builds first; `npm run build:prod` compiles the
+server too and minifies the bundle with no source maps).
 
 ## Setup
 
-**Requirements:** Node.js 22+, Docker, and a browser that resolves
+**Requirements:** Node.js 22 or newer (`engines` in `package.json`; `.nvmrc` names the major the suites run on), Docker, and a browser that resolves
 `*.localhost` to loopback (Chrome, Edge and Firefox do; for Safari or restrictive DNS, see
 `SANDBOX_APP_ORIGIN_TEMPLATE` below).
 
@@ -132,6 +133,42 @@ URL goes to the provider's public API); `.env`'s own `OPENAI_BASE_URL` / `ANTHRO
 not restricted. For a local fake provider or model server, set
 `ANYAPP_ALLOW_PRIVATE_PROVIDER_URLS=1` on a development machine only (the studio refuses to boot with it under
 `NODE_ENV=production` or when `STUDIO_PUBLIC_URL` is not a loopback address).
+
+## Running in production
+
+Production runs compiled JavaScript only. Both builds (`tsc` for the servers and migrations, esbuild for the studio's
+browser bundle) run once, before dev dependencies are removed, and `tsx` and `typescript` are not needed afterwards:
+
+```sh
+npm ci
+npm run build:prod                        # tsc -> dist/ in each workspace, plus the minified studio bundle (no source maps)
+npm prune --omit=dev                      # drops tsx, typescript, esbuild and the test dependencies
+NODE_ENV=production npm run migrate:prod  # runs packages/store/dist/migrate-cli.js; DATABASE_URL in the environment or .env
+```
+
+The studio and the sandbox are separate processes. Run each under a process manager of your choice, from the repository
+root, with its configuration (see `.env.example`) in the environment and `NODE_ENV=production`:
+
+```sh
+node --conditions=production apps/studio/dist/index.js
+node --conditions=production apps/sandbox/dist/index.js
+```
+
+The `production` condition is what makes the workspace packages load their compiled `dist/` instead of `src/`; without
+it the start fails at once. `npm run start:studio` and `npm run start:sandbox` run the same thing for a manual start, but
+a process manager must not supervise them: npm does not forward SIGTERM to the server it spawns, so stopping the npm
+process leaves `node` serving and holding the port. Neither form watches for changes. The `VAR=value command` lines in this section are POSIX
+shell; on Windows set the variables in the environment instead.
+
+- Create the sandbox's restricted database role (the "Without Docker" step in Setup) and set `SANDBOX_DATABASE_URL`;
+  without it the sandbox falls back to the privileged `DATABASE_URL`.
+- The bind addresses are hard-coded for now: the studio listens on `localhost` and the sandbox on `127.0.0.1`. Point
+  `STUDIO_INTERNAL_URL` at the address the studio actually listens on (on hosts where `localhost` resolves to `::1`
+  first, `http://[::1]:<port>`).
+- Do not set `ANYAPP_ALLOW_PRIVATE_PROVIDER_URLS` in production; the studio refuses to boot with it under
+  `NODE_ENV=production`.
+
+Database provisioning, TLS, reverse proxying and graceful shutdown are not covered here.
 
 ## Tests
 

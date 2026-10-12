@@ -1,0 +1,23 @@
+{
+  "files": [],
+  "references": [
+    {
+      "path": "packages/protocol/tsconfig.build.json"
+    },
+    {
+      "path": "packages/records/tsconfig.build.json"
+    },
+    {
+      "path": "packages/store/tsconfig.build.json"
+    },
+    {
+      "path": "packages/generator/tsconfig.build.json"
+    },
+    {
+      "path": "apps/sandbox/tsconfig.build.json"
+    },
+    {
+      "path": "apps/studio/tsconfig.build.json"
+    }
+  ]
+}

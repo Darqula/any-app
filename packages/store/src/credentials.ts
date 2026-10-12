@@ -1,6 +1,6 @@
-import { pool } from "./db";
-import { seal, open } from "./crypto";
-import type { Owner } from "./owner";
+import { pool } from "./db.ts";
+import { seal, open } from "./crypto.ts";
+import type { Owner } from "./owner.ts";
 
 export interface StoredCredential {
   apiKey: string;

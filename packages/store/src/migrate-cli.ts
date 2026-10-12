@@ -1,5 +1,5 @@
-import { migrate } from "./migrate";
-import { pool } from "./db";
+import { migrate } from "./migrate.ts";
+import { pool } from "./db.ts";
 
 await migrate();
 console.log("migrations up to date");

@@ -1,5 +1,5 @@
-import { html, raw, type Html } from "./escape";
-import { editOk } from "./notices";
+import { html, raw, type Html } from "./escape.ts";
+import { editOk } from "./notices.ts";
 
 export function editForm(id: string, slots: { id: string }[]): Html {
   const options = slots.map((s) => html`<option value="${s.id}">${s.id}</option>`);

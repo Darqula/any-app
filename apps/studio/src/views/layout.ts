@@ -1,4 +1,4 @@
-import { html, raw, type Html } from "./escape";
+import { html, raw, type Html } from "./escape.ts";
 
 /** Stylesheets under public/css. A name that is not listed here does not compile, instead of 404ing quietly. */
 export type CssName =

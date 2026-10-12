@@ -1,8 +1,8 @@
-import { pool } from "./db";
+import { pool } from "./db.ts";
 import { isFilledApp } from "@any-app/protocol";
 import type { FilledApp } from "@any-app/protocol";
-import { ownerFilter } from "./owner";
-import type { Owner } from "./owner";
+import { ownerFilter } from "./owner.ts";
+import type { Owner } from "./owner.ts";
 
 export type GenerationStatus = "pending" | "streaming" | "complete" | "failed";
 export type Visibility = "private" | "unlisted" | "public";

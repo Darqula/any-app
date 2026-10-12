@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts"
+    "dev": "tsx watch src/index.ts",
+    "start": "node --conditions=production dist/index.js"
   },
   "dependencies": {
     "@any-app/protocol": "*",

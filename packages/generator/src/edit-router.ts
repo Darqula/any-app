@@ -1,9 +1,9 @@
 import type { AppPlan } from "@any-app/protocol";
-import { resolve } from "./resolve";
-import { RefusalError, TruncationError } from "./providers/types";
-import type { ProviderCredential } from "./providers/types";
-import type { UsageInfo } from "./providers/usage";
-import { safeMessage } from "./scrub";
+import { resolve } from "./resolve.ts";
+import { RefusalError, TruncationError } from "./providers/types.ts";
+import type { ProviderCredential } from "./providers/types.ts";
+import type { UsageInfo } from "./providers/usage.ts";
+import { safeMessage } from "./scrub.ts";
 
 export type EditTarget = { kind: "css" } | { kind: "shell" } | { kind: "slot"; id: string };
 

@@ -1,12 +1,12 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { Provider, ProviderCredential, ProviderOptions, ProviderRequest } from "./types";
-import { RefusalError, TruncationError } from "./types";
-import { logUsage } from "./usage";
-import type { UsageInfo } from "./usage";
+import type { Provider, ProviderCredential, ProviderOptions, ProviderRequest } from "./types.ts";
+import { RefusalError, TruncationError } from "./types.ts";
+import { logUsage } from "./usage.ts";
+import type { UsageInfo } from "./usage.ts";
 // Sent to every gateway, real Anthropic included (an unknown header is ignored).
-import { conversationHeaders } from "./session";
-import { guardedFetch } from "./net-guard";
-import { validateRequestOptions } from "./validate-options";
+import { conversationHeaders } from "./session.ts";
+import { guardedFetch } from "./net-guard.ts";
+import { validateRequestOptions } from "./validate-options.ts";
 
 /** system + context share one cached text block; the volatile instruction goes in messages. */
 function systemFor(req: ProviderRequest) {

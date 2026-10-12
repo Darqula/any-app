@@ -24,13 +24,13 @@ import {
   billableTokensThisMonth,
 } from "@any-app/store";
 import type { UsageEvent } from "@any-app/store";
-import { renderFullHead, SHELL_TAIL } from "./shell";
-import { editApplied, editProblem } from "./views";
-import { sendHtml } from "./respond";
-import { currentOwner } from "./session";
-import { credentialForRole } from "./credential-resolve";
-import { beginEdit } from "./activity";
-import { recordMessage } from "./conversation";
+import { renderFullHead, SHELL_TAIL } from "./shell.ts";
+import { editApplied, editProblem } from "./views/index.ts";
+import { sendHtml } from "./respond.ts";
+import { currentOwner } from "./session.ts";
+import { credentialForRole } from "./credential-resolve.ts";
+import { beginEdit } from "./activity.ts";
+import { recordMessage } from "./conversation.ts";
 
 /**
  * Rejects a slot edit that came back as a fragment: models have dropped every other control in a region.

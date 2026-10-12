@@ -1,4 +1,4 @@
-import { pool } from "./db";
+import { pool } from "./db.ts";
 
 export interface UsageEvent {
   ownerId: string | null;

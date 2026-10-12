@@ -1,5 +1,5 @@
 import type { Message } from "@any-app/store";
-import { html, type Html } from "./escape";
+import { html, type Html } from "./escape.ts";
 
 /**
  * The conversation panel's rows. Every body is escaped text, never HTML. The pending row has

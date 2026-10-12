@@ -1,16 +1,16 @@
 import type { AppPlan, SlotSpec } from "@any-app/protocol";
 import { slotErrorPlaceholder } from "@any-app/protocol";
-import { appContext } from "./fill-prompt";
-import { SLOT_FILL_PROMPT } from "./fill-slot-prompt";
-import { fillSlot } from "./fill-slot";
-import { asCompleted, limitConcurrency } from "./fan-out";
-import { resolve } from "./resolve";
-import type { ProviderCredential } from "./providers/types";
-import type { Provider } from "./providers/types";
-import { isAbortError } from "./client";
-import { safeMessage } from "./scrub";
-import { RefusalError, TruncationError } from "./providers/types";
-import type { UsageInfo } from "./providers/usage";
+import { appContext } from "./fill-prompt.ts";
+import { SLOT_FILL_PROMPT } from "./fill-slot-prompt.ts";
+import { fillSlot } from "./fill-slot.ts";
+import { asCompleted, limitConcurrency } from "./fan-out.ts";
+import { resolve } from "./resolve.ts";
+import type { ProviderCredential } from "./providers/types.ts";
+import type { Provider } from "./providers/types.ts";
+import { isAbortError } from "./client.ts";
+import { safeMessage } from "./scrub.ts";
+import { RefusalError, TruncationError } from "./providers/types.ts";
+import type { UsageInfo } from "./providers/usage.ts";
 
 export interface SlotResult {
   slot: SlotSpec;

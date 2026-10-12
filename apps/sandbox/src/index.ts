@@ -1,9 +1,10 @@
+import "./production-condition.ts";
 import express from "express";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { loadEnv } from "@any-app/records";
 import { INTERNAL_SECRET_HEADER } from "@any-app/protocol";
-import { dataRouter } from "./data";
+import { dataRouter } from "./data.ts";
 
 // From @any-app/records, not @any-app/store: importing the store pulls in its privileged pool and credential code.
 loadEnv();
