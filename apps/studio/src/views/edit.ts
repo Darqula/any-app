@@ -4,7 +4,7 @@ import { editOk } from "./notices";
 export function editForm(id: string, slots: { id: string }[]): Html {
   const options = slots.map((s) => html`<option value="${s.id}">${s.id}</option>`);
   // #edit-result is not rendered here: it lives in homePage, and a copy would duplicate the id.
-  // Freezing the target region on submit is done in public/js/home.js.
+  // Freezing the target region on submit is done in client/home/edit.ts.
   return html`<form id="edit-form" class="composer-row"
     hx-post="/generations/${id}/edits"
     hx-target="#edit-result"
@@ -55,7 +55,7 @@ export function editApplied(
 
   const label = target.kind === "css" ? "styling" : target.kind === "shell" ? "the page frame" : target.id;
 
-  // The payload is data; home.js applies it when this response is swapped into #edit-result.
+  // The payload is data; client/home/edit.ts applies it when this response is swapped into #edit-result.
   return html`<script type="application/json" id="edit-payload">${jsonBlock(payload)}</script>
 ${editOk(`Updated ${label}.`)}`;
 }

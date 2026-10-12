@@ -13,13 +13,16 @@
     "dev:studio": "npm run dev --workspace @any-app/studio",
     "dev:sandbox": "npm run dev --workspace @any-app/sandbox",
     "migrate": "npm run migrate --workspace @any-app/store",
-    "typecheck": "tsc -p . && tsc -p tests/frontend && tsc -p apps/studio/public",
+    "build": "node scripts/build.mjs",
+    "build:prod": "node scripts/build.mjs --prod",
+    "typecheck": "tsc -p . && tsc -p tests/frontend && tsc -p apps/studio/client",
     "test:backend": "npm run test:backend --workspace @any-app/tests",
     "test:frontend": "npm run test:frontend --workspace @any-app/tests",
     "test": "npm run test:backend && npm run test:frontend"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "esbuild": "^0.28.2",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   }

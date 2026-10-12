@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "@any-app/tsconfig/base.json",
+  // The browser code. Own program because it needs the DOM lib and must not see Node globals. esbuild bundles it
+  // (scripts/build.mjs); tsc only checks.
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": []
+  },
+  "include": ["./**/*.ts", "../types/*.d.ts"]
+}

@@ -16,7 +16,7 @@ export function cssLinks(names: readonly CssName[]): Html {
 }
 
 export function scriptTag(name: ScriptName): Html {
-  return raw(`<script src="/js/${name}.js"></script>`);
+  return raw(`<script type="module" src="/js/${name}.js"></script>`);
 }
 
 /**

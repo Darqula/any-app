@@ -1,6 +1,7 @@
 import express from "express";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { existsSync, readdirSync } from "node:fs";
 import {
   loadEnv,
   requireEnv,
@@ -65,10 +66,18 @@ function mayView(generation: Generation, owner: Owner): boolean {
 app.use(express.urlencoded({ extended: false }));
 
 // Resolved from this module, not the cwd: tests spawn the server from elsewhere.
-const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "public");
-// Mounted per directory so nothing else under public/ is served and a file can't shadow a route.
-app.use("/css", express.static(path.join(publicDir, "css")));
-app.use("/js", express.static(path.join(publicDir, "js")));
+const studioDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+const jsDir = path.join(studioDir, "dist", "js");
+if (!["home.js", "auth.js"].every((bundle) => existsSync(path.join(jsDir, bundle)))) {
+  throw new Error("The studio's browser code is not built: run `npm run build` first.");
+}
+// A dev build ships source maps, which would publish the TypeScript sources.
+if (process.env.NODE_ENV === "production" && readdirSync(jsDir).some((file) => file.endsWith(".map"))) {
+  throw new Error("dist/js holds source maps, which must not be served in production: run `npm run build:prod`.");
+}
+// Mounted per directory so nothing else beside them is served and a file can't shadow a route.
+app.use("/css", express.static(path.join(studioDir, "public", "css")));
+app.use("/js", express.static(jsDir));
 
 // Rejects mutating requests with a positive cross-site signal (Sec-Fetch-Site or Origin). SameSite alone does
 // not stop a generated app's fetch() on a same-site deployment. Non-browser callers send neither header and

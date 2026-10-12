@@ -1,25 +1,30 @@
 import { spawn, spawnSync } from "node:child_process";
 import path from "node:path";
 
+// Quoted: the commands run through a shell, and the repo path may contain spaces.
+const script = (name) => `"${path.join(import.meta.dirname, name)}"`;
+
 const targets = [
   { name: "studio", workspace: "@any-app/studio", color: "\x1b[36m" },
   { name: "sandbox", workspace: "@any-app/sandbox", color: "\x1b[35m" },
+  { name: "client", command: `node ${script("build.mjs")} --watch`, color: "\x1b[33m" },
 ];
 
 // Database first, idempotently, so dev never boots against a stopped container.
 // ANYAPP_DB_AUTOSTART=0 skips this.
 if (process.env.ANYAPP_DB_AUTOSTART !== "0") {
-  const db = spawnSync("node", [path.join(import.meta.dirname, "db.mjs")], {
-    stdio: "inherit",
-    shell: true,
-  });
+  const db = spawnSync(`node ${script("db.mjs")}`, { stdio: "inherit", shell: true });
   if (db.status !== 0) process.exit(db.status ?? 1);
 } else {
   console.log("ANYAPP_DB_AUTOSTART=0 — skipping database startup\n");
 }
 
-const children = targets.map(({ name, workspace, color }) => {
-  const child = spawn("npm", ["run", "dev", "--workspace", workspace], {
+// Browser code: build once so the studio finds it at boot, then keep it rebuilt.
+const built = spawnSync(`node ${script("build.mjs")}`, { stdio: "inherit", shell: true });
+if (built.status !== 0) process.exit(built.status ?? 1);
+
+const children = targets.map(({ name, workspace, command, color }) => {
+  const child = spawn(command ?? `npm run dev --workspace ${workspace}`, {
     stdio: ["ignore", "pipe", "pipe"],
     shell: true,
   });

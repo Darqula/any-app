@@ -29,11 +29,12 @@ packages/tsconfig/   shared TypeScript config
 tests/               backend (node:test) and frontend (Playwright) suites
 ```
 
-Both apps run TypeScript directly through `tsx`; there is no build step. The studio's view layer
-compiles the same way: server-rendered pages from `apps/studio/src/views/` (an auto-escaping `html`
-tagged template owns every interpolation), with the studio's own stylesheets and browser scripts as
-plain static files under `apps/studio/public/`, served by `express.static` — no bundler, no CSS or
-JS build output.
+Both apps run TypeScript directly through `tsx`. The studio's view layer works the same way:
+server-rendered pages from `apps/studio/src/views/` (an auto-escaping `html` tagged template owns every
+interpolation), with stylesheets as plain static files under `apps/studio/public/css/`. The studio's browser
+code is TypeScript in `apps/studio/client/`, bundled by esbuild into `apps/studio/dist/js/` with
+`npm run build` (`npm run dev` rebuilds on change; `npm test` builds first; `npm run build:prod` minifies and
+writes no source maps).
 
 ## Setup
 

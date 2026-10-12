@@ -483,21 +483,24 @@ test("C17 — every studio page's stylesheets and scripts are served (a 404 link
     assert.ok((await res.text()).length > 0, `${asset} must not be empty`);
   }
 
-  // Whatever sits in css/ and js/ is published, so each file must be a stylesheet or script some page links. The exception,
-  // public/tsconfig.json, sits beside the two mounted directories and must stay unreachable (checked below).
-  const publicDir = path.join(REPO_ROOT, "apps", "studio", "public");
-  const onDisk = readdirSync(publicDir, { recursive: true, withFileTypes: true })
-    .filter((entry) => entry.isFile())
-    .map((entry) => `/${path.relative(publicDir, path.join(entry.parentPath, entry.name)).split(path.sep).join("/")}`)
-    .filter((file) => file !== "/tsconfig.json");
-  assert.ok(onDisk.length >= assets.size, "expected the studio's asset files under apps/studio/public");
+  // Whatever the studio publishes must be a stylesheet or script some page links: the stylesheets under public/css
+  // and the built bundles in dist/js, each optionally with its own source map. Nothing else sits in either, and the
+  // build output is checked as it is on disk, so a stale bundle for a deleted page fails here.
+  const studioDir = path.join(REPO_ROOT, "apps", "studio");
+  const listing = (dir: string, prefix: string) =>
+    readdirSync(path.join(studioDir, dir), { recursive: true, withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => `${prefix}/${path.relative(path.join(studioDir, dir), path.join(entry.parentPath, entry.name)).split(path.sep).join("/")}`);
+  const onDisk = [...listing("public", ""), ...listing("dist/js", "/js")];
+  assert.ok(onDisk.length >= assets.size, "expected the studio's asset files under apps/studio/public and dist/js");
   for (const file of onDisk) {
-    assert.match(file, /^\/(css\/[^/]+\.css|js\/[^/]+\.js)$/, `${file} must not live under public/`);
-    assert.ok(assets.has(file), `${file} is not linked from any page`);
+    assert.match(file, /^\/(css\/[^/]+\.css|js\/[^/]+\.js(\.map)?)$/, `${file} must not live under public/ or dist/js`);
+    const bundle = file.replace(/\.map$/, "");
+    assert.ok(assets.has(bundle), `${file} is not linked from any page${bundle === file ? "" : " (a source map needs its linked bundle)"}`);
   }
 
   // Files beside the mounted directories are not served.
-  for (const url of ["/tsconfig.json", "/js/tsconfig.json", "/package.json"]) {
+  for (const url of ["/tsconfig.json", "/js/tsconfig.json", "/js/home.ts", "/package.json"]) {
     assert.equal((await fetch(`${origin}${url}`)).status, 404, `${url} must not be served`);
   }
 });

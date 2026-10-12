@@ -41,10 +41,13 @@ repo, so project knowledge goes into these in-repo files, never only into an age
   importing `store` builds the privileged pool and pulls in credentials. Sandbox gets `loadEnv`
   from `@any-app/records`, which is also why `records` must stay out of `store`.
 - `openai` / `@anthropic-ai/sdk` are imported only in `packages/generator/src/providers/`.
-- No `compression` middleware (it buffers and breaks streaming). No build step, bundler or
-  Dockerfile for `apps/*` — meaning no build *output*: plain static files (`apps/studio/public/`,
-  served with `express.static`, no fingerprinting) and TypeScript that `tsx` compiles in memory
-  are not a build.
+- No `compression` middleware (it buffers and breaks streaming). No Dockerfile for `apps/*`.
+- The only build is the studio's browser code: `npm run build` (esbuild, `scripts/build.mjs`) bundles
+  `apps/studio/client/*.ts` into the gitignored `apps/studio/dist/js/`. Server code still runs through `tsx` with
+  no build, and CSS is plain static files in `apps/studio/public/css/`. The studio refuses to boot without the
+  bundle; `npm run dev`, `test:backend` and `test:frontend` build first, but a bare `node --test` or
+  `npx playwright test` does not, so run `npm run build` before those. A deploy uses `npm run build:prod`
+  (minified, no source maps).
 - Generated apps stay on per-app origins (`SANDBOX_APP_ORIGIN_TEMPLATE`). That's what makes
   `allow-same-origin` on the preview iframe safe. `STUDIO_PUBLIC_URL` must exactly match the
   studio origin shown in the browser.

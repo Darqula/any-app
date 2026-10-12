@@ -258,13 +258,13 @@ test("I9 — apps/sandbox/src/data.ts reads app_id only from res.locals", () => 
 });
 
 
-test("I10 — studio browser code (public/js, and the view modules) never postMessages to \"*\"", () => {
-  // The studio's browser code: the view modules and the classic scripts under public/js.
+test("I10 — studio browser code (client/, and the view modules) never postMessages to \"*\"", () => {
+  // The studio's browser code: the view modules and the TypeScript under client/.
   const candidates = [
     ...walkTsFiles("apps/studio/src/views"),
-    ...readdirSync(path.join(REPO_ROOT, "apps", "studio", "public", "js"))
-      .filter((f) => f.endsWith(".js"))
-      .map((f) => path.join("apps/studio/public/js", f)),
+    ...readdirSync(path.join(REPO_ROOT, "apps", "studio", "client"), { recursive: true, encoding: "utf8" })
+      .filter((f) => f.endsWith(".ts"))
+      .map((f) => path.join("apps/studio/client", f)),
   ];
   assert.ok(candidates.length > 0, "expected to find studio view modules and/or client scripts");
   const sources = candidates.map(read).join("\n");

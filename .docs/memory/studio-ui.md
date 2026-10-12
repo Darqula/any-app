@@ -12,14 +12,21 @@ stage card, one bottom composer that creates apps or edits the open one. Server-
   (`src/respond.ts`). A new fragment goes with its feature; one-line status messages go in `notices.ts`.
 - `apps/studio/public/css/*.css`: tokens (`theme`), element defaults (`base`), shared components (`components`: buttons,
   fields, dialog, notices), then per-area sheets (`home`, `sidebar`, `workspace`, `auth`, `owner-controls`, `settings`,
-  `shared`). `cssLinks()` always puts the first three first. `public/js/*.js`: the browser scripts, served as
-  plain files by `express.static`. Classic scripts, no build step.
-- The scripts are type-checked with `// @ts-check` through `apps/studio/public/tsconfig.json` (strict; own config
-  because it needs the DOM lib, see `test-case-notes.md`).
-- Only `public/css` and `public/js` are served: `express.static` is mounted per directory, so a file beside them is not
-  reachable. `public/tsconfig.json` lives there on purpose, so editors find it from the scripts (an editor only discovers
-  files named `tsconfig.json`); keep it that way, and keep type declarations out in `apps/studio/types/`. C17 fails on
-  any other file under `public/` that is not a linked `.css` or `.js`, and on `/tsconfig.json` being served.
+  `shared`). `cssLinks()` always puts the first three first.
+- `apps/studio/client/*.ts`: the browser code, bundled by `scripts/build.mjs` (esbuild) into `dist/js/home.js` and
+  `auth.js` and loaded as `<script type="module">`. It was plain `.js` + JSDoc while the repo had no build step; the
+  2026-10-11 decision to add one was made because the JSDoc was hard to maintain. `client/home.ts` is only the entry;
+  each part of the home page is a module in `client/home/` (sidebar, chat, poller, stage, composer, edit, delete,
+  preview) that registers its own htmx listeners and exposes functions, never shared variables. Source maps are written only by the default (dev/test)
+  build; `build:prod` / `NODE_ENV=production` minifies and writes none. Every one-shot build (not `--watch`) wipes
+  `dist/js` first, so no old file or map lingers; a one-shot build run while `npm run dev` is up therefore 404s the
+  bundles for a moment. The studio refuses to boot with `NODE_ENV=production` if `dist/js` holds a map. A new page script
+  is a new entry in `scripts/build.mjs` plus a `ScriptName` in `views/layout.ts`.
+- The client is type-checked through `apps/studio/client/tsconfig.json` (strict; own config because it needs the DOM
+  lib and must not see Node globals). Type declarations for globals (htmx) live in `apps/studio/types/`.
+- Only `public/css` and `dist/js` are served: `express.static` is mounted per directory, so sources and anything else
+  beside them are not reachable. The studio throws at boot if `dist/js/home.js` or `auth.js` is missing. C17 fails on any file in
+  either directory that is not a linked `.css`/`.js` (or a source map).
 
 ## CSS conventions
 
@@ -33,7 +40,7 @@ Enforced by I12 (`architecture-guards.test.ts`); the rest is review.
 - **Buttons: `.btn` plus at most one variant** (`--primary`, `--danger`) and optionally `--sm`. Geometry that belongs to
   one component (height, padding, radius) lives with that component and overrides `.btn`; `components.css` loads first.
   `.btn-bare` is the no-chrome reset for buttons that look like text.
-- **Page state classes live on `<body>`** (`creating`, `streaming`, `chat-open`, set by `home.js`) and are always written
+- **Page state classes live on `<body>`** (`creating`, `streaming`, `chat-open`, set by `client/home/`) and are always written
   with the page class (`.page-home.creating ...`).
 - Class names that tests or scripts rely on are fixed: `.status`, `.status-*`, `.app-row-open`, `.app-delete`, `.active`, `.chat-panel`,
   `.cred-banner`, `.cred-list`, `.role-table`, `.empty`, `.edit-problem`, `.side-foot`, `.user-chip` (with `.who`),
@@ -85,7 +92,7 @@ Traps found while refactoring (each was caught by a pixel comparison, not by any
 - **The delete cross uses `:has(:focus-visible)`, not `:focus-within`**: a mouse click on the row's name also
   satisfies `:focus-within`, which left the cross stuck open after the pointer left.
 - **An edit's payload is data, not code.** `editApplied` ships a `<script type="application/json" id="edit-payload">`
-  block; `home.js` applies it on the `htmx:afterSwap` of `#edit-result`, and freezes the target region on
+  block; `client/home/edit.ts` applies it on the `htmx:afterSwap` of `#edit-result`, and freezes the target region on
   `htmx:beforeRequest`. No inline handler or inline script is left in the markup, which is what lets a strict CSP
   (`script-src 'self'`) work later (`production-readiness.md` S3; check htmx's `allowEval` and `includeIndicatorStyles` settings first).
 - `homePage`'s `owner` is required (one caller): an optional parameter would let a future caller drop the whole

@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test:backend": "node --import tsx --test \"backend/**/*.test.ts\"",
-    "test:frontend": "playwright test --config frontend/playwright.config.ts",
+    "test:backend": "npm run build --prefix .. && node --import tsx --test \"backend/**/*.test.ts\"",
+    "test:frontend": "npm run build --prefix .. && playwright test --config frontend/playwright.config.ts",
     "test:quality": "node --import tsx quality/runner.ts"
   },
   "dependencies": {

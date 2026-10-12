@@ -314,7 +314,7 @@ non-atomic code.
 | C14 | Planner returns unparseable output (P2) | Falls back to the linear path; app still renders; row `complete` |
 | C15 | Planner call is **aborted** (P2) | Does **not** fall back to linear — abort must propagate |
 | C16 | Fill call fails after the shell was written (P2) | Error banner appended to the already-open response; row `failed` |
-| C17 | Every studio page (home, settings, a share page, not-found) | Full page; each `/css/*` and `/js/*` it links is served with the right content type; every file on disk under `public/` (except its `tsconfig.json`) is a linked `.css` or `.js`; nothing outside `/css` and `/js` is served |
+| C17 | Every studio page (home, settings, a share page, not-found) | Full page; each `/css/*` and `/js/*` it links is served with the right content type; every file on disk under `public/` and in the built `dist/js/` is a linked `.css` or `.js` (or a `.js.map`); nothing outside `/css` and `/js` is served, including the TypeScript sources |
 
 C15 is a real branch in the Phase 2 route (`if (ac.signal.aborted) throw error` inside the
 planner catch). It is easy to get wrong in a way no other test notices: a viewer who closes
@@ -501,7 +501,7 @@ issues. `architecture.md` says npm's flat `node_modules` cannot enforce these, s
 | I7 | Repository-wide grep (P3.5) | No route or view interpolates a raw credential; error persistence always goes through the scrubber |
 | I8 | `apps/sandbox/src/**` (P5) | No `Access-Control-Allow-Origin` anywhere — the data API is same-origin by construction |
 | I9 | `apps/sandbox/src/data.ts` (P5) | `app_id` is only ever read from `res.locals`, never from `req.body`, `req.query`, `req.params`, or a header |
-| I10 | `apps/studio/public/js/*.js` and `apps/studio/src/views/*` (P5) | No `postMessage(..., "*")` — every call pins a specific target origin |
+| I10 | `apps/studio/client/**/*.ts` and `apps/studio/src/views/*` (P5) | No `postMessage(..., "*")` — every call pins a specific target origin |
 | I11 | `session.ts` (P5) | The session cookie is set with no `Domain` attribute |
 | I12 | `apps/studio/public/css/*.css` | No ID selectors, no `!important` (any case or spacing), no nesting, no element selectors outside `base.css` (also inside `:not/:is/:where/:has` and every at-rule body), no literal colours (hex, `rgb/hsl/oklch/color-mix`, named) outside `theme.css` |
 | I12a | The guard's own parser (`tests/harness/css.ts`) on 29 violating and 9 conforming snippets | Every violation is reported (statement at-rules, `@layer/@container/@media`, missing braces, nesting, strings containing `#` or spaces) and no conforming snippet is |
