@@ -68,6 +68,16 @@ pre-warm on another model warms nothing). Two mistakes are on record: the Phase 
 prompt while everything worth caching rode in the volatile field; and a later "the gateway does not cache"
 conclusion came from 270-1530-token test prefixes. At ~4.5k tokens both gateway paths hit cleanly.
 
+## Network guard on user base URLs
+
+Both adapters take `ProviderOptions { userSupplied, netPolicy, validateTimeoutMs }`. With `userSupplied` they pass the SDK a
+`fetch` from `net-guard.ts` (undici with a validating connector, redirects refused) and the provider's public default
+base URL when the credential has none; otherwise the SDK default fetch and env fallbacks, unchanged. Only `resolve()`
+and the settings route decide `userSupplied`; a platform credential from `.env` is never guarded. `validate()` passes
+`timeout: 15000, maxRetries: 0` per request. A refused connection surfaces as the SDK's connection error whose cause
+chain holds `BlockedAddressError` (`findBlockedAddressError` walks it); the SDK retries connection errors twice on
+generation calls, which is harmless but slow. Reasoning is in `security.md`.
+
 ## Other decisions
 
 - The linear fallback reuses the `fill` role instead of a fifth `LLM_LINEAR_*` role: it only runs after

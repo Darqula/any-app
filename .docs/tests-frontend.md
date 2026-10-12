@@ -317,7 +317,7 @@ horizontal overflow is both the most common way that fails and trivially detecta
 |---|---|---|
 | G1 | Save a provider credential | Accepted, and the app can generate with it |
 | G2 | After saving | The field shows a mask only and never repopulates with the key — including after a reload |
-| G3 | Save an invalid key | Rejected immediately with a readable message, not a raw provider error dump |
+| G3 | Save an invalid key | Rejected immediately with a fixed readable sentence ("The provider rejected the API key."), never the provider's own error text |
 | G4 | Page source and DOM after saving | Contain no substring of the credential |
 | G5 | Per-role model selectors | Persist, and are reflected after a reload |
 | G6 | Generate with no credential configured | A clear prompt to add one — not a provider stack trace |

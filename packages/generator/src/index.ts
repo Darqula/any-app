@@ -13,6 +13,8 @@ export type { Role, RoleConfig } from "./roles";
 export { resolve, build, NoCredentialError } from "./resolve";
 export type { Resolved } from "./resolve";
 export type { ProviderId, ProviderCredential, Provider } from "./providers/types";
+export { checkProviderBaseUrl, allowPrivateProviderUrls, escapeHatchProblem, refusedAddress } from "./providers/net-guard";
+export { describeValidationFailure } from "./providers/validation-failure";
 export type { UsageInfo } from "./providers/usage";
 export { scrub, safeMessage } from "./scrub";
 export { fillAllSlots } from "./parallel-fill";

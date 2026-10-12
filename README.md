@@ -127,7 +127,11 @@ budget is too low. Every call logs its real token usage to the studio log, so ch
 budgets. Known model-specific findings are in [`.docs/open-problems.md`](.docs/open-problems.md).
 
 Users can also supply their own provider credentials on `/settings`. They are encrypted at rest with
-`CREDENTIAL_KEY`.
+`CREDENTIAL_KEY`. A user-supplied base URL must be https and resolve to a public address (a user key with no base
+URL goes to the provider's public API); `.env`'s own `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` apply to the platform keys only and are
+not restricted. For a local fake provider or model server, set
+`ANYAPP_ALLOW_PRIVATE_PROVIDER_URLS=1` on a development machine only (the studio refuses to boot with it under
+`NODE_ENV=production` or when `STUDIO_PUBLIC_URL` is not a loopback address).
 
 ## Tests
 

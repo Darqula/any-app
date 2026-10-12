@@ -1,10 +1,12 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { Provider, ProviderCredential, ProviderRequest } from "./types";
+import type { Provider, ProviderCredential, ProviderOptions, ProviderRequest } from "./types";
 import { RefusalError, TruncationError } from "./types";
 import { logUsage } from "./usage";
 import type { UsageInfo } from "./usage";
 // Sent to every gateway, real Anthropic included (an unknown header is ignored).
 import { conversationHeaders } from "./session";
+import { guardedFetch } from "./net-guard";
+import { validateRequestOptions } from "./validate-options";
 
 /** system + context share one cached text block; the volatile instruction goes in messages. */
 function systemFor(req: ProviderRequest) {
@@ -30,11 +32,16 @@ function usageFrom(usage: AnthropicUsageShape | undefined): UsageInfo | null {
   };
 }
 
-export function createAnthropicProvider(credential: ProviderCredential): Provider {
+const ANTHROPIC_PUBLIC_BASE_URL = "https://api.anthropic.com";
+
+export function createAnthropicProvider(credential: ProviderCredential, options: ProviderOptions = {}): Provider {
   const client = new Anthropic({
     apiKey: credential.apiKey,
-    // Undefined uses the SDK default (api.anthropic.com); may point at an Anthropic-shaped gateway.
-    baseURL: credential.baseUrl || undefined,
+    // Undefined uses ANTHROPIC_BASE_URL, else api.anthropic.com; may point at an Anthropic-shaped gateway. A user's
+    // key never inherits the operator's base URL or ANTHROPIC_AUTH_TOKEN: it goes to the public API or its own URL.
+    baseURL: credential.baseUrl || (options.userSupplied ? ANTHROPIC_PUBLIC_BASE_URL : undefined),
+    authToken: options.userSupplied ? null : undefined,
+    fetch: options.userSupplied ? guardedFetch(options.netPolicy) : undefined,
   });
 
   return {
@@ -110,7 +117,7 @@ export function createAnthropicProvider(credential: ProviderCredential): Provide
     async validate(model, signal) {
       await client.messages.create(
         { model, max_tokens: 1, messages: [{ role: "user", content: "hi" }] },
-        { signal, headers: conversationHeaders(undefined) },
+        { signal, headers: conversationHeaders(undefined), ...validateRequestOptions(options.validateTimeoutMs) },
       );
     },
   };

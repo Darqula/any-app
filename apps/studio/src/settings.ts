@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { build, roleConfig, safeMessage } from "@any-app/generator";
+import { build, roleConfig, safeMessage, checkProviderBaseUrl, describeValidationFailure, refusedAddress } from "@any-app/generator";
 import type { ProviderId, Role } from "@any-app/generator";
 import { saveCredential, listCredentialHints, deleteCredential } from "@any-app/store";
 import { settingsPage, credentialSaved, editProblem } from "./views";
@@ -35,15 +35,26 @@ export function settingsRouter(): Router {
       return;
     }
 
+    // A usability check only: a hostname can still resolve to an internal address. The connect-time guard in the
+    // provider adapters is what keeps this process out of internal networks.
+    const baseUrlProblem = baseUrl ? checkProviderBaseUrl(baseUrl) : null;
+    if (baseUrlProblem) {
+      sendHtml(res, editProblem(baseUrlProblem), 400);
+      return;
+    }
+
     const credential = { provider: provider as ProviderId, apiKey, baseUrl: baseUrl || undefined };
 
     try {
       // Validate before persisting — a bad key is rejected here, not discovered as a
       // failed generation minutes later.
-      await build(credential).validate(model);
+      await build(credential, { userSupplied: true }).validate(model);
     } catch (error) {
-      // The typed key is in no secrets list yet, so scrub it explicitly before showing the provider's error.
-      sendHtml(res, editProblem(safeMessage(error, [apiKey])), 400);
+      // The visitor gets a fixed sentence: the provider's own text would let a chosen URL read back whatever it
+      // answers with. The detail goes to the log; the typed key is in no secrets list yet, so scrub it explicitly.
+      const refused = refusedAddress(error);
+      console.error("credential validation failed:", safeMessage(error, [apiKey]), refused ? `(refused address ${refused})` : "");
+      sendHtml(res, editProblem(describeValidationFailure(error)), 400);
       return;
     }
 

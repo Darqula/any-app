@@ -169,6 +169,7 @@ provider:
 | `PREVIEW_TIMEOUT_MS` | `900000` | |
 | `LLM_PROVIDER` / `LLM_MODEL` / `LLM_MAX_TOKENS` | `openai` / `test-harness-placeholder-model` / `1000` | **see below — this is load-bearing** |
 | `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` | `""` (unset) | no real provider by default |
+| `ANYAPP_ALLOW_PRIVATE_PROVIDER_URLS` | `"1"` | lets a user-saved BYOK credential point at the fake provider on loopback over http; pass `""` to test the SSRF guard itself (backend Q10) |
 
 **Why `LLM_MODEL` still has a default, even though this is fixed now:** `packages/generator/src/roles.ts`'s
 `roleConfig()` throws a plain `Error` — not `NoCredentialError` — if no model is configured

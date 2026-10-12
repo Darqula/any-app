@@ -94,7 +94,7 @@ Traps found while refactoring (each was caught by a pixel comparison, not by any
 - **An edit's payload is data, not code.** `editApplied` ships a `<script type="application/json" id="edit-payload">`
   block; `client/home/edit.ts` applies it on the `htmx:afterSwap` of `#edit-result`, and freezes the target region on
   `htmx:beforeRequest`. No inline handler or inline script is left in the markup, which is what lets a strict CSP
-  (`script-src 'self'`) work later (`production-readiness.md` S3; check htmx's `allowEval` and `includeIndicatorStyles` settings first).
+  (`script-src 'self'`) work later (check htmx's `allowEval` and `includeIndicatorStyles` settings first).
 - `homePage`'s `owner` is required (one caller): an optional parameter would let a future caller drop the whole
   auth UI silently. `email` is required for the same reason (null for an anonymous owner; `accountEmail` in
   `session.ts` looks it up).

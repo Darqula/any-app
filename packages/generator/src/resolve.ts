@@ -2,7 +2,7 @@ import { roleConfig } from "./roles";
 import type { Role } from "./roles";
 import { createOpenAIProvider } from "./providers/openai";
 import { createAnthropicProvider } from "./providers/anthropic";
-import type { Provider, ProviderCredential, ProviderId } from "./providers/types";
+import type { Provider, ProviderCredential, ProviderId, ProviderOptions } from "./providers/types";
 
 export interface Resolved {
   provider: Provider;
@@ -33,10 +33,11 @@ function platformCredential(provider: ProviderId): ProviderCredential | null {
   return apiKey ? { provider, apiKey, baseUrl: process.env.OPENAI_BASE_URL } : null;
 }
 
-export function build(credential: ProviderCredential): Provider {
+/** Pass { userSupplied: true } for a credential a user typed in: its base URL is then network-guarded. */
+export function build(credential: ProviderCredential, options: ProviderOptions = {}): Provider {
   return credential.provider === "anthropic"
-    ? createAnthropicProvider(credential)
-    : createOpenAIProvider(credential);
+    ? createAnthropicProvider(credential, options)
+    : createOpenAIProvider(credential, options);
 }
 
 /** User credential, then platform credential, then a clear error raised before any HTTP call. */
@@ -48,7 +49,7 @@ export function resolve(role: Role, userCredential: ProviderCredential | null): 
   if (!credential) throw new NoCredentialError(config.provider);
 
   return {
-    provider: build(credential),
+    provider: build(credential, { userSupplied: usesUserCredential }),
     model: config.model,
     maxTokens: config.maxTokens,
     secrets: [

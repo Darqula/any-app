@@ -119,6 +119,8 @@ test.describe("G — provider settings and BYOK", () => {
       expect(text).not.toContain(badKey);
       expect(text.length).toBeGreaterThan(0);
       expect(text).toContain("edit-problem"); // a real editProblem() fragment, readable, not a stack trace
+      expect(text).toContain("rejected the API key"); // a fixed sentence, never the provider's own text
+      expect(text).not.toContain("Incorrect API key provided");
 
       // The fragment must actually reach the DOM.
       await expect(page.locator("#cred-result .edit-problem")).toHaveCount(1);

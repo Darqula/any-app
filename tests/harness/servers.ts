@@ -111,6 +111,9 @@ export async function startServers(opts: StartServersOptions): Promise<RunningSe
     OPENAI_BASE_URL: "",
     ANTHROPIC_API_KEY: "",
     ANTHROPIC_BASE_URL: "",
+    // Tests save BYOK credentials that point at the fake provider on loopback over http. The cases that exercise
+    // the guard itself turn this off with env: { ANYAPP_ALLOW_PRIVATE_PROVIDER_URLS: "" }.
+    ANYAPP_ALLOW_PRIVATE_PROVIDER_URLS: "1",
   };
 
   const env: Record<string, string> = { ...defaults, ...(opts.env ?? {}) };

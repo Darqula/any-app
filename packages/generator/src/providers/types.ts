@@ -10,6 +10,18 @@ export interface ProviderCredential {
   baseUrl?: string;
 }
 
+export interface ProviderOptions {
+  /**
+   * True when the credential's base URL was typed by a user. Every connection is then refused unless it goes to a
+   * public address (see net-guard). Operator-set base URLs from .env leave this off.
+   */
+  userSupplied?: boolean;
+  /** Overrides the default network policy; only for tests. */
+  netPolicy?: import("./net-guard").NetPolicy;
+  /** Overrides the credential-check timeout; only for tests. */
+  validateTimeoutMs?: number;
+}
+
 export interface ProviderRequest {
   /** Stable instructions. Cached where the provider supports it. */
   system: string;

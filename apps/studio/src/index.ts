@@ -19,6 +19,7 @@ import type { Generation, Owner } from "@any-app/store";
 import { mintViewGrant, VIEW_GRANT_TTL_MS, renderDocument, isFilledApp } from "@any-app/protocol";
 import type { TokenMode } from "@any-app/protocol";
 import type { FilledApp } from "@any-app/protocol";
+import { allowPrivateProviderUrls, escapeHatchProblem } from "@any-app/generator";
 import { internalRouter } from "./internal";
 import { editsRouter } from "./edits";
 import { settingsRouter } from "./settings";
@@ -37,6 +38,12 @@ loadEnv();
 assertCredentialKeyConfigured();
 // A missing secret must fail the boot, not default to "" (every token would be forgeable).
 requireEnv("APP_TOKEN_SECRET");
+// The switch turns off the SSRF guard on user-supplied provider URLs; it exists for local fake providers only.
+const hatchProblem = escapeHatchProblem();
+if (hatchProblem) throw new Error(hatchProblem);
+if (allowPrivateProviderUrls()) {
+  console.warn("WARNING: ANYAPP_ALLOW_PRIVATE_PROVIDER_URLS=1. User-supplied provider URLs may point at loopback and private addresses. Development only.");
+}
 
 const app = express();
 const port = Number(process.env.STUDIO_PORT ?? 3000);

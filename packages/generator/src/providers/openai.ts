@@ -1,9 +1,11 @@
 import OpenAI from "openai";
-import type { Provider, ProviderCredential, ProviderRequest } from "./types";
+import type { Provider, ProviderCredential, ProviderOptions, ProviderRequest } from "./types";
 import { RefusalError, TruncationError } from "./types";
 import { logUsage } from "./usage";
 import type { UsageInfo } from "./usage";
 import { conversationHeaders } from "./session";
+import { guardedFetch } from "./net-guard";
+import { validateRequestOptions } from "./validate-options";
 
 function messagesFor(req: ProviderRequest) {
   // Caching is automatic on a stable prefix: stable half in system, volatile half in user.
@@ -29,10 +31,17 @@ function usageFrom(usage: OpenAI.CompletionUsage | null | undefined): UsageInfo 
   };
 }
 
-export function createOpenAIProvider(credential: ProviderCredential): Provider {
+const OPENAI_PUBLIC_BASE_URL = "https://api.openai.com/v1";
+
+export function createOpenAIProvider(credential: ProviderCredential, options: ProviderOptions = {}): Provider {
   const client = new OpenAI({
     apiKey: credential.apiKey,
-    baseURL: credential.baseUrl || undefined,
+    // The SDK would fill a missing base URL, organization and project from OPENAI_BASE_URL / OPENAI_ORG_ID /
+    // OPENAI_PROJECT_ID, which are the operator's: a user's key must not travel to the operator's gateway.
+    baseURL: credential.baseUrl || (options.userSupplied ? OPENAI_PUBLIC_BASE_URL : undefined),
+    organization: options.userSupplied ? null : undefined,
+    project: options.userSupplied ? null : undefined,
+    fetch: options.userSupplied ? guardedFetch(options.netPolicy) : undefined,
   });
 
   return {
@@ -120,7 +129,7 @@ export function createOpenAIProvider(credential: ProviderCredential): Provider {
       // No generation in scope: uses the process-stable fallback conversation id.
       await client.chat.completions.create(
         { model, max_tokens: 1, messages: [{ role: "user", content: "hi" }] },
-        { signal, headers: conversationHeaders(undefined) },
+        { signal, headers: conversationHeaders(undefined), ...validateRequestOptions(options.validateTimeoutMs) },
       );
     },
   };

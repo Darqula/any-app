@@ -51,6 +51,57 @@ cannot suppress it, so a real browser attack can never present with both absent;
 place `Origin` may be read, and only against a known value. Cases: M12/M12b.
 
 
+## Provider base URL guard (SSRF)
+
+`POST /settings/credentials` took any `baseUrl` from any visitor, called it at once and reflected the SDK error text, so
+the studio (the process with the provider keys and the privileged pool) could be aimed at loopback, the database port or
+169.254.169.254, and parts of the reply read back. What stands now:
+
+- **Scope.** Only user-supplied credentials are guarded: `build(credential, { userSupplied: true })`, set by the settings
+  route and by `resolve()` when the user's credential (not the platform one) is chosen. A platform credential, with the
+  operator's `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL`, is never guarded or restricted (the test harness points those at a
+  fake on localhost). A user credential saved with no base URL is guarded too and goes to the provider's public API
+  (`https://api.openai.com/v1`, `https://api.anthropic.com`) passed explicitly: both SDKs otherwise fall back to the
+  operator's base URL from the environment, which sent the user's key to the operator's gateway (a key leak) and, once
+  guarded, made every such key fail against a private or http gateway. For the same reason a user-supplied client passes
+  `organization`/`project` (OpenAI) and `authToken` (Anthropic) as `null`, so the operator's `OPENAI_ORG_ID`,
+  `OPENAI_PROJECT_ID` and `ANTHROPIC_AUTH_TOKEN` are never attached.
+- **The boundary is the connection, not the URL.** The save-time check (`checkProviderBaseUrl`: https, no `user:pass@`,
+  parseable) is usability only. The guard is a custom undici connector (`providers/net-guard.ts`) passed to the SDKs as
+  `fetch`: it refuses an IP-literal host before connecting, resolves names through a lookup hook that refuses any
+  non-public answer (so nothing is sent to an internal address), and finally judges `socket.remoteAddress` of the
+  connection really made, which is what defeats DNS rebinding and any resolver quirk. **Redirects are refused outright**
+  (`redirect: "error"`, overriding whatever the SDK passes): a provider API never needs one, and following a 30x would
+  re-send the body and key (to `http://<public host>` too, which no address check objects to).
+- **Why a lookup hook alone is not enough.** `net.connect` / `tls.connect` do not call `lookup` for an IP literal, and
+  the WHATWG URL parser turns `2130706433`, `0x7f.1` and `127.1` into `127.0.0.1` before the connector sees the host.
+  The literal check in the connector is what stops those; the peer check is the backstop for the rest.
+- **Why undici as a dependency.** The SDKs take `fetch` and `fetchOptions`. Node's bundled undici (6.21 on Node 22.16)
+  is not importable, and pairing a package `Agent` with the bundled `fetch` depends on the two versions agreeing, so
+  `@any-app/generator` depends on `undici` and uses its own `fetch` with its own `Agent` (same defaults: five-minute
+  header and body timeouts as before). Bad ports (1, 9, ...) are refused by fetch itself before the guard: use port 8443
+  in tests that need a refused port.
+- **Classifier.** IPv4 deny-list through `node:net` `BlockList`; IPv6 is an allow-list of 2000::/3 minus special ranges
+  (6to4, Teredo, NAT64, documentation, discard). `::ffff:a.b.c.d` is judged as its IPv4. Anything unparseable is refused.
+  A name with one public and one private answer is refused whole.
+- **Escape hatch.** `ANYAPP_ALLOW_PRIVATE_PROVIDER_URLS=1` (exactly `1`) returns no guarded fetch and lifts the https
+  requirement. The studio throws at boot if it is set with `NODE_ENV=production`, and also if the host of
+  `STUDIO_PUBLIC_URL` is not loopback (`localhost`, `*.localhost`, `127.0.0.0/8`, `::1`), because nothing guarantees
+  `NODE_ENV` is set on a real deployment; whenever it is on, boot logs one loud warning (`escapeHatchProblem`). `startServers` sets it by default; the
+  guard cases pass `""`. Policy is injectable (`NetPolicy`: `isAddressAllowed`, `resolve`, `requireHttps`) so tests need
+  neither the hatch off globally nor real DNS.
+- **No reflection.** The route answers with a fixed sentence per outcome (`describeValidationFailure`: blocked literal or
+  scheme, 401/403, 404, "The provider answered with HTTP <status>." for any other status, and "Could not reach the
+  provider" for failures with no status) and logs the scrubbed detail plus the refused address. The status is a number
+  only, never the body. `validate()` uses a 15 s timeout (`validateTimeoutMs` shortens it for tests) and
+  `maxRetries: 0`; generation calls keep the SDK defaults.
+- **DNS oracle.** A hostname refused because it resolved to a non-public address (`BlockedAddressError.byName`) and a
+  hostname that does not resolve give the same sentence ("Could not reach the provider"); otherwise an anonymous visitor
+  could map which internal names exist. Only an IP literal or a scheme/credentials refusal says "not allowed", since
+  those reveal nothing. What still shows for public hosts is the status class (401 vs 404 vs reached), which is
+  unavoidable for a validation call; private targets are unreachable.
+- **Not covered.** Outbound proxies are not supported (the Agent connects directly).
+
 ## Sharing exposes the data API
 
 The app token identifies the app, not a person, and ships in the app's own HTML, so anyone who can open a

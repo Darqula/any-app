@@ -14,7 +14,7 @@ Content that a short comment or the code already states is deliberately not repe
 | --- | --- |
 | [`document-model.md`](document-model.md) | tolerant placeholder scan, `sanitizePlaceholders`, the `.hidden` fallback and its rejected designs |
 | [`runtime-in-generated-apps.md`](runtime-in-generated-apps.md) | exactly-once slot scripts, `slot:ready`, the token placeholder |
-| [`security.md`](security.md) | view grants, app tokens, cookies/sessions, the cross-site request guard, the sharing posture |
+| [`security.md`](security.md) | view grants, app tokens, cookies/sessions, the cross-site request guard, the provider base-URL SSRF guard, the sharing posture |
 | [`providers.md`](providers.md) | gateway session header, cache layout and zero-cache-read causes, abort and truncation incidents, usage ordering, Anthropic adapter don'ts |
 | [`generation-pipeline.md`](generation-pipeline.md) | `parsePlan`, the S13 prompt contract and probe history, parallel-fill findings, design choices not to reverse |
 | [`editing.md`](editing.md) | router history, edit-prompt guards, the no-op guard, edit activity and conversation log |

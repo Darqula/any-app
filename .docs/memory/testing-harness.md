@@ -24,6 +24,9 @@ dev server's database).
   or the SDK retries a scripted 500 up to twice. Anthropic `message_start` must precede every event even for a
   zero-content response (the fixture's own self-test caught that; the real SDK rejects it). `queueStream()`
   returns a proxy handle before any response object exists.
+- **SSRF guard**: `startServers` sets `ANYAPP_ALLOW_PRIVATE_PROVIDER_URLS=1` so a BYOK credential can point at the
+  fake provider on loopback over http; a case that tests the guard passes `""`. In-process tests that build a provider
+  with a user credential need `netPolicy` injected (or `userSupplied` left off) for the same reason.
 - **Seeding**: `harness/seed.ts` inserts with `pg`; a `complete` row renders with no provider because the
   internal route serves the stored document before claiming or resolving credentials. It defaults to
   `unlisted` so previews need no grant. Since Phase 6 the sidebar is owner-scoped, so seeded rows must carry the
